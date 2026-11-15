@@ -27,6 +27,10 @@ data class AppSettings(
     val textScale: Float = 1f,
     /** Editor body text size in dp; its line pitch is derived from it. */
     val editorFontDp: Int = AppSettingsJson.DEFAULT_EDITOR_FONT_DP,
+    /** Font for Markdown prose and other non-code text. */
+    val textFontFace: EditorFontFace = EditorFontFace.Mono,
+    /** Font for fenced/inline code and for code files. */
+    val codeFontFace: EditorFontFace = EditorFontFace.Mono,
     val autoHideChrome: Boolean = true,
     val navbarEnabled: Boolean = false,
     val defaultEditorMode: EditorMode = EditorMode.Source,
@@ -63,6 +67,8 @@ object AppSettingsJson {
         return JSONObject()
             .put("textScale", settings.textScale.toDouble())
             .put("editorFontDp", settings.editorFontDp)
+            .put("textFontFace", settings.textFontFace.name)
+            .put("codeFontFace", settings.codeFontFace.name)
             .put("autoHideChrome", settings.autoHideChrome)
             .put("navbarEnabled", settings.navbarEnabled)
             .put("defaultEditorMode", settings.defaultEditorMode.name)
@@ -83,6 +89,16 @@ object AppSettingsJson {
                     ?: 1f,
                 editorFontDp = value.optInt("editorFontDp", DEFAULT_EDITOR_FONT_DP)
                     .coerceIn(MIN_EDITOR_FONT_DP, MAX_EDITOR_FONT_DP),
+                textFontFace = runCatching {
+                    EditorFontFace.valueOf(
+                        value.optString("textFontFace", EditorFontFace.Mono.name),
+                    )
+                }.getOrDefault(EditorFontFace.Mono),
+                codeFontFace = runCatching {
+                    EditorFontFace.valueOf(
+                        value.optString("codeFontFace", EditorFontFace.Mono.name),
+                    )
+                }.getOrDefault(EditorFontFace.Mono),
                 autoHideChrome = value.optBoolean("autoHideChrome", true),
                 navbarEnabled = value.optBoolean("navbarEnabled", false),
                 defaultEditorMode = runCatching {

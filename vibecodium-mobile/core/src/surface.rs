@@ -679,6 +679,39 @@ fn line_cell_offsets(chars: &[char], hidden: &[bool]) -> Vec<usize> {
     offsets
 }
 
+/// Pixel x of every char boundary in one logical line. Hidden Markdown markers
+/// take no space, emoji clusters advance as one unit, and continuation chars
+/// report the position after the cluster, matching `line_cell_offsets`.
+/// `out` is reused so a scroll frame does not allocate per visible line.
+fn line_x_offsets(
+    out: &mut Vec<f32>,
+    painter: &mut Painter,
+    chars: &[char],
+    hidden: &[bool],
+    px: f32,
+    face_at: impl Fn(usize) -> Face,
+) {
+    out.clear();
+    out.reserve(chars.len() + 1);
+    let mut x = 0.0f32;
+    let mut i = 0usize;
+    while i < chars.len() {
+        out.push(x);
+        if hidden.get(i).copied().unwrap_or(false) {
+            i += 1;
+            continue;
+        }
+        let (advance, len) = painter.advance_at(chars, i, px, face_at(i));
+        x += advance;
+        for _ in 1..len {
+            i += 1;
+            out.push(x);
+        }
+        i += 1;
+    }
+    out.push(x);
+}
+
 fn prev_grapheme_char_count(chars: &[char], pos: usize) -> usize {
     if pos == 0 || chars.is_empty() {
         return 0;
@@ -752,17 +785,34 @@ fn snap_to_cluster_boundary(chars: &[char], pos: usize) -> usize {
     pos
 }
 
+/// Font face a run of text is drawn with. `Mono` also selects the fixed-cell
+/// advance that keeps code columns and indentation aligned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Face {
+    Ui = 0,
+    Mono = 1,
+    Serif = 2,
+}
+
+impl Face {
+    fn is_mono(self) -> bool {
+        matches!(self, Face::Mono)
+    }
+}
+
 #[derive(Default)]
 struct Painter {
     ui_font: Option<Font>,
     mono_font: Option<Font>,
+    serif_font: Option<Font>,
     symbols_font: Option<Font>,
     symbols2_font: Option<Font>,
     cjk_font: Option<Font>,
     glyphs: HashMap<(u8, char, u32), (fontdue::Metrics, Vec<u8>)>,
     icons: HashMap<(usize, u32, u32), IconRaster>,
     emojis: HashMap<(String, u32), EmojiRaster>,
-    metrics_cache: HashMap<(u32, bool), (f32, f32)>,
+    metrics_cache: HashMap<(u32, u8), (f32, f32)>,
+    char_advances: HashMap<(u8, char, u32), f32>,
 }
 
 fn load_font(paths: &[&str]) -> Option<Font> {
@@ -791,6 +841,11 @@ impl Painter {
             "/system/fonts/DroidSansMono.ttf",
             "/system/fonts/NotoSansMono-Regular.ttf",
         ]);
+        let serif_font = load_font(&[
+            "/system/fonts/NotoSerif-Regular.ttf",
+            "/system/fonts/NotoSerifStatic-Regular.ttf",
+            "/system/fonts/DroidSerif-Regular.ttf",
+        ]);
         let symbols_font = load_font(&[
             "/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf",
             "/system/fonts/NotoSansSymbols-Regular.ttf",
@@ -803,6 +858,7 @@ impl Painter {
         Self {
             ui_font,
             mono_font,
+            serif_font,
             symbols_font,
             symbols2_font,
             cjk_font,
@@ -810,6 +866,7 @@ impl Painter {
             icons: HashMap::new(),
             emojis: HashMap::new(),
             metrics_cache: HashMap::new(),
+            char_advances: HashMap::new(),
         }
     }
 
@@ -867,26 +924,34 @@ impl Painter {
         }
     }
 
-    fn font(&self, mono: bool) -> Option<&Font> {
-        if mono {
-            self.mono_font.as_ref().or(self.ui_font.as_ref())
-        } else {
-            self.ui_font.as_ref().or(self.mono_font.as_ref())
+    fn font(&self, face: Face) -> Option<&Font> {
+        match face {
+            Face::Mono => self.mono_font.as_ref().or(self.ui_font.as_ref()),
+            Face::Serif => self
+                .serif_font
+                .as_ref()
+                .or(self.ui_font.as_ref())
+                .or(self.mono_font.as_ref()),
+            Face::Ui => self.ui_font.as_ref().or(self.mono_font.as_ref()),
         }
     }
 
-    fn font_for_char(&self, character: char, mono: bool) -> Option<&Font> {
-        let primary = if mono {
-            self.mono_font.as_ref().or(self.ui_font.as_ref())
-        } else {
-            self.ui_font.as_ref().or(self.mono_font.as_ref())
+    fn font_for_char(&self, character: char, face: Face) -> Option<&Font> {
+        let primary = match face {
+            Face::Mono => self.mono_font.as_ref().or(self.ui_font.as_ref()),
+            Face::Serif => self
+                .serif_font
+                .as_ref()
+                .or(self.ui_font.as_ref())
+                .or(self.mono_font.as_ref()),
+            Face::Ui => self.ui_font.as_ref().or(self.mono_font.as_ref()),
         };
         if let Some(font) = primary {
             if font.lookup_glyph_index(character) != 0 {
                 return Some(font);
             }
         }
-        let secondary = if mono {
+        let secondary = if face.is_mono() {
             self.ui_font.as_ref()
         } else {
             self.mono_font.as_ref()
@@ -906,17 +971,17 @@ impl Painter {
         primary
     }
 
-    fn font_metrics(&mut self, px: f32, mono: bool) -> (f32, f32) {
-        let key = (px.to_bits(), mono);
+    fn font_metrics(&mut self, px: f32, face: Face) -> (f32, f32) {
+        let key = (px.to_bits(), face as u8);
         if let Some(&cached) = self.metrics_cache.get(&key) {
             return cached;
         }
         let advance = self
-            .font(mono)
+            .font(face)
             .map(|f| f.metrics('M', px).advance_width)
             .unwrap_or(px * 0.6);
         let ascent = self
-            .font(mono)
+            .font(face)
             .and_then(|f| f.horizontal_line_metrics(px))
             .map(|line| line.ascent)
             .unwrap_or(px * 0.8)
@@ -925,13 +990,52 @@ impl Painter {
         (advance, ascent)
     }
 
-    fn advance(&mut self, px: f32, mono: bool) -> f32 {
-        self.font_metrics(px, mono).0
+    fn advance(&mut self, px: f32, face: Face) -> f32 {
+        self.font_metrics(px, face).0
     }
 
-    fn width(&mut self, text: &str, px: f32, mono: bool) -> f32 {
-        if mono {
-            let advance = self.advance(px, true);
+    /// Advance of one non-grapheme character. It mirrors exactly what `draw`
+    /// moves the cursor by, so layout and glyphs cannot drift apart.
+    fn advance_of_char(&mut self, character: char, px: f32, face: Face) -> f32 {
+        if character == '\r' || character == '\u{fe0f}' || character == '\u{fe0e}' {
+            return 0.0;
+        }
+        if face.is_mono() {
+            let cell = self.advance(px, face);
+            return if is_cjk(character) { 2.0 * cell } else { cell };
+        }
+        let character = if character == '\t' { ' ' } else { character };
+        let key = (face as u8, character, px.round() as u32);
+        if let Some(&cached) = self.char_advances.get(&key) {
+            return cached;
+        }
+        let advance = self
+            .font_for_char(character, face)
+            .map(|font| font.metrics(character, px).advance_width)
+            .unwrap_or(px * 0.6);
+        self.char_advances.insert(key, advance);
+        advance
+    }
+
+    /// Advance and char length of the grapheme starting at `index`. Emoji
+    /// clusters are measured as one unit, matching `draw`.
+    fn advance_at(&mut self, chars: &[char], index: usize, px: f32, face: Face) -> (f32, usize) {
+        let cluster_len = emoji_cluster_len(chars, index);
+        if cluster_len > 0 {
+            let advance = if face.is_mono() {
+                2.0 * self.advance(px, face)
+            } else {
+                px
+            };
+            return (advance, cluster_len);
+        }
+        let advance = self.advance_of_char(chars[index], px, face);
+        (advance, 1)
+    }
+
+    fn width(&mut self, text: &str, px: f32, face: Face) -> f32 {
+        if face.is_mono() {
+            let advance = self.advance(px, Face::Mono);
             if text.is_ascii() {
                 return text.len() as f32 * advance;
             }
@@ -940,14 +1044,14 @@ impl Painter {
             let total_cells = offsets.last().copied().unwrap_or(0);
             return total_cells as f32 * advance;
         }
-        let Some(font) = self.font(mono) else {
+        let Some(font) = self.font(face) else {
             return text.chars().count() as f32 * px * 0.6;
         };
         text.chars().filter(|&c| c != '\r').map(|c| {
             if is_emoji_start(c) {
                 px
             } else {
-                let f = self.font_for_char(c, mono).unwrap_or(font);
+                let f = self.font_for_char(c, face).unwrap_or(font);
                 f.metrics(c, px).advance_width
             }
         }).sum()
@@ -963,11 +1067,17 @@ impl Painter {
         text: &str,
         px: f32,
         rgb: u32,
-        mono: bool,
+        face: Face,
     ) {
-        let (cell_advance, ascent) = self.font_metrics(px, mono);
+        let (cell_advance, ascent) = self.font_metrics(px, face);
         let baseline = y + ascent;
         let mut cursor = x;
+        // A tab has no glyph; layout treats it as a space, so drawing must too.
+        let tab_advance = if face.is_mono() {
+            cell_advance
+        } else {
+            self.advance_of_char(' ', px, face)
+        };
 
         if text.is_ascii() {
             let px_key = px.round() as u32;
@@ -976,16 +1086,22 @@ impl Painter {
                     continue;
                 }
                 let character = byte as char;
-                let key = (u8::from(mono), character, px_key);
+                let key = (face as u8, character, px_key);
                 if !self.glyphs.contains_key(&key) {
                     let raster = self
-                        .font_for_char(character, mono)
+                        .font_for_char(character, face)
                         .map(|font| font.rasterize(character, px))
                         .unwrap_or_else(|| (fontdue::Metrics::default(), Vec::new()));
                     self.glyphs.insert(key, raster);
                 }
                 let Some((metrics, bitmap)) = self.glyphs.get(&key) else {
-                    cursor += if mono { cell_advance } else { 0.0 };
+                    cursor += if character == '\t' {
+                        tab_advance
+                    } else if face.is_mono() {
+                        cell_advance
+                    } else {
+                        0.0
+                    };
                     continue;
                 };
                 let gx = (cursor + metrics.xmin as f32).round() as i32;
@@ -1009,7 +1125,13 @@ impl Painter {
                         pixels[index] = blend(pixels[index], rgb, alpha);
                     }
                 }
-                cursor += if mono { cell_advance } else { metrics.advance_width };
+                cursor += if character == '\t' {
+                    tab_advance
+                } else if face.is_mono() {
+                    cell_advance
+                } else {
+                    metrics.advance_width
+                };
             }
             return;
         }
@@ -1037,7 +1159,13 @@ impl Painter {
                     }
                 }
                 if let Some(raster) = self.emojis.get(&key) {
-                    let slot_w = if mono { 2.0 * cell_advance } else { raster.width as f32 };
+                    // Layout measures a proportional emoji as one `px` square;
+                    // keep the glyph advance identical so the caret stays put.
+                    let slot_w = if face.is_mono() {
+                        2.0 * cell_advance
+                    } else {
+                        px
+                    };
                     let offset_x = ((slot_w - raster.width as f32) / 2.0).max(0.0);
                     let gx = (cursor + offset_x).round() as i32;
                     let gy = (baseline - raster.height as f32 * 0.85).round() as i32;
@@ -1064,15 +1192,15 @@ impl Painter {
                             pixels[index] = blend(pixels[index], color, alpha);
                         }
                     }
-                    cursor += if mono { 2.0 * cell_advance } else { raster.width as f32 };
+                    cursor += slot_w;
                     i += cluster_len;
                     continue;
                 }
             }
-            let key = (u8::from(mono), character, px.round() as u32);
+            let key = (face as u8, character, px.round() as u32);
             if !self.glyphs.contains_key(&key) {
                 let raster = self
-                    .font_for_char(character, mono)
+                    .font_for_char(character, face)
                     .map(|font| font.rasterize(character, px))
                     .unwrap_or_else(|| (fontdue::Metrics::default(), Vec::new()));
                 self.glyphs.insert(key, raster);
@@ -1082,8 +1210,18 @@ impl Painter {
                 continue;
             };
             let cjk = is_cjk(character);
-            let slot_w = if mono && cjk { 2.0 * cell_advance } else if mono { cell_advance } else { metrics.advance_width };
-            let offset_x = if mono && cjk { ((slot_w - metrics.advance_width) / 2.0).max(0.0) } else { 0.0 };
+            let slot_w = if face.is_mono() && cjk {
+                2.0 * cell_advance
+            } else if face.is_mono() {
+                cell_advance
+            } else {
+                metrics.advance_width
+            };
+            let offset_x = if face.is_mono() && cjk {
+                ((slot_w - metrics.advance_width) / 2.0).max(0.0)
+            } else {
+                0.0
+            };
             let gx = (cursor + metrics.xmin as f32 + offset_x).round() as i32;
             let gy = (baseline - metrics.ymin as f32 - metrics.height as f32).round() as i32;
             for row in 0..metrics.height {
@@ -1105,7 +1243,7 @@ impl Painter {
                     pixels[index] = blend(pixels[index], rgb, alpha);
                 }
             }
-            cursor += if mono {
+            cursor += if face.is_mono() {
                 if cjk { 2.0 * cell_advance } else { cell_advance }
             } else {
                 metrics.advance_width
@@ -1172,7 +1310,6 @@ struct WrapLine {
     start: usize,
     end: usize,
     font: f32,
-    advance: f32,
 }
 
 #[derive(Default)]
@@ -1190,6 +1327,14 @@ struct EditorState {
     wrap: Vec<WrapLine>,
     wrap_first: Vec<usize>,
     wrap_count: Vec<usize>,
+    /// Canonical wrap (all markup hidden) the active-line exceptions build on.
+    wrap_canonical: Vec<WrapLine>,
+    wrap_canonical_first: Vec<usize>,
+    wrap_canonical_count: Vec<usize>,
+    /// Caret line, selection and visible line window the effective wrap was
+    /// built for.
+    wrap_paint_key: (usize, usize, usize, usize, usize),
+    wrap_has_exceptions: bool,
     wrap_width: f32,
     wrap_dirty: bool,
     bottom_inset: f32,
@@ -1214,6 +1359,10 @@ struct SurfaceState {
     editor_font_dp: f32,
     /// Editor line pitch in dp; derived from the font size when it changes.
     editor_line_dp: f32,
+    /// Face used for Markdown prose (and other non-code text).
+    text_face: Face,
+    /// Face used for fenced/inline code and for code files.
+    code_face: Face,
     background: u32,
     painter: Painter,
     tree: TreeState,
@@ -1225,6 +1374,9 @@ struct SurfaceState {
     last_scroll: f32,
     last_width: usize,
     last_height: usize,
+    /// Gutter width of the previous frame; a change at a digit boundary is
+    /// logged because it also re-wraps the whole document.
+    last_gutter: f32,
 }
 
 unsafe impl Send for SurfaceState {}
@@ -1544,75 +1696,334 @@ fn draw_teardrop_handle(
     }
 }
 
+/// Face for one char of a logical line: fenced and inline code use the code
+/// face, everything else keeps the line's face.
+fn char_face(
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+    index: usize,
+    line_face: Face,
+    code_face: Face,
+) -> Face {
+    let Some(model_line) = model.get(line) else {
+        return line_face;
+    };
+    if matches!(model_line.kind.as_str(), "code" | "code_fence") {
+        return code_face;
+    }
+    let content_start = model_line.prefix_chars;
+    for span in &model_line.spans {
+        if span.kind == "inline_code" {
+            let start = content_start + span.start;
+            let end = content_start + span.end;
+            if index >= start && index < end {
+                return code_face;
+            }
+        }
+    }
+    line_face
+}
+
+fn is_revealable_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "link"
+            | "bold"
+            | "italic"
+            | "bold_italic"
+            | "inline_code"
+            | "strikethrough"
+            | "underline"
+            | "highlight"
+            | "grammar"
+    )
+}
+
+/// Raw char ranges of the inline elements the caret or selection reveals.
+///
+/// Mirrors the desktop `inline_reveal`: only the element under the caret (or
+/// touched by the selection) shows its markers, not the whole line.
+fn reveal_ranges(
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+    char_count: usize,
+    cursor_char: Option<usize>,
+    selection: Option<(usize, usize)>,
+) -> Vec<(usize, usize)> {
+    let Some(model_line) = model.get(line) else {
+        return Vec::new();
+    };
+    if matches!(model_line.kind.as_str(), "code" | "code_fence" | "rule") {
+        return Vec::new();
+    }
+    let base = model_line.prefix_chars.min(char_count);
+    let spans = &model_line.spans;
+    let is_marker = |index: usize| {
+        spans
+            .get(index)
+            .map(|span| span.kind == "marker")
+            .unwrap_or(false)
+    };
+    let mut elements: Vec<(usize, usize)> = Vec::new();
+    let mut index = 0usize;
+    while index < spans.len() {
+        if index + 2 < spans.len()
+            && is_marker(index)
+            && is_revealable_kind(&spans[index + 1].kind)
+            && is_marker(index + 2)
+        {
+            let start = (base + spans[index].start).min(char_count);
+            let end = (base + spans[index + 2].end).min(char_count);
+            elements.push((start, end));
+            index += 3;
+            continue;
+        }
+        if index + 1 < spans.len()
+            && is_marker(index)
+            && spans[index].text == "\\"
+            && spans[index + 1].kind == "text"
+        {
+            let start = (base + spans[index].start).min(char_count);
+            let end = (base + spans[index + 1].end).min(char_count);
+            elements.push((start, end));
+            index += 2;
+            continue;
+        }
+        index += 1;
+    }
+    let task = if model_line.kind == "task" {
+        Some((0usize, model_line.prefix_chars.min(char_count)))
+    } else {
+        None
+    };
+    let mut ranges = Vec::new();
+    if let Some((start, end)) = selection {
+        if start < end {
+            if let Some(range) = task {
+                if start < range.1 && range.0 < end {
+                    ranges.push(range);
+                }
+            }
+            for &(a, b) in &elements {
+                if start < b && a < end {
+                    ranges.push((a, b));
+                }
+            }
+        }
+    }
+    if let Some(cursor) = cursor_char {
+        if let Some(range) = task {
+            if range.0 <= cursor && cursor < range.1 {
+                ranges.push(range);
+            }
+        }
+        for &(a, b) in &elements {
+            // The end boundary counts as inside: a caret right after the
+            // visible text of `[word](url)` sits before the closing marker.
+            if a <= cursor && cursor <= b {
+                ranges.push((a, b));
+            }
+        }
+    }
+    ranges
+}
+
+/// Whether a raw char is hidden when nothing is revealed on the line: block
+/// prefixes and every inline marker cost no wrap width, exactly like `draw`.
+fn char_hidden(
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+    index: usize,
+    char_count: usize,
+) -> bool {
+    let Some(model_line) = model.get(line) else {
+        return false;
+    };
+    let prefix = model_line.prefix_chars.min(char_count);
+    let block = match model_line.kind.as_str() {
+        "heading" => index < prefix,
+        "quote" => index > 0 && index < prefix,
+        "task" => {
+            let start = (model_line.indent + 2).min(char_count);
+            index >= start && index < prefix
+        }
+        "code_fence" => true,
+        _ => false,
+    };
+    if block {
+        return true;
+    }
+    model_line.spans.iter().any(|span| {
+        if span.kind != "marker" {
+            return false;
+        }
+        let start = (prefix + span.start).min(char_count);
+        let end = (prefix + span.end).min(char_count);
+        index >= start && index < end
+    })
+}
+
+fn canonical_hidden(
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+    char_count: usize,
+) -> Vec<bool> {
+    (0..char_count)
+        .map(|index| char_hidden(model, line, index, char_count))
+        .collect()
+}
+
+/// Hidden chars for one line in its current paint state.
+fn compute_hidden(
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+    chars: &[char],
+    line_start: usize,
+    cursor_line: Option<usize>,
+    cursor: usize,
+    selection: (usize, usize),
+    preview: bool,
+) -> Vec<bool> {
+    let char_count = chars.len();
+    if preview {
+        return canonical_hidden(model, line, char_count);
+    }
+    let sel_start = selection.0.max(line_start);
+    let sel_end = selection.1.min(line_start + char_count);
+    let has_selection = sel_start < sel_end;
+    let is_cursor = cursor_line == Some(line);
+    if !is_cursor && !has_selection {
+        return canonical_hidden(model, line, char_count);
+    }
+    // The active line keeps its block prefix raw; only the inline markers of
+    // the element under the caret/selection appear.
+    let mut hidden = vec![false; char_count];
+    let Some(model_line) = model.get(line) else {
+        return hidden;
+    };
+    if model_line.kind == "code_fence" {
+        return hidden;
+    }
+    let cursor_char = if is_cursor {
+        Some(cursor.saturating_sub(line_start))
+    } else {
+        None
+    };
+    let selection_chars = if has_selection {
+        Some((sel_start - line_start, sel_end - line_start))
+    } else {
+        None
+    };
+    let ranges = reveal_ranges(model, line, char_count, cursor_char, selection_chars);
+    let base = model_line.prefix_chars.min(char_count);
+    for span in &model_line.spans {
+        if span.kind != "marker" {
+            continue;
+        }
+        let start = (base + span.start).min(char_count);
+        let end = (base + span.end).min(char_count);
+        let shown = ranges.iter().any(|&(a, b)| start < b && a < end);
+        if !shown {
+            for value in hidden[start..end].iter_mut() {
+                *value = true;
+            }
+        }
+    }
+    hidden
+}
+
+/// Wrap one logical line into raw char ranges. `hidden` chars (collapsed
+/// Markdown markup) take no width, so a long link destination cannot push the
+/// visible text into the next row.
+#[allow(clippy::too_many_arguments)]
+fn wrap_line_chunks(
+    painter: &mut Painter,
+    chars: &[char],
+    hidden: &[bool],
+    content_width: f32,
+    font: f32,
+    line_face: Face,
+    model: &[crate::markdown::MarkdownLine],
+    line_index: usize,
+    code_face: Face,
+) -> Vec<(usize, usize)> {
+    if chars.is_empty() {
+        return vec![(0, 0)];
+    }
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    while start < chars.len() {
+        let mut end = start;
+        let mut width = 0.0f32;
+        while end < chars.len() {
+            let face = char_face(model, line_index, end, line_face, code_face);
+            let (mut step, len) = painter.advance_at(chars, end, font, face);
+            if hidden.get(end).copied().unwrap_or(false) {
+                step = 0.0;
+            }
+            if width + step > content_width && end > start {
+                break;
+            }
+            width += step;
+            end += len;
+        }
+        if end < chars.len() {
+            if let Some(space) = (start..end)
+                .rev()
+                .find(|&index| chars[index] == ' ' || chars[index] == '\t')
+            {
+                if space > start {
+                    end = space + 1;
+                }
+            }
+        }
+        chunks.push((start, end));
+        start = end;
+    }
+    chunks
+}
+
 fn wrap_layout(
     text: &str,
     starts: &[usize],
     content_width: f32,
-    metrics: &[(f32, f32)],
+    painter: &mut Painter,
+    line_fonts: &[(f32, Face)],
+    model: &[crate::markdown::MarkdownLine],
+    code_face: Face,
+    fallback_font_px: f32,
 ) -> Vec<WrapLine> {
     let all: Vec<char> = text.chars().collect();
     let mut rows = Vec::with_capacity(starts.len());
     for (line_index, &line_start) in starts.iter().enumerate() {
-        let (font, advance) = metrics
+        let (font, line_face) = line_fonts
             .get(line_index)
             .copied()
-            .unwrap_or((15.0, 9.0));
+            .unwrap_or((fallback_font_px, Face::Mono));
         let line_end = if line_index + 1 < starts.len() {
             starts[line_index + 1].saturating_sub(1)
         } else {
             all.len()
         };
         let chars = &all[line_start.min(all.len())..line_end.min(all.len())];
-        if chars.is_empty() {
-            rows.push(WrapLine {
-                line: line_index,
-                start: 0,
-                end: 0,
-                font,
-                advance,
-            });
-            continue;
-        }
-        let max_cols = ((content_width / advance).floor() as usize).max(1);
-        let mut start = 0usize;
-        while start < chars.len() {
-            let mut end = start;
-            let mut current_cols = 0usize;
-            while end < chars.len() {
-                let cluster_len = emoji_cluster_len(chars, end);
-                let col_w = if cluster_len > 0 {
-                    2
-                } else if is_cjk(chars[end]) {
-                    2
-                } else if chars[end] == '\r' || chars[end] == '\u{fe0f}' || chars[end] == '\u{fe0e}' {
-                    0
-                } else {
-                    1
-                };
-                if current_cols + col_w > max_cols && end > start {
-                    break;
-                }
-                current_cols += col_w;
-                end += if cluster_len > 0 { cluster_len } else { 1 };
-            }
-            if end < chars.len() {
-                if let Some(space) = (start..end)
-                    .rev()
-                    .find(|&index| chars[index] == ' ' || chars[index] == '\t')
-                {
-                    if space > start {
-                        end = space + 1;
-                    }
-                }
-            }
+        let hidden = canonical_hidden(model, line_index, chars.len());
+        for (start, end) in wrap_line_chunks(
+            painter,
+            chars,
+            &hidden,
+            content_width,
+            font,
+            line_face,
+            model,
+            line_index,
+            code_face,
+        ) {
             rows.push(WrapLine {
                 line: line_index,
                 start,
                 end,
                 font,
-                advance,
             });
-            start = end;
         }
     }
     rows
@@ -1838,6 +2249,8 @@ impl SurfaceState {
             density: if density > 0.0 { density } else { 1.0 },
             editor_font_dp: EDITOR_FONT_DP,
             editor_line_dp: EDITOR_LINE_DP,
+            text_face: Face::Mono,
+            code_face: Face::Mono,
             background: 0x000000,
             painter: Painter::new(),
             tree: TreeState::default(),
@@ -1855,6 +2268,7 @@ impl SurfaceState {
             last_scroll: 0.0,
             last_width: 0,
             last_height: 0,
+            last_gutter: -1.0,
         }
     }
 
@@ -1888,7 +2302,7 @@ impl SurfaceState {
         let mut digit = 0.0f32;
         for character in '0'..='9' {
             let mut buf = [0u8; 4];
-            digit = digit.max(self.painter.width(character.encode_utf8(&mut buf), px, false));
+            digit = digit.max(self.painter.width(character.encode_utf8(&mut buf), px, Face::Ui));
         }
         let digits = self.editor.starts.len().max(1).to_string().len() as f32;
         (digits * digit + 2.0 * GUTTER_PAD_DP * self.density)
@@ -2132,7 +2546,7 @@ impl SurfaceState {
         for row in &self.tree.doc.rows[first..last] {
             let indent = 10.0 * density + row.depth as f32 * 16.0 * density;
             let text_x = indent + 35.0 * density;
-            let name_width = painter.width(&row.name, name_font, false);
+            let name_width = painter.width(&row.name, name_font, Face::Ui);
             max_x = max_x.max(text_x + name_width + 8.0 * density - self.width as f32);
         }
         self.painter = painter;
@@ -2194,7 +2608,7 @@ impl SurfaceState {
             let extension = row.extension.to_ascii_uppercase();
             let show_tag = !row.folder && !extension.is_empty() && extension != "MD";
             let tag_width = if show_tag {
-                painter.width(&extension, 9.0 * density, false) + 10.0 * density
+                painter.width(&extension, 9.0 * density, Face::Ui) + 10.0 * density
             } else {
                 0.0
             };
@@ -2210,10 +2624,10 @@ impl SurfaceState {
                 let suffix: String = chars[end..].iter().collect();
                 let mut x = text_x;
                 if !prefix.is_empty() {
-                    painter.draw(pixels, self.width, self.height, x, name_y, &prefix, name_font, name_color, false);
-                    x += painter.width(&prefix, name_font, false);
+                    painter.draw(pixels, self.width, self.height, x, name_y, &prefix, name_font, name_color, Face::Ui);
+                    x += painter.width(&prefix, name_font, Face::Ui);
                 }
-                let matched_width = painter.width(&matched, name_font, false);
+                let matched_width = painter.width(&matched, name_font, Face::Ui);
                 rect(
                     pixels,
                     self.width,
@@ -2233,11 +2647,11 @@ impl SurfaceState {
                     &matched,
                     name_font,
                     0xffffff,
-                    false,
+                    Face::Ui,
                 );
                 x += matched_width;
                 if !suffix.is_empty() {
-                    painter.draw(pixels, self.width, self.height, x, name_y, &suffix, name_font, name_color, false);
+                    painter.draw(pixels, self.width, self.height, x, name_y, &suffix, name_font, name_color, Face::Ui);
                 }
             } else {
                 painter.draw(
@@ -2249,7 +2663,7 @@ impl SurfaceState {
                     &name,
                     name_font,
                     name_color,
-                    false,
+                    Face::Ui,
                 );
             }
             if show_tag {
@@ -2273,7 +2687,7 @@ impl SurfaceState {
                     &extension,
                     9.0 * density,
                     0xb3b3b3,
-                    false,
+                    Face::Ui,
                 );
             }
         }
@@ -2291,7 +2705,7 @@ impl SurfaceState {
     }
 
     fn editor_metrics(&mut self) -> (f32, f32, f32) {
-        let advance = self.painter.advance(self.font_px(), true);
+        let advance = self.painter.advance(self.font_px(), Face::Mono);
         let gutter = self.gutter_width();
         let content = (self.width as f32 - gutter - 8.0 * self.density).max(advance);
         (advance, gutter, content)
@@ -2308,42 +2722,236 @@ impl SurfaceState {
         }
     }
 
+    /// Face used for a logical editor line: code files and fenced Markdown
+    /// code use the code face, prose uses the text face.
+    fn line_face(&self, line: usize) -> Face {
+        if !self.editor.language.is_empty() {
+            return self.code_face;
+        }
+        match self.editor.model.get(line).map(|line| line.kind.as_str()) {
+            Some("code") | Some("code_fence") => self.code_face,
+            _ => self.text_face,
+        }
+    }
+
+    /// Line window visible in the current scroll, mapped through the canonical
+    /// layout. Stable regardless of active-line exceptions.
+    fn visible_line_window(&self) -> (usize, usize) {
+        let line_count = self.editor.starts.len();
+        if line_count == 0 || self.editor.wrap_canonical.is_empty() {
+            return (0, line_count.saturating_sub(1));
+        }
+        let line_h = self.line_px();
+        let first_visual = (((self.editor.scroll - self.editor.top_inset) / line_h)
+            .floor()
+            .max(0.0) as usize)
+            .min(self.editor.wrap_canonical.len().saturating_sub(1));
+        let visible = (self.viewport_height as f32 / line_h).ceil() as usize + 2;
+        let last_visual = first_visual.saturating_add(visible);
+        let mut first_line = 0usize;
+        for line in 0..line_count {
+            let start = self
+                .editor
+                .wrap_canonical_first
+                .get(line)
+                .copied()
+                .unwrap_or(0);
+            let count = self
+                .editor
+                .wrap_canonical_count
+                .get(line)
+                .copied()
+                .unwrap_or(0);
+            if start + count > first_visual {
+                first_line = line;
+                break;
+            }
+        }
+        let mut last_line = first_line;
+        for line in first_line..line_count {
+            let start = self
+                .editor
+                .wrap_canonical_first
+                .get(line)
+                .copied()
+                .unwrap_or(0);
+            if start >= last_visual {
+                break;
+            }
+            last_line = line;
+        }
+        (first_line, last_line)
+    }
+
+    fn paint_key(&self) -> (usize, usize, usize, usize, usize) {
+        let (sel_start, sel_end) = if self.editor.preview {
+            (0, 0)
+        } else {
+            self.selected_range()
+        };
+        let (first_line, last_line) = self.visible_line_window();
+        let cursor_line = if self.editor.preview {
+            usize::MAX
+        } else {
+            line_of(&self.editor.starts, self.editor.selection)
+        };
+        (cursor_line, sel_start, sel_end, first_line, last_line)
+    }
+
     fn ensure_wrap(&mut self, content_width: f32) {
         self.ensure_starts();
         self.ensure_model();
-        if !self.editor.wrap_dirty
-            && (self.editor.wrap_width - content_width).abs() < 0.5
-            && !self.editor.wrap.is_empty()
-        {
+        let content_changed = self.editor.wrap_dirty
+            || (self.editor.wrap_width - content_width).abs() >= 0.5
+            || self.editor.wrap_canonical.is_empty();
+        if !content_changed {
+            let key = self.paint_key();
+            if self.editor.wrap_paint_key == key {
+                return;
+            }
+            self.apply_wrap_paint(content_width);
+            self.editor.wrap_paint_key = key;
             return;
         }
         let base = self.font_px();
-        let metrics: Vec<(f32, f32)> = (0..self.editor.starts.len())
+        let line_fonts: Vec<(f32, Face)> = (0..self.editor.starts.len())
             .map(|line| {
                 let font = heading_font(self.editor.model.get(line), base);
-                let advance = self.painter.advance(font, true);
-                (font, advance)
+                (font, self.line_face(line))
             })
             .collect();
         let wrap = wrap_layout(
             &self.editor.text,
             &self.editor.starts,
             content_width,
-            &metrics,
+            &mut self.painter,
+            &line_fonts,
+            &self.editor.model,
+            self.code_face,
+            base,
         );
-        self.editor.wrap_first = vec![0; self.editor.starts.len()];
-        self.editor.wrap_count = vec![0; self.editor.starts.len()];
-        self.editor.wrap = wrap;
-        for (visual, chunk) in self.editor.wrap.iter().enumerate() {
-            if let Some(count) = self.editor.wrap_count.get_mut(chunk.line) {
-                if *count == 0 {
-                    self.editor.wrap_first[chunk.line] = visual;
+        let mut first = vec![0; self.editor.starts.len()];
+        let mut count = vec![0; self.editor.starts.len()];
+        for (visual, chunk) in wrap.iter().enumerate() {
+            if let Some(value) = count.get_mut(chunk.line) {
+                if *value == 0 {
+                    first[chunk.line] = visual;
                 }
-                *count += 1;
+                *value += 1;
             }
         }
+        self.editor.wrap_canonical = wrap;
+        self.editor.wrap_canonical_first = first;
+        self.editor.wrap_canonical_count = count;
         self.editor.wrap_width = content_width;
         self.editor.wrap_dirty = false;
+        self.editor.wrap = self.editor.wrap_canonical.clone();
+        self.editor.wrap_first = self.editor.wrap_canonical_first.clone();
+        self.editor.wrap_count = self.editor.wrap_canonical_count.clone();
+        self.editor.wrap_has_exceptions = false;
+        let key = self.paint_key();
+        self.apply_wrap_paint(content_width);
+        self.editor.wrap_paint_key = key;
+    }
+
+    fn restore_canonical_wrap(&mut self) {
+        if !self.editor.wrap_has_exceptions {
+            return;
+        }
+        self.editor.wrap = self.editor.wrap_canonical.clone();
+        self.editor.wrap_first = self.editor.wrap_canonical_first.clone();
+        self.editor.wrap_count = self.editor.wrap_canonical_count.clone();
+        self.editor.wrap_has_exceptions = false;
+    }
+
+    /// Re-wrap the caret line and the visible selected lines for the markup
+    /// they reveal, leaving every other line canonical. Only the line being
+    /// edited can reflow, matching the desktop behaviour.
+    fn apply_wrap_paint(&mut self, content_width: f32) {
+        let line_count = self.editor.starts.len();
+        if line_count == 0 || self.editor.wrap_canonical.is_empty() {
+            return;
+        }
+        if self.editor.preview {
+            self.restore_canonical_wrap();
+            return;
+        }
+        let (first_line, last_line) = self.visible_line_window();
+        let (sel_start, sel_end) = self.selected_range();
+        let cursor_line =
+            line_of(&self.editor.starts, self.editor.selection).min(line_count.saturating_sub(1));
+        let mut exception = vec![false; line_count];
+        if cursor_line >= first_line && cursor_line <= last_line {
+            exception[cursor_line] = true;
+        }
+        if sel_end > sel_start {
+            let sel_first = line_of(&self.editor.starts, sel_start);
+            let sel_last = line_of(&self.editor.starts, sel_end.saturating_sub(1).max(sel_start));
+            let lo = sel_first.max(first_line);
+            let hi = sel_last.min(last_line);
+            for line in lo..=hi.min(line_count.saturating_sub(1)) {
+                exception[line] = true;
+            }
+        }
+        if self.editor.model.is_empty() {
+            exception.fill(false);
+        }
+        if !exception.iter().any(|flag| *flag) {
+            self.restore_canonical_wrap();
+            return;
+        }
+        let base = self.font_px();
+        let mut effective: Vec<WrapLine> = Vec::with_capacity(self.editor.wrap_canonical.len());
+        let mut new_first = vec![0usize; line_count];
+        let mut new_count = vec![0usize; line_count];
+        for line in 0..line_count {
+            new_first[line] = effective.len();
+            if exception[line] {
+                let raw = logical_line(&self.editor.text, &self.editor.byte_starts, line);
+                let chars: Vec<char> = raw.chars().collect();
+                let line_start = self.editor.starts.get(line).copied().unwrap_or(0);
+                let hidden = compute_hidden(
+                    &self.editor.model,
+                    line,
+                    &chars,
+                    line_start,
+                    Some(cursor_line),
+                    self.editor.selection,
+                    (sel_start, sel_end),
+                    false,
+                );
+                let font = heading_font(self.editor.model.get(line), base);
+                let line_face = self.line_face(line);
+                let code_face = self.code_face;
+                for (start, end) in wrap_line_chunks(
+                    &mut self.painter,
+                    &chars,
+                    &hidden,
+                    content_width,
+                    font,
+                    line_face,
+                    &self.editor.model,
+                    line,
+                    code_face,
+                ) {
+                    effective.push(WrapLine {
+                        line,
+                        start,
+                        end,
+                        font,
+                    });
+                }
+            } else {
+                let start = self.editor.wrap_canonical_first[line];
+                let count = self.editor.wrap_canonical_count[line];
+                effective.extend_from_slice(&self.editor.wrap_canonical[start..start + count]);
+            }
+            new_count[line] = effective.len() - new_first[line];
+        }
+        self.editor.wrap = effective;
+        self.editor.wrap_first = new_first;
+        self.editor.wrap_count = new_count;
+        self.editor.wrap_has_exceptions = true;
     }
 
     fn visual_for_position(&self, starts: &[usize], position: usize) -> (usize, usize) {
@@ -2376,9 +2984,29 @@ impl SurfaceState {
             };
             self.editor.model_dirty = false;
         }
-        let advance = self.painter.advance(font_px, true);
+        let advance = self.painter.advance(font_px, Face::Mono);
         let number_font_px = self.number_font_px();
         let gutter = self.gutter_width();
+        if (self.last_gutter - gutter).abs() > 0.5 {
+            if self.last_gutter >= 0.0 {
+                unsafe {
+                    __android_log_print(
+                        3,
+                        b"VibecodiumRust\0".as_ptr(),
+                        b"gutter %.1f -> %.1f lines=%d scroll=%.1f band=%.1f height=%d viewport=%d\0"
+                            .as_ptr(),
+                        self.last_gutter as f64,
+                        gutter as f64,
+                        self.editor.starts.len() as i32,
+                        self.editor.scroll as f64,
+                        self.editor.band_origin as f64,
+                        self.height as i32,
+                        self.viewport_height as i32,
+                    );
+                }
+            }
+            self.last_gutter = gutter;
+        }
         let content_width = (self.width as f32 - gutter - 8.0 * density).max(advance);
         self.ensure_wrap(content_width);
         let starts = std::mem::take(&mut self.editor.starts);
@@ -2406,6 +3034,7 @@ impl SurfaceState {
         };
         let (cursor_visual, cursor_offset) =
             self.visual_for_position(&starts, self.editor.selection);
+        let line_faces: Vec<Face> = (0..starts.len()).map(|line| self.line_face(line)).collect();
         let model = std::mem::take(&mut self.editor.model);
         let has_model = model.len() == starts.len();
         let mut painter = std::mem::take(&mut self.painter);
@@ -2414,7 +3043,8 @@ impl SurfaceState {
         let mut chars: Vec<char> = Vec::new();
         let mut colors: Vec<u32> = Vec::new();
         let mut hidden: Vec<bool> = Vec::new();
-        let mut cell_offsets: Vec<usize> = Vec::new();
+        let mut faces: Vec<Face> = Vec::new();
+        let mut x_offsets: Vec<f32> = Vec::new();
         let mut overlays: Vec<(usize, usize, u32)> = Vec::new();
         let (start_visual, start_offset) =
             self.visual_for_position(&starts, selection_start);
@@ -2435,8 +3065,20 @@ impl SurfaceState {
                 chars.extend(raw.chars());
                 colors.clear();
                 colors.resize(chars.len(), 0xdadadau32);
-                hidden.clear();
-                hidden.resize(chars.len(), false);
+                hidden = compute_hidden(
+                    &model,
+                    chunk.line,
+                    &chars,
+                    line_start,
+                    if self.editor.preview {
+                        None
+                    } else {
+                        Some(cursor_line)
+                    },
+                    self.editor.selection,
+                    (selection_start, selection_end),
+                    self.editor.preview,
+                );
                 overlays.clear();
                 if !self.editor.language.is_empty() {
                     colors = code_colors(raw, &self.editor.language);
@@ -2533,34 +3175,45 @@ impl SurfaceState {
                         }
                     }
                 }
-                cell_offsets = line_cell_offsets(&chars, &hidden);
+                let line_face = line_faces.get(chunk.line).copied().unwrap_or(Face::Mono);
+                faces.clear();
+                faces.resize(chars.len(), line_face);
+                if let Some(line) = model.get(chunk.line) {
+                    let content_start = line.prefix_chars.min(chars.len());
+                    for span in &line.spans {
+                        if span.kind == "inline_code" {
+                            let start = (content_start + span.start).min(chars.len());
+                            let end = (content_start + span.end).min(chars.len());
+                            for value in faces[start..end].iter_mut() {
+                                *value = self.code_face;
+                            }
+                        }
+                    }
+                }
+                x_offsets.clear();
+                line_x_offsets(&mut x_offsets, &mut painter, &chars, &hidden, chunk.font, |index| {
+                    faces.get(index).copied().unwrap_or(line_face)
+                });
             }
             let chunk_start = chunk.start.min(chars.len());
             let chunk_end = chunk.end.min(chars.len());
-            let base_cell = cell_offsets.get(chunk_start).copied().unwrap_or(0);
+            let base_x = x_offsets.get(chunk_start).copied().unwrap_or(0.0);
+            let local_x = |index: usize| x_offsets.get(index).copied().unwrap_or(base_x) - base_x;
             let absolute_start = line_start + chunk.start;
             let absolute_end = line_start + chunk.end;
             for (overlay_start, overlay_end, color) in &overlays {
                 let start = (*overlay_start).max(chunk_start);
                 let end = (*overlay_end).min(chunk_end);
-                let cell_start = cell_offsets
-                    .get(start)
-                    .copied()
-                    .unwrap_or(0)
-                    .saturating_sub(base_cell);
-                let cell_end = cell_offsets
-                    .get(end)
-                    .copied()
-                    .unwrap_or(0)
-                    .saturating_sub(base_cell);
-                if cell_end > cell_start {
+                let offset_start = local_x(start);
+                let offset_end = local_x(end);
+                if offset_end > offset_start {
                     rect(
                         pixels,
                         self.width,
                         self.height,
-                        text_x + cell_start as f32 * chunk.advance,
+                        text_x + offset_start,
                         y + 2.0 * density,
-                        (cell_end - cell_start) as f32 * chunk.advance,
+                        offset_end - offset_start,
                         line_h - 4.0 * density,
                         *color,
                     );
@@ -2572,21 +3225,12 @@ impl SurfaceState {
                 if end > start {
                     let raw_start = (start - line_start).clamp(chunk_start, chunk_end);
                     let raw_end = (end - line_start).clamp(chunk_start, chunk_end);
-                    let cell_start = cell_offsets
-                        .get(raw_start)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_sub(base_cell);
-                    let cell_end = cell_offsets
-                        .get(raw_end)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_sub(base_cell);
-                    if cell_end > cell_start {
+                    let offset_start = local_x(raw_start);
+                    let offset_end = local_x(raw_end);
+                    if offset_end > offset_start {
                         let pad = 1.5 * density;
-                        let left = (text_x + cell_start as f32 * chunk.advance - pad)
-                            .max(gutter);
-                        let right = text_x + cell_end as f32 * chunk.advance + pad;
+                        let left = (text_x + offset_start - pad).max(gutter);
+                        let right = text_x + offset_end + pad;
                         rect(
                             pixels,
                             self.width,
@@ -2607,24 +3251,20 @@ impl SurfaceState {
                     continue;
                 }
                 let color = colors[index];
+                let face = faces.get(index).copied().unwrap_or(Face::Mono);
                 let mut segment = String::new();
                 let start_idx = index;
                 while index < chunk_end {
                     if hidden[index] {
                         break;
                     }
-                    if colors[index] != color {
+                    if colors[index] != color || faces[index] != face {
                         break;
                     }
                     segment.push(chars[index]);
                     index += 1;
                 }
-                let cell_pos = cell_offsets
-                    .get(start_idx)
-                    .copied()
-                    .unwrap_or(0)
-                    .saturating_sub(base_cell);
-                let segment_x = text_x + cell_pos as f32 * chunk.advance;
+                let segment_x = text_x + local_x(start_idx);
                 painter.draw(
                     pixels,
                     self.width,
@@ -2634,7 +3274,7 @@ impl SurfaceState {
                     &segment,
                     chunk.font,
                     color,
-                    true,
+                    face,
                 );
                 if chunk.font > font_px + 0.1 {
                     painter.draw(
@@ -2646,18 +3286,13 @@ impl SurfaceState {
                         &segment,
                         chunk.font,
                         color,
-                        true,
+                        face,
                     );
                 }
             }
             if visual == cursor_visual && selection_end == selection_start {
                 let cursor_col = chunk_start + cursor_offset;
-                let cursor_cell = cell_offsets
-                    .get(cursor_col)
-                    .copied()
-                    .unwrap_or(cursor_col)
-                    .saturating_sub(base_cell);
-                let x = text_x + cursor_cell as f32 * chunk.advance;
+                let x = text_x + local_x(cursor_col);
                 if self.editor.caret_visible {
                     rect(
                         pixels,
@@ -2677,27 +3312,11 @@ impl SurfaceState {
             if selection_end > selection_start {
                 if visual == start_visual {
                     let col = chunk_start + start_offset;
-                    let cell = cell_offsets
-                        .get(col)
-                        .copied()
-                        .unwrap_or(col)
-                        .saturating_sub(base_cell);
-                    start_handle = Some((
-                        text_x + cell as f32 * chunk.advance,
-                        y + line_h,
-                    ));
+                    start_handle = Some((text_x + local_x(col), y + line_h));
                 }
                 if visual == end_visual {
                     let col = chunk_start + end_offset;
-                    let cell = cell_offsets
-                        .get(col)
-                        .copied()
-                        .unwrap_or(col)
-                        .saturating_sub(base_cell);
-                    end_handle = Some((
-                        text_x + cell as f32 * chunk.advance,
-                        y + line_h,
-                    ));
+                    end_handle = Some((text_x + local_x(col), y + line_h));
                 }
             }
         }
@@ -2709,7 +3328,7 @@ impl SurfaceState {
             }
             let y = top_inset + visual as f32 * line_h - scroll;
             let number = (chunk.line + 1).to_string();
-            let number_width = painter.width(&number, number_font_px, false);
+            let number_width = painter.width(&number, number_font_px, Face::Ui);
             painter.draw(
                 pixels,
                 self.width,
@@ -2719,7 +3338,7 @@ impl SurfaceState {
                 &number,
                 number_font_px,
                 0x666666,
-                false,
+                Face::Ui,
             );
         }
         if let Some((x, y)) = insertion_handle {
@@ -3068,6 +3687,28 @@ impl SurfaceState {
         true
     }
 
+    /// Markdown markers hidden on a non-cursor line. Hit-testing and the
+    /// selection handles share this, so taps and grips agree with the glyphs
+    /// the editor actually paints.
+    fn hidden_markers(&self, line: usize, chars: &[char]) -> Vec<bool> {
+        let line_start = self.editor.starts.get(line).copied().unwrap_or(0);
+        let cursor_line = if self.editor.preview {
+            None
+        } else {
+            Some(line_of(&self.editor.starts, self.editor.selection))
+        };
+        compute_hidden(
+            &self.editor.model,
+            line,
+            chars,
+            line_start,
+            cursor_line,
+            self.editor.selection,
+            self.selected_range(),
+            self.editor.preview,
+        )
+    }
+
     fn editor_position_at(&mut self, x: f32, y: f32) -> usize {
         let line_h = self.line_px();
         let (_, gutter, content) = self.editor_metrics();
@@ -3082,69 +3723,29 @@ impl SurfaceState {
         let line_start = self.editor.starts.get(chunk.line).copied().unwrap_or(0);
         let raw = logical_line(&self.editor.text, &self.editor.byte_starts, chunk.line);
         let chars: Vec<char> = raw.chars().collect();
-        let mut hidden = vec![false; chars.len()];
-        let cursor_line = if self.editor.preview {
-            usize::MAX
-        } else {
-            line_of(&self.editor.starts, self.editor.selection)
-        };
-        if chunk.line != cursor_line && !self.editor.model.is_empty() {
-            if let Some(line) = self.editor.model.get(chunk.line) {
-                match line.kind.as_str() {
-                    "heading" => {
-                        let length = line.prefix_chars.min(chars.len());
-                        for val in hidden.iter_mut().take(length) {
-                            *val = true;
-                        }
-                    }
-                    "task" => {
-                        if line.indent < chars.len() {
-                            let hide_start = (line.indent + 2).min(chars.len());
-                            let hide_end = line.prefix_chars.min(chars.len());
-                            for val in hidden[hide_start..hide_end].iter_mut() {
-                                *val = true;
-                            }
-                        }
-                    }
-                    "quote" => {
-                        let length = line.prefix_chars.min(chars.len());
-                        for val in hidden.iter_mut().take(length).skip(1) {
-                            *val = true;
-                        }
-                    }
-                    "code_fence" => {
-                        hidden.fill(true);
-                    }
-                    _ => {}
-                }
-                let content_start = line.prefix_chars.min(chars.len());
-                for span in &line.spans {
-                    if span.kind == "marker" {
-                        let s = (content_start + span.start).min(chars.len());
-                        let e = (content_start + span.end).min(chars.len());
-                        for val in hidden[s..e].iter_mut() {
-                            *val = true;
-                        }
-                    }
-                }
-            }
-        }
-        let cell_offsets = line_cell_offsets(&chars, &hidden);
+        let hidden = self.hidden_markers(chunk.line, &chars);
+        let line_face = self.line_face(chunk.line);
+        let code_face = self.code_face;
+        let model = &self.editor.model;
+        let mut x_offsets = Vec::new();
+        line_x_offsets(&mut x_offsets, &mut self.painter, &chars, &hidden, chunk.font, |index| {
+            char_face(model, chunk.line, index, line_face, code_face)
+        });
         let chunk_start = chunk.start.min(chars.len());
         let chunk_end = chunk.end.min(chars.len());
-        let base_cell = cell_offsets.get(chunk_start).copied().unwrap_or(0);
-        let target_cell = ((x + self.editor.scroll_x - gutter) / chunk.advance).max(0.0);
+        let base_x = x_offsets.get(chunk_start).copied().unwrap_or(0.0);
+        let target_x = (x + self.editor.scroll_x - gutter).max(0.0);
 
         let mut best_col = chunk_start;
         let mut best_dist = f32::MAX;
         for col in chunk_start..=chunk_end {
             if col > chunk_start && col < chunk_end {
-                if cell_offsets[col] == cell_offsets[col.saturating_sub(1)] {
+                if x_offsets[col] == x_offsets[col.saturating_sub(1)] {
                     continue;
                 }
             }
-            let cell = cell_offsets.get(col).copied().unwrap_or(0).saturating_sub(base_cell) as f32;
-            let dist = (cell - target_cell).abs();
+            let offset = x_offsets.get(col).copied().unwrap_or(base_x) - base_x;
+            let dist = (offset - target_x).abs();
             if dist < best_dist {
                 best_dist = dist;
                 best_col = col;
@@ -3206,20 +3807,25 @@ impl SurfaceState {
             let mut points = Vec::with_capacity(2);
             for position in [selection_start, selection_end] {
                 let (visual, offset) = self.visual_for_position(&self.editor.starts, position);
-                let (advance, cell) = if let Some(chunk) = self.editor.wrap.get(visual) {
+                let mut handle_x = text_x;
+                if let Some(chunk) = self.editor.wrap.get(visual).copied() {
                     let raw = logical_line(&self.editor.text, &self.editor.byte_starts, chunk.line);
                     let chars: Vec<char> = raw.chars().collect();
-                    let cell_offsets = line_cell_offsets(&chars, &[]);
+                    let hidden = self.hidden_markers(chunk.line, &chars);
+                    let line_face = self.line_face(chunk.line);
+                    let code_face = self.code_face;
+                    let model = &self.editor.model;
+                    let mut x_offsets = Vec::new();
+                    line_x_offsets(&mut x_offsets, &mut self.painter, &chars, &hidden, chunk.font, |index| {
+                        char_face(model, chunk.line, index, line_face, code_face)
+                    });
                     let chunk_start = chunk.start.min(chars.len());
-                    let base_cell = cell_offsets.get(chunk_start).copied().unwrap_or(0);
+                    let base_x = x_offsets.get(chunk_start).copied().unwrap_or(0.0);
                     let col = (chunk_start + offset).min(chars.len());
-                    let c = cell_offsets.get(col).copied().unwrap_or(col).saturating_sub(base_cell);
-                    (chunk.advance, c)
-                } else {
-                    (0.0, offset)
-                };
+                    handle_x = text_x + x_offsets.get(col).copied().unwrap_or(base_x) - base_x;
+                }
                 points.push(json!({
-                    "x": text_x + cell as f32 * advance,
+                    "x": handle_x,
                     "y": self.editor.top_inset + visual as f32 * line_h - self.editor.scroll + line_h,
                 }));
             }
@@ -3232,19 +3838,25 @@ impl SurfaceState {
             .to_string()
         } else {
             let (visual, offset) = self.visual_for_position(&self.editor.starts, self.editor.selection);
-            let (advance, cell) = if let Some(chunk) = self.editor.wrap.get(visual) {
+            let mut cursor_x = text_x + 1.0 * self.density;
+            if let Some(chunk) = self.editor.wrap.get(visual).copied() {
                 let raw = logical_line(&self.editor.text, &self.editor.byte_starts, chunk.line);
                 let chars: Vec<char> = raw.chars().collect();
-                let cell_offsets = line_cell_offsets(&chars, &[]);
+                let hidden = self.hidden_markers(chunk.line, &chars);
+                let line_face = self.line_face(chunk.line);
+                let code_face = self.code_face;
+                let model = &self.editor.model;
+                let mut x_offsets = Vec::new();
+                line_x_offsets(&mut x_offsets, &mut self.painter, &chars, &hidden, chunk.font, |index| {
+                    char_face(model, chunk.line, index, line_face, code_face)
+                });
                 let chunk_start = chunk.start.min(chars.len());
-                let base_cell = cell_offsets.get(chunk_start).copied().unwrap_or(0);
+                let base_x = x_offsets.get(chunk_start).copied().unwrap_or(0.0);
                 let col = (chunk_start + offset).min(chars.len());
-                let c = cell_offsets.get(col).copied().unwrap_or(col).saturating_sub(base_cell);
-                (chunk.advance, c)
-            } else {
-                (0.0, offset)
-            };
-            let cursor_x = text_x + cell as f32 * advance + 1.0 * self.density;
+                cursor_x = text_x + 1.0 * self.density
+                    + x_offsets.get(col).copied().unwrap_or(base_x)
+                    - base_x;
+            }
             let cursor_y = self.editor.top_inset + visual as f32 * line_h - self.editor.scroll + line_h;
             json!({
                 "insertion": {
@@ -3418,6 +4030,45 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetFontS
         // otherwise stay resident next to the new one.
         state.painter.glyphs.clear();
         state.painter.metrics_cache.clear();
+        state.painter.char_advances.clear();
+        state.editor.wrap_dirty = true;
+        let content = state.editor_metrics().2;
+        state.ensure_wrap(content);
+        let (_, _, max_y, _) = state.editor_scroll_metrics();
+        state.editor.scroll = state.editor.scroll.min(max_y);
+        state.invalidate();
+    });
+}
+
+fn face_from_jni(value: i32) -> Face {
+    match value {
+        1 => Face::Mono,
+        2 => Face::Serif,
+        _ => Face::Ui,
+    }
+}
+
+/// Selects the text/code faces. Layout and glyphs are invalidated here once,
+/// so a later frame is still a plain band paint.
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetFonts(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    text_face: jint,
+    code_face: jint,
+) {
+    let _ = with_surface(id, |state| {
+        let text = face_from_jni(text_face);
+        let code = face_from_jni(code_face);
+        if state.text_face == text && state.code_face == code {
+            return;
+        }
+        state.text_face = text;
+        state.code_face = code;
+        state.painter.glyphs.clear();
+        state.painter.metrics_cache.clear();
+        state.painter.char_advances.clear();
         state.editor.wrap_dirty = true;
         let content = state.editor_metrics().2;
         state.ensure_wrap(content);
@@ -4232,17 +4883,50 @@ mod tests {
     fn test_wrap_layout_emoji_boundary() {
         let text = "hello 😀 world";
         let starts = vec![0];
-        let metrics = vec![(15.0, 10.0)];
-        // Content width of 100.0 fits floor(100/10) = 10 cells
-        // "hello " is 6 cells.
-        // 😀 is 2 cells.
-        // "hello 😀 " is 9 cells.
-        // "world" is 5 cells, cannot fit on line 1 (9 + 5 = 14 > 10).
+        let mut painter = Painter::new();
+        // Without system fonts the painter falls back to 0.6 * px per cell.
+        let px = 15.0;
+        let line_fonts = vec![(px, Face::Mono)];
+        // Content width of 90px fits 10 cells of 9px.
+        // "hello " is 6 cells, 😀 is 2 cells -> 8 cells.
+        // "world" is 5 cells, cannot fit on line 1 (8 + 5 = 13 > 10).
         // It wraps after the space at index 7: line 1 gets "hello 😀 ", line 2 gets "world".
-        let rows = wrap_layout(text, &starts, 100.0, &metrics);
+        let rows = wrap_layout(text, &starts, 90.0, &mut painter, &line_fonts, &[], Face::Mono, px);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].start, 0);
         assert_eq!(rows[0].end, 8); // "hello 😀 "
         assert_eq!(rows[1].start, 8); // "world"
+    }
+
+    #[test]
+    fn test_line_x_offsets_mono_matches_cells() {
+        let mut painter = Painter::new();
+        let px = 15.0;
+        let cell = painter.advance(px, Face::Mono);
+        for text in ["a😀b", "a❤️b", "a👨‍👩‍👧‍👦b", "中文"] {
+            let chars: Vec<char> = text.chars().collect();
+            let cells = line_cell_offsets(&chars, &[]);
+            let mut offsets = Vec::new();
+            line_x_offsets(&mut offsets, &mut painter, &chars, &[], px, |_| Face::Mono);
+            assert_eq!(offsets.len(), cells.len(), "{text}");
+            for (x, cell_index) in offsets.iter().zip(cells.iter()) {
+                assert!(
+                    (x - *cell_index as f32 * cell).abs() < 0.01,
+                    "{text}: {offsets:?} vs {cells:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_line_x_offsets_proportional_uses_measured_widths() {
+        let mut painter = Painter::new();
+        let px = 15.0;
+        let chars: Vec<char> = "a😀b".chars().collect();
+        let mut offsets = Vec::new();
+        line_x_offsets(&mut offsets, &mut painter, &chars, &[], px, |_| Face::Ui);
+        // Without system fonts every non-emoji glyph falls back to 0.6 * px;
+        // the emoji keeps its square advance in proportional mode.
+        assert_eq!(offsets, vec![0.0, 9.0, 24.0, 33.0]);
     }
 }

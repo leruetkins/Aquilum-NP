@@ -57,6 +57,22 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
+ * Fling friction. The platform default is 0.015, which stops noticeably sooner
+ * than browser or desktop-editor inertia; a lower value keeps the fling
+ * coasting longer without changing the initial speed.
+ */
+private const val SCROLL_FRICTION = 0.010f
+
+/** Extra rows rendered above and below the viewport, as a fraction of its height. */
+private const val BAND_MARGIN_RATIO = 0.75f
+
+/** Request the next band while this much of the leading margin is still left. */
+private const val BAND_TRIGGER_RATIO = 0.75f
+
+/** Smallest band origin move worth a repaint. */
+private const val BAND_MIN_MOVE_RATIO = 0.15f
+
+/**
  * Shared TextureView plumbing: one native ANativeWindow per view and a single
  * render thread so JNI never blocks the UI thread with buffer locks.
  */
@@ -421,7 +437,7 @@ class NativeTreeView(
         }
     }
 
-    private val treeScroller = OverScroller(context)
+    private val treeScroller = OverScroller(context).apply { setFriction(SCROLL_FRICTION) }
     @Volatile private var treeMaxScroll = 0f
     private var velocityTracker: VelocityTracker? = null
     @Volatile private var treeFlinging = false
@@ -740,7 +756,7 @@ class NativeEditorView(
 ) : NativeSurfaceView(context) {
     override fun computeBandMargin(viewportHeight: Int): Int {
         val h = if (viewportHeight > 0) viewportHeight else safeViewportHeight()
-        return (h * 0.6f).roundToInt()
+        return (h * BAND_MARGIN_RATIO).roundToInt()
     }
 
     private fun safeViewportHeight(): Int {
@@ -883,13 +899,39 @@ class NativeEditorView(
         applyScrollTranslation()
     }
 
+    /**
+     * Applies the origin of a freshly painted band. A band that starts below
+     * the current scroll would leave a blank strip at the top, because the
+     * texture has no content above its own first row. In that case keep the
+     * previous frame and ask for a band at the current scroll instead.
+     */
+    private fun applyRenderedBand(origin: Float) {
+        val rounded = origin.roundToInt().toFloat()
+        if (rounded > knownScroll + 0.5f) {
+            android.util.Log.d(
+                "VibecodiumRender",
+                "reject band origin=$rounded knownScroll=$knownScroll maxY=$scrollMaxY",
+            )
+            val m = computeBandMargin(safeViewportHeight()).toFloat()
+            val target = (knownScroll - m)
+                .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
+                .roundToInt()
+                .toFloat()
+            rebaseOrigin = target
+            rebaseDisplayScroll = knownScroll
+            scheduleBandRender(target, force = true)
+            return
+        }
+        bandOrigin = rounded
+        rebaseOrigin = null
+        rebaseDisplayScroll = null
+        applyScrollTranslation()
+    }
+
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
         val pending = pendingRenderedOrigin.getAndSet(null)
         if (pending != null && pending.generation == bandGeneration.get()) {
-            bandOrigin = pending.origin.roundToInt().toFloat()
-            rebaseOrigin = null
-            rebaseDisplayScroll = null
-            applyScrollTranslation()
+            applyRenderedBand(pending.origin)
             android.util.Log.d("VibecodiumRender", "onSurfaceTextureUpdated bandOrigin=$bandOrigin transY=${textureView.translationY}")
         }
     }
@@ -899,18 +941,28 @@ class NativeEditorView(
         if (h <= 0) return
         val m = computeBandMargin(h).toFloat()
         if (m <= 0f) return
-        val threshold = m * 0.35f
+        val trigger = m * BAND_TRIGGER_RATIO
+        val minMove = m * BAND_MIN_MOVE_RATIO
         val maxOrigin = maxOf(scrollMaxY, knownScroll)
         // Compare against the newest requested band, not only the last applied
         // one: while a swap is in flight, the old origin makes the next check
         // queue a second, nearly identical render (visible as a small jump).
         val reference = pendingBandOrigin?.origin ?: bandOrigin
+        if (reference > scroll + 0.5f) {
+            // The band starts below the viewport top, so that strip is blank
+            // until the next paint. Never throttle this correction: near the
+            // top of the document the required move is smaller than the
+            // regular threshold, but the gap is still visible.
+            val targetOrigin = (scroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
+            scheduleBandRender(targetOrigin, force = true)
+            return
+        }
         val topHeadroom = scroll - reference
         val bottomHeadroom = (reference + 2f * m) - scroll
-        if ((topHeadroom < threshold && reference > 0.5f) ||
-            (bottomHeadroom < threshold && reference < maxOrigin - 0.5f)) {
+        if ((topHeadroom < trigger && reference > 0.5f) ||
+            (bottomHeadroom < trigger && reference < maxOrigin - 0.5f)) {
             val targetOrigin = (scroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
-            if (kotlin.math.abs(targetOrigin - reference) >= threshold) {
+            if (kotlin.math.abs(targetOrigin - reference) >= minMove) {
                 scheduleBandRender(targetOrigin)
             }
         }
@@ -962,10 +1014,7 @@ class NativeEditorView(
                 mainHandler.post {
                     val pendingRendered = pendingRenderedOrigin.getAndSet(null)
                     if (pendingRendered != null && pendingRendered.generation == bandGeneration.get()) {
-                        bandOrigin = pendingRendered.origin.roundToInt().toFloat()
-                        rebaseOrigin = null
-                        rebaseDisplayScroll = null
-                        applyScrollTranslation()
+                        applyRenderedBand(pendingRendered.origin)
                         textureView.postInvalidateOnAnimation()
                         android.util.Log.d("VibecodiumRender", "mainHandler applied bandOrigin=$bandOrigin transY=${textureView.translationY}")
                     }
@@ -976,7 +1025,7 @@ class NativeEditorView(
                     val lastOrigin = finalRendered ?: bandOrigin
                     val shouldRender = pending != null &&
                         pending.generation == bandGeneration.get() &&
-                        (force || kotlin.math.abs(pending.origin - lastOrigin) > m * 0.35f)
+                        (force || kotlin.math.abs(pending.origin - lastOrigin) > m * BAND_MIN_MOVE_RATIO)
                     if (shouldRender && pending != null) {
                         scheduleBandRender(pending.origin, force = force)
                     } else {
@@ -1036,6 +1085,10 @@ class NativeEditorView(
     private var editorFontDp = Int.MIN_VALUE
     private var editorLineDp = Float.MIN_VALUE
     private var fontRequestInFlight = false
+    /** Faces the core holds; `null` forces the first send. */
+    private var textFace: EditorFontFace? = null
+    private var codeFace: EditorFontFace? = null
+    private var faceRequestInFlight = false
     private var caretVisible = true
     private val caretBlink = object : Runnable {
         override fun run() {
@@ -1047,7 +1100,7 @@ class NativeEditorView(
             postDelayed(this, 500L)
         }
     }
-    private val scroller = OverScroller(context)
+    private val scroller = OverScroller(context).apply { setFriction(SCROLL_FRICTION) }
     private val saveAfterFling = Runnable { postRenderTask { saveViewport() } }
     @Volatile private var flinging = false
     private var velocityTracker: VelocityTracker? = null
@@ -1097,6 +1150,7 @@ class NativeEditorView(
             CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
             CoreBridge.nativeEditorSelectWord(surfaceId, downX, downY)
             syncFromNative(notify = true)
+            syncScrollFromNative()
             longPressWordStart = minOf(mirrorAnchor, mirrorSelection)
             longPressWordEnd = maxOf(mirrorAnchor, mirrorSelection)
             requestRender()
@@ -1308,6 +1362,7 @@ class NativeEditorView(
                 val y = lineTop(virtualViewId) - scroll + linePixelHeight(virtualViewId) / 2f
                 CoreBridge.nativeEditorSelectAt(surfaceId, 0f, y, false)
                 syncFromNative(notify = true)
+                syncScrollFromNative()
                 requestFocus()
                 val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
                 imm?.showSoftInput(this@NativeEditorView, InputMethodManager.SHOW_IMPLICIT)
@@ -1350,27 +1405,7 @@ class NativeEditorView(
             if (idleTransition) {
                 CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
             }
-            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
-            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
-            val rustScroll = info?.optDouble("scroll", knownScroll.toDouble())?.toFloat() ?: knownScroll
-            val nextScroll = if (wasIncreased && !idleTransition) {
-                rustScroll
-            } else {
-                knownScroll.coerceIn(0f, newMaxY)
-            }
-            mainHandler.post {
-                val previousScroll = knownScroll
-                val scrollChanged = nextScroll != knownScroll
-                knownScroll = nextScroll
-                scrollMaxY = newMaxY
-                if (scrollChanged) {
-                    ensureBandCoversScroll(previousScroll)
-                } else {
-                    applyScrollTranslation()
-                }
-                scrollbarOverlay.update(knownScroll, scrollMaxY)
-                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
-            }
+            mainHandler.post { syncScrollFromNative() }
         }
     }
 
@@ -1381,14 +1416,7 @@ class NativeEditorView(
         postRenderTask {
             if (!isSurfaceAttached()) return@postRenderTask
             CoreBridge.nativeEditorSetTopInset(surfaceId, next)
-            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
-            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
-            mainHandler.post {
-                scrollMaxY = newMaxY
-                applyScrollTranslation()
-                scrollbarOverlay.update(knownScroll, scrollMaxY)
-                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
-            }
+            mainHandler.post { syncScrollFromNative() }
         }
         requestRender()
     }
@@ -1426,12 +1454,9 @@ class NativeEditorView(
         editorLineDp = lineDp
         postRenderTask {
             if (!isSurfaceAttached()) {
-                // Nothing was applied; retry on the next update pass.
-                mainHandler.post {
-                    fontRequestInFlight = false
-                    editorFontDp = Int.MIN_VALUE
-                    editorLineDp = Float.MIN_VALUE
-                }
+                // Keep the cached values: onSurfaceReady applies them before
+                // the first frame after the surface attaches.
+                mainHandler.post { fontRequestInFlight = false }
                 return@postRenderTask
             }
             CoreBridge.nativeEditorSetFontSize(surfaceId, fontDp.toFloat(), lineDp)
@@ -1447,6 +1472,47 @@ class NativeEditorView(
                     .toFloat()
                 // Keep the old texture translated in place until the band in the
                 // new metrics arrives, exactly like a programmatic scroll jump.
+                invalidateBandGeneration()
+                rebaseDisplayScroll = knownScroll
+                rebaseOrigin = target
+                scheduleBandRender(target, force = true)
+                scrollbarOverlay.update(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
+                refreshLayoutInfo()
+                syncHandles()
+            }
+        }
+    }
+
+    /**
+     * Pushes the text/code face choice. Like [setEditorFont] it can change the
+     * wrap and the scroll extent, so the band is rebased after the core applies
+     * it.
+     */
+    fun setEditorFonts(text: EditorFontFace, code: EditorFontFace) {
+        if (text == textFace && code == codeFace) return
+        if (faceRequestInFlight) return
+        faceRequestInFlight = true
+        textFace = text
+        codeFace = code
+        postRenderTask {
+            if (!isSurfaceAttached()) {
+                // Keep the cached faces: onSurfaceReady applies them before the
+                // first frame after the surface attaches.
+                mainHandler.post { faceRequestInFlight = false }
+                return@postRenderTask
+            }
+            CoreBridge.nativeEditorSetFonts(surfaceId, text.nativeValue, code.nativeValue)
+            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: 0f
+            mainHandler.post {
+                faceRequestInFlight = false
+                scrollMaxY = maxOf(newMaxY, 0f)
+                val m = computeBandMargin(safeViewportHeight()).toFloat()
+                val target = (knownScroll - m)
+                    .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
+                    .roundToInt()
+                    .toFloat()
                 invalidateBandGeneration()
                 rebaseDisplayScroll = knownScroll
                 rebaseOrigin = target
@@ -1608,6 +1674,20 @@ class NativeEditorView(
 
     override fun onSurfaceReady() {
         invalidateBandGeneration()
+        // Apply the cached type settings before the first frame: otherwise the
+        // editor paints with the default size and visibly reflows afterwards.
+        if (editorFontDp != Int.MIN_VALUE) {
+            CoreBridge.nativeEditorSetFontSize(surfaceId, editorFontDp.toFloat(), editorLineDp)
+        }
+        val cachedTextFace = textFace
+        val cachedCodeFace = codeFace
+        if (cachedTextFace != null && cachedCodeFace != null) {
+            CoreBridge.nativeEditorSetFonts(
+                surfaceId,
+                cachedTextFace.nativeValue,
+                cachedCodeFace.nativeValue,
+            )
+        }
         CoreBridge.nativeSurfaceSetEditor(
             surfaceId,
             mirrorText,
@@ -2224,7 +2304,7 @@ class NativeEditorView(
     private fun pasteClipboard() {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         val text = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)
-        if (!text.isNullOrEmpty()) applyInsert(text.toString())
+        if (!text.isNullOrEmpty()) applyInsert(text.toString(), showHandle = true)
     }
 
     private fun selectNative(start: Int, end: Int) {
@@ -2318,6 +2398,7 @@ class NativeEditorView(
                         y - dragOffsetY,
                     )
                     refreshSelectionFromNative()
+                    syncScrollFromNative()
                     val targetX = x - dragOffsetX
                     val targetY = y - dragOffsetY - handleRowHeight / 2f
                     updateMagnifier(targetX, targetY)
@@ -2336,6 +2417,7 @@ class NativeEditorView(
                     }
                     CoreBridge.nativeEditorSelectAt(surfaceId, x, y, true)
                     refreshSelectionFromNative()
+                    syncScrollFromNative()
                     if (longPressWordStart >= 0 && longPressWordEnd >= longPressWordStart) {
                         val currSel = mirrorSelection
                         if (currSel in (longPressWordStart + 1) until longPressWordEnd) {
@@ -2413,6 +2495,7 @@ class NativeEditorView(
                     draggingHandle = -1
                     recycleVelocity()
                     syncFromNative(notify = true)
+                    syncScrollFromNative()
                     saveViewport()
                     requestRender()
                     if (selectionNonEmpty()) {
@@ -2459,6 +2542,7 @@ class NativeEditorView(
                     if (doubleTap) {
                         CoreBridge.nativeEditorSelectWord(surfaceId, event.x, event.y)
                         syncSelectionFromNative()
+                        syncScrollFromNative()
                         requestFocus()
                         requestRender()
                         helper.invalidateRoot()
@@ -2469,6 +2553,7 @@ class NativeEditorView(
                         CoreBridge.nativeEditorSelectAt(surfaceId, event.x, event.y, false)
                         val t1 = SystemClock.uptimeMillis()
                         syncSelectionFromNative()
+                        syncScrollFromNative()
                         val t2 = SystemClock.uptimeMillis()
                         if (selectionNonEmpty()) {
                             showSelectionActions()
@@ -2678,18 +2763,7 @@ class NativeEditorView(
         postRenderTask {
             if (!isSurfaceAttached()) return@postRenderTask
             CoreBridge.nativeEditorScrollToCursor(surfaceId)
-            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
-            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
-            val newScroll = info?.optDouble("scroll", knownScroll.toDouble())?.toFloat()
-                ?.coerceIn(0f, newMaxY) ?: knownScroll
-            mainHandler.post {
-                val previousScroll = knownScroll
-                knownScroll = newScroll
-                scrollMaxY = newMaxY
-                ensureBandCoversScroll(previousScroll)
-                scrollbarOverlay.update(knownScroll, scrollMaxY)
-                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
-            }
+            mainHandler.post { syncScrollFromNative() }
         }
     }
 
@@ -2789,23 +2863,48 @@ class NativeEditorView(
     }
 
     /** After typing the native editor may scroll to the caret; rebase the band. */
-    private fun syncAfterEdit() {
+    /**
+     * Pulls the scroll the core settled on after a native call that can move
+     * the caret, and rebases the band to it. The band origin and [knownScroll]
+     * must describe the same frame: a band queued for a stale scroll paints
+     * against new content and makes the text jump or expose blank strips.
+     */
+    private fun syncScrollFromNative() {
         val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
         val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
-        val newScroll = CoreBridge.nativeEditorScroll(surfaceId)
-            .roundToInt()
-            .toFloat()
-            .coerceIn(0f, newMaxY)
+        val coreScroll = CoreBridge.nativeEditorScroll(surfaceId)
+        val newScroll = coreScroll.roundToInt().toFloat().coerceIn(0f, newMaxY)
+        if (kotlin.math.abs(newScroll - coreScroll) > 0.5f) {
+            // The core scroll is past the new content height (a line removal,
+            // a font/inset change). Write the clamped value back so the next
+            // paint and the band agree.
+            CoreBridge.nativeEditorSetScroll(surfaceId, newScroll, 0f)
+        }
         val previousScroll = knownScroll
         knownScroll = newScroll
         scrollMaxY = newMaxY
-        ensureBandCoversScroll(previousScroll)
+        val m = computeBandMargin(safeViewportHeight()).toFloat()
+        val target = (knownScroll - m)
+            .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
+            .roundToInt()
+            .toFloat()
+        invalidateBandGeneration()
+        rebaseDisplayScroll = previousScroll
+        rebaseOrigin = target
+        android.util.Log.d(
+            "VibecodiumRender",
+            "edit sync prev=$previousScroll new=$knownScroll maxY=$scrollMaxY target=$target",
+        )
+        scheduleBandRender(target, force = true)
         scrollbarOverlay.update(knownScroll, scrollMaxY)
         onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
     }
 
-    private fun applyInsert(text: String) {
-        applyInsertionHandleVisible(false)
+    private fun syncAfterEdit() {
+        syncScrollFromNative()
+    }
+
+    private fun applyInsert(text: String, showHandle: Boolean = false) {
         if (text.isEmpty()) {
             if (selectionNonEmpty()) applyDelete(0, 0)
             return
@@ -2816,17 +2915,21 @@ class NativeEditorView(
         mirrorSelection = state.optInt("selection", 0).coerceIn(0, mirrorText.length)
         mirrorAnchor = mirrorSelection
         refreshLines()
+        // Publish the scroll the core settled on before anything repaints, so
+        // the first frame after the edit already shows the final position and
+        // the text cannot jump for a frame at the old scroll.
+        syncAfterEdit()
         syncHandles()
+        if (!showHandle) applyInsertionHandleVisible(false)
         actionMode?.finish()
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
-        syncAfterEdit()
+        if (showHandle) applyInsertionHandleVisible(true)
         notifySelectionChanged()
         requestRender()
     }
 
     private fun applyReplace(start: Int, end: Int, text: String) {
-        applyInsertionHandleVisible(false)
         val state = runCatching {
             JSONObject(CoreBridge.nativeEditorReplace(surfaceId, start, end, text))
         }.getOrNull() ?: return
@@ -2834,28 +2937,29 @@ class NativeEditorView(
         mirrorSelection = state.optInt("selection", 0).coerceIn(0, mirrorText.length)
         mirrorAnchor = mirrorSelection
         refreshLines()
+        syncAfterEdit()
         syncHandles()
+        applyInsertionHandleVisible(false)
         actionMode?.finish()
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
-        syncAfterEdit()
         notifySelectionChanged()
         requestRender()
     }
 
     private fun applyDelete(before: Int, after: Int) {
-        applyInsertionHandleVisible(false)
         val state = runCatching { JSONObject(CoreBridge.nativeEditorDelete(surfaceId, before, after)) }
             .getOrNull() ?: return
         mirrorText = state.optString("text")
         mirrorSelection = state.optInt("selection", 0).coerceIn(0, mirrorText.length)
         mirrorAnchor = mirrorSelection
         refreshLines()
+        syncAfterEdit()
         syncHandles()
+        applyInsertionHandleVisible(false)
         actionMode?.finish()
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
-        syncAfterEdit()
         notifySelectionChanged()
         requestRender()
     }

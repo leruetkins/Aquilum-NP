@@ -1358,6 +1358,10 @@ class VibecodiumController(context: Context) {
 
     fun setAutoHideChrome(enabled: Boolean) = updateSettings { it.copy(autoHideChrome = enabled) }
 
+    fun setTextFontFace(face: EditorFontFace) = updateSettings { it.copy(textFontFace = face) }
+
+    fun setCodeFontFace(face: EditorFontFace) = updateSettings { it.copy(codeFontFace = face) }
+
     fun setNavbarEnabled(enabled: Boolean) = updateSettings { it.copy(navbarEnabled = enabled) }
 
     fun setDefaultEditorMode(mode: EditorMode) = updateSettings { it.copy(defaultEditorMode = mode) }

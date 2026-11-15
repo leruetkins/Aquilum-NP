@@ -207,6 +207,7 @@ import md.vibecodium.mobile.KnownVault
 import md.vibecodium.mobile.VaultLocator
 import md.vibecodium.mobile.DocStats
 import md.vibecodium.mobile.EditorMode
+import md.vibecodium.mobile.EditorFontFace
 import md.vibecodium.mobile.CodeColors
 import md.vibecodium.mobile.LocalCodeColors
 import md.vibecodium.mobile.LIVE_MODEL_CHAR_LIMIT
@@ -966,6 +967,8 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 editor.value,
                 controller,
                 state.settings.editorFontDp,
+                state.settings.textFontFace,
+                state.settings.codeFontFace,
                 imeVisible,
                 navbarEnabled,
                 chromeProgress,
@@ -1121,6 +1124,8 @@ private fun EditorArea(
     editor: EditorSlice,
     controller: VibecodiumController,
     editorFontDp: Int,
+    textFontFace: EditorFontFace,
+    codeFontFace: EditorFontFace,
     imeVisible: Boolean,
     navbarEnabled: Boolean,
     chromeProgress: State<Float>,
@@ -1154,6 +1159,8 @@ private fun EditorArea(
             tab,
             controller,
             editorFontDp,
+            textFontFace,
+            codeFontFace,
             imeVisible,
             navbarEnabled,
             bottomInsetPx,
@@ -1201,6 +1208,8 @@ private fun EditorScreen(
     tab: Tab,
     controller: VibecodiumController,
     editorFontDp: Int,
+    textFontFace: EditorFontFace,
+    codeFontFace: EditorFontFace,
     imeVisible: Boolean,
     navbarEnabled: Boolean,
     bottomInsetPx: Float,
@@ -1285,6 +1294,8 @@ private fun EditorScreen(
             controller,
             tab,
             editorFontDp,
+            textFontFace,
+            codeFontFace,
             topInsetPx,
             bottomInsetPx,
             preview,
@@ -1884,6 +1895,8 @@ private fun SourceEditor(
     controller: VibecodiumController,
     tab: Tab,
     editorFontDp: Int,
+    textFontFace: EditorFontFace,
+    codeFontFace: EditorFontFace,
     topInsetPx: Float,
     bottomInsetPx: Float,
     preview: Boolean,
@@ -1909,6 +1922,7 @@ private fun SourceEditor(
             view.setOnCaretPlaced(onCaretPlaced)
             view.setEditorPreview(preview)
             view.setEditorFont(editorFontDp, AppSettingsJson.editorLineDp(editorFontDp))
+            view.setEditorFonts(textFontFace, codeFontFace)
             view.setEditor(tab.text, tab.selection, tab.language, tab.path)
         },
     )
@@ -4286,6 +4300,22 @@ private fun SettingsSectionContent(
                         format = { "$it dp" },
                         onChange = controller::setEditorFontSize,
                     )
+                    SettingsChoiceRow(
+                        title = "Text font",
+                        description = "Markdown prose, lists, quotes and headings",
+                        value = settings.textFontFace,
+                        options = EDITOR_FONT_FACE_OPTIONS,
+                        onSelect = controller::setTextFontFace,
+                    )
+                    EditorFontSample(settings.textFontFace)
+                    SettingsChoiceRow(
+                        title = "Code font",
+                        description = "Fenced and inline code, and code files",
+                        value = settings.codeFontFace,
+                        options = EDITOR_FONT_FACE_OPTIONS,
+                        onSelect = controller::setCodeFontFace,
+                    )
+                    EditorFontSample(settings.codeFontFace)
                 }
                 SettingsGroup("Interface") {
                     SettingsSwitchRow(
@@ -4665,6 +4695,43 @@ private fun SettingsStepperRow(
         HorizontalDivider(
             modifier = Modifier.padding(start = 16.dp),
             color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        )
+    }
+}
+
+private val EDITOR_FONT_FACE_OPTIONS = listOf(
+    "System" to EditorFontFace.System,
+    "Monospace" to EditorFontFace.Mono,
+    "Serif" to EditorFontFace.Serif,
+)
+
+private fun EditorFontFace.previewFamily(): FontFamily = when (this) {
+    EditorFontFace.System -> FontFamily.Default
+    EditorFontFace.Mono -> FontFamily.Monospace
+    EditorFontFace.Serif -> FontFamily.Serif
+}
+
+/** Sample text under a font choice so the difference is visible before switching. */
+@Composable
+private fun EditorFontSample(face: EditorFontFace) {
+    val family = face.previewFamily()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 10.dp),
+    ) {
+        Text(
+            "Aa Бб 123 — съешь ещё этих мягких французских булок",
+            fontSize = 14.sp,
+            fontFamily = family,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            "if (x == 42) { return \"OK\"; }",
+            modifier = Modifier.padding(top = 2.dp),
+            fontSize = 13.sp,
+            fontFamily = family,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

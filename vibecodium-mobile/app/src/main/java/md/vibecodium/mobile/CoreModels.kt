@@ -105,6 +105,9 @@ enum class DrawerMode { Files, Search, Bookmarks, Recent }
 
 enum class EditorMode { Source, Preview }
 
+/** Editor font family. [nativeValue] matches the Rust core's `Face` enum. */
+enum class EditorFontFace(val nativeValue: Int) { System(0), Mono(1), Serif(2) }
+
 /** Which progress counter the UI should show while a sync is running. */
 enum class SyncProgressKind { Preparing, ReadingLocal, Transferring }
 

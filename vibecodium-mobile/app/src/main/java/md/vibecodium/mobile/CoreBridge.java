@@ -141,6 +141,8 @@ public final class CoreBridge {
 
     public static native void nativeEditorSetFontSize(int id, float fontDp, float lineDp);
 
+    public static native void nativeEditorSetFonts(int id, int textFace, int codeFace);
+
     public static native float nativeEditorScroll(int id);
 
     public static native void nativeEditorSetBand(int id, float origin);
