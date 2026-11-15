@@ -1106,8 +1106,9 @@ class NativeEditorView(
     private var lastTapY = 0f
     private var layoutRowHeight = (22f * resources.displayMetrics.density).roundToInt().toFloat()
     private var layoutTop = 0f
-    private var visualFirst = IntArray(0)
-    private var visualCount = IntArray(0)
+    /** Top offset and height of every logical line, including heading rows. */
+    private var layoutTops = FloatArray(0)
+    private var layoutHeights = FloatArray(0)
     private var startHandle: PointF? = null
     private var endHandle: PointF? = null
     private var insertionHandle: PointF? = null
@@ -1131,6 +1132,8 @@ class NativeEditorView(
     private var textFace: EditorFontFace? = null
     private var codeFace: EditorFontFace? = null
     private var faceRequestInFlight = false
+    /** Heading styles the core holds; `null` forces the first send. */
+    private var headingStyles: HeadingsSettings? = null
     private var onHistoryChanged: ((Boolean, Boolean) -> Unit)? = null
     private var reportedCanUndo = false
     private var reportedCanRedo = false
@@ -1353,21 +1356,20 @@ class NativeEditorView(
             override fun getVirtualViewAt(x: Float, y: Float): Int {
                 refreshLayoutInfo()
                 val scroll = CoreBridge.nativeEditorScroll(surfaceId)
-                val visual = ((y + scroll - layoutTop) / layoutRowHeight).toInt()
-                return lineAtVisual(visual).takeIf { it >= 0 } ?: View.NO_ID
+                val line = lineAtY(y + scroll - layoutTop)
+                return line.takeIf { it >= 0 } ?: View.NO_ID
             }
 
             override fun getVisibleVirtualViews(virtualViewIds: MutableList<Int>) {
                 if (mirrorText.isEmpty()) return
                 refreshLayoutInfo()
                 val scroll = CoreBridge.nativeEditorScroll(surfaceId)
-                val firstVisual =
-                    ((scroll - layoutTop) / layoutRowHeight).toInt().coerceAtLeast(0)
-                val lastVisual = ((scroll + height - layoutTop) / layoutRowHeight).toInt()
-                val firstLine = lineAtVisual(firstVisual).let { if (it >= 0) it else 0 }
+                val top = scroll - layoutTop
+                val bottom = top + height
+                val firstLine = lineAtY(top).let { if (it >= 0) it else 0 }
                 for (index in firstLine until lineStarts.size) {
-                    val top = visualFirst.getOrElse(index) { index }
-                    if (top > lastVisual) break
+                    val lineTop = layoutTops.getOrElse(index) { bottom + 1f }
+                    if (lineTop > bottom) break
                     virtualViewIds.add(index)
                 }
             }
@@ -1588,6 +1590,38 @@ class NativeEditorView(
     }
 
     /**
+     * Pushes the per-level heading styles. A size change alters the wrap and
+     * the scroll extent, so the band is rebased afterwards like a font change.
+     */
+    fun setEditorHeadings(styles: HeadingsSettings) {
+        if (styles == headingStyles) return
+        headingStyles = styles
+        val json = styles.toNativeJson()
+        postRenderTask {
+            if (!isSurfaceAttached()) {
+                // Keep the cached styles: onSurfaceReady applies them before
+                // the first frame after the surface attaches.
+                return@postRenderTask
+            }
+            CoreBridge.nativeEditorSetHeadings(surfaceId, json)
+            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: 0f
+            mainHandler.post {
+                scrollMaxY = maxOf(newMaxY, 0f)
+                val target = bandTargetOrigin(knownScroll, maxOf(scrollMaxY, knownScroll))
+                invalidateBandGeneration()
+                rebaseDisplayScroll = knownScroll
+                rebaseOrigin = target
+                scheduleBandRender(target, force = true)
+                scrollbarOverlay.update(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
+                refreshLayoutInfo()
+                syncHandles()
+            }
+        }
+    }
+
+    /**
      * Pushes a caret visibility change only when it actually flips. The
      * repaint is queued on the render thread, so the blink no longer paints a
      * whole frame on the UI thread (which used to stall an ongoing scroll).
@@ -1703,19 +1737,40 @@ class NativeEditorView(
         layoutTop = info.optDouble("top", 0.0).toFloat()
         val first = info.optJSONArray("first") ?: JSONArray()
         val count = info.optJSONArray("count") ?: JSONArray()
-        val size = maxOf(first.length(), count.length(), lineStarts.size)
-        visualFirst = IntArray(size) { first.optInt(it, 0) }
-        visualCount = IntArray(size) { maxOf(1, count.optInt(it, 1)) }
+        val tops = info.optJSONArray("tops")
+        val heights = info.optJSONArray("heights")
+        val size = maxOf(
+            tops?.length() ?: 0,
+            heights?.length() ?: 0,
+            first.length(),
+            count.length(),
+            lineStarts.size,
+        )
+        layoutTops = FloatArray(size) { index ->
+            if (tops != null && index < tops.length()) {
+                tops.optDouble(index, 0.0).toFloat()
+            } else {
+                first.optInt(index, 0) * layoutRowHeight
+            }
+        }
+        layoutHeights = FloatArray(size) { index ->
+            if (heights != null && index < heights.length()) {
+                heights.optDouble(index, layoutRowHeight.toDouble()).toFloat()
+            } else {
+                maxOf(1, count.optInt(index, 1)) * layoutRowHeight
+            }
+        }
     }
 
-    private fun lineAtVisual(visual: Int): Int {
-        if (visualFirst.isEmpty()) return -1
+    /** Logical line containing a document-space y, or -1 below the last line. */
+    private fun lineAtY(y: Float): Int {
+        if (layoutTops.isEmpty() || y < 0f) return -1
         var low = 0
-        var high = visualFirst.size - 1
+        var high = layoutTops.size - 1
         var result = -1
         while (low <= high) {
             val middle = (low + high) / 2
-            if (visualFirst[middle] <= visual) {
+            if (layoutTops[middle] <= y) {
                 result = middle
                 low = middle + 1
             } else {
@@ -1723,16 +1778,15 @@ class NativeEditorView(
             }
         }
         if (result < 0) return -1
-        val top = visualFirst[result]
-        val lineHeight = visualCount.getOrElse(result) { 1 }
-        return if (visual in top until top + lineHeight) result else -1
+        val bottom = layoutTops[result] + linePixelHeight(result)
+        return if (y < bottom + 0.5f) result else -1
     }
 
     private fun lineTop(index: Int): Float =
-        layoutTop + visualFirst.getOrElse(index) { index } * layoutRowHeight
+        layoutTop + layoutTops.getOrElse(index) { index * layoutRowHeight }
 
     private fun linePixelHeight(index: Int): Float =
-        visualCount.getOrElse(index) { 1 } * layoutRowHeight
+        layoutHeights.getOrElse(index) { layoutRowHeight }
 
     override fun onSurfaceReady() {
         invalidateBandGeneration()
@@ -1749,6 +1803,9 @@ class NativeEditorView(
                 cachedTextFace.nativeValue,
                 cachedCodeFace.nativeValue,
             )
+        }
+        headingStyles?.let {
+            CoreBridge.nativeEditorSetHeadings(surfaceId, it.toNativeJson())
         }
         CoreBridge.nativeSurfaceSetEditor(
             surfaceId,

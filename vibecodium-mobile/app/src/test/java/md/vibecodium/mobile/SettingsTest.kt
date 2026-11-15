@@ -23,8 +23,33 @@ class SettingsTest {
             navbarEnabled = true,
             defaultEditorMode = EditorMode.Preview,
             autoSaveDelayMs = 300,
+            headings = HeadingsSettings(
+                h1 = HeadingStyle(26, "#123456", bold = false, italic = true),
+            ),
         )
         assertEquals(original, AppSettingsJson.decode(AppSettingsJson.encode(original)))
+    }
+
+    @Test
+    fun headingDefaultsMatchTheDesktopPaletteAndTunedSizes() {
+        val headings = HeadingsSettings()
+        assertEquals(19, headings.h1.fontSize)
+        assertEquals("blue", headings.h1.colorName)
+        assertTrue(headings.h1.bold)
+        assertEquals(0x56B4E9, HeadingColors.rgb(headings.h2.colorName))
+        assertEquals("#0072B2", HeadingColors.hex(headings.h1.colorName))
+        assertEquals(0x123456, HeadingColors.parseHex("#123456"))
+    }
+
+    @Test
+    fun nativeHeadingPayloadCarriesEveryLevel() {
+        val payload = org.json.JSONArray(HeadingsSettings().toNativeJson())
+        assertEquals(6, payload.length())
+        val first = payload.getJSONObject(0)
+        assertEquals(19, first.getInt("size"))
+        assertEquals(0x0072B2, first.getInt("color"))
+        assertEquals(true, first.getBoolean("bold"))
+        assertEquals(false, first.getBoolean("italic"))
     }
 
     @Test

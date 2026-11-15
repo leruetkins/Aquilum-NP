@@ -1381,6 +1381,24 @@ class VibecodiumController(context: Context) {
 
     fun setCodeFontFace(face: EditorFontFace) = updateSettings { it.copy(codeFontFace = face) }
 
+    fun setHeadingFontSize(level: Int, size: Int) = updateHeading(level) {
+        it.copy(fontSize = size.coerceIn(6, 64))
+    }
+
+    fun setHeadingColor(level: Int, colorName: String) = updateHeading(level) {
+        it.copy(colorName = colorName)
+    }
+
+    fun toggleHeadingBold(level: Int) = updateHeading(level) { it.copy(bold = !it.bold) }
+
+    fun toggleHeadingItalic(level: Int) = updateHeading(level) { it.copy(italic = !it.italic) }
+
+    private inline fun updateHeading(level: Int, transform: (HeadingStyle) -> HeadingStyle) {
+        updateSettings {
+            it.copy(headings = it.headings.with(level, transform(it.headings.style(level))))
+        }
+    }
+
     fun setNavbarEnabled(enabled: Boolean) = updateSettings { it.copy(navbarEnabled = enabled) }
 
     fun setDefaultEditorMode(mode: EditorMode) = updateSettings { it.copy(defaultEditorMode = mode) }

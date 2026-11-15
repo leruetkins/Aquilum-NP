@@ -209,6 +209,9 @@ import md.vibecodium.mobile.VaultLocator
 import md.vibecodium.mobile.DocStats
 import md.vibecodium.mobile.EditorMode
 import md.vibecodium.mobile.EditorFontFace
+import md.vibecodium.mobile.HeadingsSettings
+import md.vibecodium.mobile.HeadingColors
+import md.vibecodium.mobile.HeadingStyle
 import md.vibecodium.mobile.CodeColors
 import md.vibecodium.mobile.LocalCodeColors
 import md.vibecodium.mobile.LIVE_MODEL_CHAR_LIMIT
@@ -860,6 +863,7 @@ private data class EditorSlice(
     val markdownText: String,
     val bookmarks: Set<String>,
     val stats: DocStats,
+    val headings: HeadingsSettings,
     val settingsOpen: Boolean = false,
     val overlayOpen: Boolean = false,
     val focusRequestId: Long = 0L,
@@ -886,6 +890,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 markdownText = current.markdownText,
                 bookmarks = current.bookmarks,
                 stats = current.stats,
+                headings = current.settings.headings,
                 settingsOpen = current.settingsOpen,
                 overlayOpen = current.settingsOpen || current.renamePath != null ||
                     current.deletePath != null || current.vaultChooserOpen ||
@@ -1000,6 +1005,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 state.settings.editorFontDp,
                 state.settings.textFontFace,
                 state.settings.codeFontFace,
+                state.settings.headings,
                 imeVisible,
                 navbarEnabled,
                 chromeProgress,
@@ -1157,6 +1163,7 @@ private fun EditorArea(
     editorFontDp: Int,
     textFontFace: EditorFontFace,
     codeFontFace: EditorFontFace,
+    headings: HeadingsSettings,
     imeVisible: Boolean,
     navbarEnabled: Boolean,
     chromeProgress: State<Float>,
@@ -1192,6 +1199,7 @@ private fun EditorArea(
             editorFontDp,
             textFontFace,
             codeFontFace,
+            headings,
             imeVisible,
             navbarEnabled,
             bottomInsetPx,
@@ -1241,6 +1249,7 @@ private fun EditorScreen(
     editorFontDp: Int,
     textFontFace: EditorFontFace,
     codeFontFace: EditorFontFace,
+    headings: HeadingsSettings,
     imeVisible: Boolean,
     navbarEnabled: Boolean,
     bottomInsetPx: Float,
@@ -1327,6 +1336,7 @@ private fun EditorScreen(
             editorFontDp,
             textFontFace,
             codeFontFace,
+            headings,
             topInsetPx,
             bottomInsetPx,
             preview,
@@ -1928,6 +1938,7 @@ private fun SourceEditor(
     editorFontDp: Int,
     textFontFace: EditorFontFace,
     codeFontFace: EditorFontFace,
+    headings: HeadingsSettings,
     topInsetPx: Float,
     bottomInsetPx: Float,
     preview: Boolean,
@@ -1961,6 +1972,7 @@ private fun SourceEditor(
             view.setEditorPreview(preview)
             view.setEditorFont(editorFontDp, AppSettingsJson.editorLineDp(editorFontDp))
             view.setEditorFonts(textFontFace, codeFontFace)
+            view.setEditorHeadings(headings)
             view.setEditor(tab.text, tab.selection, tab.language, tab.path)
         },
     )
@@ -4198,6 +4210,16 @@ private enum class SettingsSection(val title: String, val icon: ImageVector) {
     About("About", Icons.Default.Info),
 }
 
+/** Size range per heading level, matching the desktop settings. */
+private val HEADING_LEVELS = listOf(
+    1 to (14..40),
+    2 to (13..36),
+    3 to (12..32),
+    4 to (11..28),
+    5 to (10..26),
+    6 to (9..24),
+)
+
 @Composable
 private fun SettingsScreen(state: UiState, controller: VibecodiumController, modifier: Modifier) {
     // Section navigation is local: changing a settings section must not
@@ -4329,6 +4351,7 @@ private fun SettingsSectionContent(
                         range = AppSettingsJson.MIN_TEXT_SCALE..AppSettingsJson.MAX_TEXT_SCALE,
                         format = { "${(it * 100).roundToInt()}%" },
                         onCommit = controller::setTextScale,
+                        showDivider = true,
                     )
                     SettingsStepperRow(
                         title = "Editor font size",
@@ -4337,6 +4360,7 @@ private fun SettingsSectionContent(
                         range = AppSettingsJson.MIN_EDITOR_FONT_DP..AppSettingsJson.MAX_EDITOR_FONT_DP,
                         format = { "$it dp" },
                         onChange = controller::setEditorFontSize,
+                        showDivider = true,
                     )
                     SettingsChoiceRow(
                         title = "Text font",
@@ -4345,7 +4369,7 @@ private fun SettingsSectionContent(
                         options = EDITOR_FONT_FACE_OPTIONS,
                         onSelect = controller::setTextFontFace,
                     )
-                    EditorFontSample(settings.textFontFace)
+                    EditorFontSample(settings.textFontFace, showDivider = true)
                     SettingsChoiceRow(
                         title = "Code font",
                         description = "Fenced and inline code, and code files",
@@ -4374,6 +4398,7 @@ private fun SettingsSectionContent(
             }
 
             SettingsSection.Editor -> {
+                var colorHeading by remember { mutableStateOf<Int?>(null) }
                 SettingsGroup("View") {
                     SettingsChoiceRow(
                         title = "Default view",
@@ -4397,6 +4422,31 @@ private fun SettingsSectionContent(
                             "1.2 s" to 1200,
                         ),
                         onSelect = controller::setAutoSaveDelay,
+                    )
+                }
+                SettingsGroup("Headings") {
+                    HEADING_LEVELS.forEachIndexed { index, (level, range) ->
+                        HeadingStyleRow(
+                            level = level,
+                            style = settings.headings.style(level),
+                            range = range,
+                            onSizeChange = { controller.setHeadingFontSize(level, it) },
+                            onColorClick = { colorHeading = level },
+                            onToggleBold = { controller.toggleHeadingBold(level) },
+                            onToggleItalic = { controller.toggleHeadingItalic(level) },
+                            showDivider = index != HEADING_LEVELS.lastIndex,
+                        )
+                    }
+                }
+                colorHeading?.let { level ->
+                    HeadingColorDialog(
+                        title = "H$level",
+                        current = settings.headings.style(level).colorName,
+                        onDismiss = { colorHeading = null },
+                        onSelect = { name ->
+                            controller.setHeadingColor(level, name)
+                            colorHeading = null
+                        },
                     )
                 }
             }
@@ -4447,6 +4497,7 @@ private fun SettingsSectionContent(
                         value = daily.format,
                         options = dailyFormatOptions(daily.format),
                         onSelect = controller::setDailyNoteFormat,
+                        showDivider = true,
                     )
                     SettingsTextFieldRow(
                         title = "File name format",
@@ -4464,6 +4515,7 @@ private fun SettingsSectionContent(
                         value = daily.folder,
                         options = dailyFolderOptions(state, daily.folder),
                         onSelect = controller::setDailyNoteFolder,
+                        showDivider = true,
                     )
                     SettingsChoiceRow(
                         title = "Template",
@@ -4633,6 +4685,7 @@ private fun SettingsSliderRow(
     range: ClosedFloatingPointRange<Float>,
     format: (Float) -> String,
     onCommit: (Float) -> Unit,
+    showDivider: Boolean = false,
 ) {
     var draft by remember(value) { mutableStateOf(value) }
     Column(
@@ -4666,6 +4719,12 @@ private fun SettingsSliderRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 2.dp),
+        )
+    }
+    if (showDivider) {
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 16.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
         )
     }
 }
@@ -4737,6 +4796,177 @@ private fun SettingsStepperRow(
     }
 }
 
+@Composable
+private fun HeadingStyleRow(
+    level: Int,
+    style: HeadingStyle,
+    range: IntRange,
+    onSizeChange: (Int) -> Unit,
+    onColorClick: () -> Unit,
+    onToggleBold: () -> Unit,
+    onToggleItalic: () -> Unit,
+    showDivider: Boolean,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("H$level", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Text(
+                HeadingColors.hex(style.colorName),
+                modifier = Modifier.padding(top = 2.dp),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        IconButton(
+            onClick = { onSizeChange(style.fontSize - 1) },
+            enabled = style.fontSize > range.first,
+            modifier = Modifier.size(32.dp),
+        ) {
+            Icon(MinusIcon, contentDescription = "Decrease H$level size", modifier = Modifier.size(16.dp))
+        }
+        Text(
+            "${style.fontSize}",
+            modifier = Modifier.widthIn(min = 28.dp),
+            textAlign = TextAlign.Center,
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        IconButton(
+            onClick = { onSizeChange(style.fontSize + 1) },
+            enabled = style.fontSize < range.last,
+            modifier = Modifier.size(32.dp),
+        ) {
+            Icon(Icons.Default.Add, contentDescription = "Increase H$level size", modifier = Modifier.size(16.dp))
+        }
+        Box(
+            Modifier
+                .padding(start = 4.dp)
+                .size(26.dp)
+                .clip(CircleShape)
+                .background(headingColor(HeadingColors.rgb(style.colorName)))
+                .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
+                .clickable(onClick = onColorClick),
+        )
+        HeadingFormatToggle(
+            label = "B",
+            active = style.bold,
+            italic = false,
+            onClick = onToggleBold,
+        )
+        HeadingFormatToggle(
+            label = "I",
+            active = style.italic,
+            italic = true,
+            onClick = onToggleItalic,
+        )
+    }
+    if (showDivider) {
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 16.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        )
+    }
+}
+
+@Composable
+private fun HeadingFormatToggle(
+    label: String,
+    active: Boolean,
+    italic: Boolean,
+    onClick: () -> Unit,
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    val shape = RoundedCornerShape(6.dp)
+    Box(
+        Modifier
+            .padding(start = 4.dp)
+            .size(30.dp)
+            .clip(shape)
+            .background(if (active) accent.copy(alpha = 0.18f) else Color.Transparent)
+            .border(1.dp, if (active) accent else MaterialTheme.colorScheme.outline, shape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal,
+            color = if (active) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** Palette and custom hex picker for one heading level, following the desktop popup. */
+@Composable
+private fun HeadingColorDialog(
+    title: String,
+    current: String,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    var hex by remember(current) { mutableStateOf(HeadingColors.hex(current)) }
+    val parsed = HeadingColors.parseHex(hex)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("$title colour") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                HeadingColors.presets.chunked(4).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        row.forEach { preset ->
+                            val selected = preset.rgb == HeadingColors.rgb(current)
+                            Box(
+                                Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(headingColor(preset.rgb))
+                                    .border(
+                                        width = if (selected) 2.dp else 1.dp,
+                                        color = if (selected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.outline
+                                        },
+                                        shape = CircleShape,
+                                    )
+                                    .clickable { onSelect(preset.id) },
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = hex,
+                    onValueChange = { hex = it },
+                    label = { Text("Hex") },
+                    singleLine = true,
+                    isError = parsed == null,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { parsed?.let { onSelect("#%06X".format(it)) } },
+                enabled = parsed != null,
+            ) {
+                Text("Apply")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+private fun headingColor(rgb: Int): Color = Color(0xFF000000.toInt() or rgb)
+
 private val EDITOR_FONT_FACE_OPTIONS = listOf(
     "System" to EditorFontFace.System,
     "Monospace" to EditorFontFace.Mono,
@@ -4751,7 +4981,7 @@ private fun EditorFontFace.previewFamily(): FontFamily = when (this) {
 
 /** Sample text under a font choice so the difference is visible before switching. */
 @Composable
-private fun EditorFontSample(face: EditorFontFace) {
+private fun EditorFontSample(face: EditorFontFace, showDivider: Boolean = false) {
     val family = face.previewFamily()
     Column(
         Modifier
@@ -4772,6 +5002,12 @@ private fun EditorFontSample(face: EditorFontFace) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+    if (showDivider) {
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 16.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        )
+    }
 }
 
 @Composable
@@ -4781,35 +5017,46 @@ private fun <T> SettingsChoiceRow(
     value: T,
     options: List<Pair<String, T>>,
     onSelect: (T) -> Unit,
+    showDivider: Boolean = false,
 ) {
     var open by remember { mutableStateOf(false) }
     val label = options.firstOrNull { it.second == value }?.first ?: ""
-    Box(Modifier.fillMaxWidth()) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        if (description.isNotBlank()) {
+            Text(
+                description,
+                modifier = Modifier.padding(top = 2.dp),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        // The value button sits under the description and spans the whole row:
+        // a grey field reads as an input, unlike a value tucked to the right.
+        val buttonShape = RoundedCornerShape(14.dp)
         Row(
             Modifier
                 .fillMaxWidth()
+                .padding(top = 8.dp)
+                .clip(buttonShape)
+                .background(Color(0xFF3E3E3E))
+                .border(1.dp, Color(0xFF5E5E5E), buttonShape)
                 .clickable { open = true }
-                .heightIn(min = 56.dp)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f)) {
-                Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                if (description.isNotBlank()) {
-                    Text(
-                        description,
-                        modifier = Modifier.padding(top = 2.dp),
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
             Text(
                 label,
+                modifier = Modifier.weight(1f),
                 fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.width(4.dp))
+            Spacer(Modifier.width(8.dp))
             Icon(
                 Icons.Default.KeyboardArrowDown,
                 contentDescription = null,
@@ -4817,25 +5064,142 @@ private fun <T> SettingsChoiceRow(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            options.forEach { (optionLabel, optionValue) ->
-                val selected = optionValue == value
-                DropdownMenuItem(
-                    text = { Text(optionLabel) },
-                    trailingIcon = {
-                        if (selected) {
-                            Icon(
-                                Icons.Default.Check,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
+    }
+    if (open) {
+        SettingsChoiceDialog(
+            title = title,
+            value = value,
+            options = options,
+            onSelect = { optionValue ->
+                open = false
+                onSelect(optionValue)
+            },
+            onDismiss = { open = false },
+        )
+    }
+    if (showDivider) {
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 16.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        )
+    }
+}
+
+/**
+ * Modal option picker. A long choice list (daily-note folders, templates)
+ * scrolls inside the dialog with the same thin scrollbar as the tab menu.
+ */
+@Composable
+private fun <T> SettingsChoiceDialog(
+    title: String,
+    value: T,
+    options: List<Pair<String, T>>,
+    onSelect: (T) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        BoxWithConstraints(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.55f))
+                .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) },
+            contentAlignment = Alignment.Center,
+        ) {
+            // Cap the list against the dialog window itself: a LazyColumn here
+            // would stretch the card to the window height.
+            val listMaxHeight = (maxHeight * 0.6f).coerceAtLeast(200.dp)
+            Surface(
+                modifier = Modifier
+                    .widthIn(max = 560.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    // Swallow taps inside the card so they do not reach the
+                    // dismiss-on-tap scrim behind it.
+                    .pointerInput(Unit) { detectTapGestures { } },
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                shadowElevation = 10.dp,
+            ) {
+                Column {
+                    Text(
+                        title,
+                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 12.dp),
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                    Box(Modifier.fillMaxWidth()) {
+                        val scrollState = rememberScrollState()
+                        var viewportPx by remember { mutableStateOf(0) }
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = listMaxHeight)
+                                // Measure the clipped viewport, not the content:
+                                // the scroll node must stay outside the observer.
+                                .onSizeChanged { viewportPx = it.height }
+                                .verticalScroll(scrollState)
+                                .padding(vertical = 6.dp),
+                        ) {
+                            options.forEach { option ->
+                                val (optionLabel, optionValue) = option
+                                val selected = optionValue == value
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onSelect(optionValue) }
+                                        .padding(horizontal = 20.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        optionLabel,
+                                        modifier = Modifier.weight(1f),
+                                        fontSize = 14.sp,
+                                        color = if (selected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                    )
+                                    if (selected) {
+                                        Spacer(Modifier.width(10.dp))
+                                        Icon(
+                                            Icons.Default.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        val density = LocalDensity.current
+                        val contentPx = viewportPx + scrollState.maxValue
+                        if (scrollState.maxValue > 0 && viewportPx > 0 && contentPx > 0) {
+                            val track = with(density) { viewportPx.toDp() }
+                            val thumb = (track * (viewportPx.toFloat() / contentPx))
+                                .coerceAtLeast(24.dp)
+                                .coerceAtMost(track)
+                            val maxOffset = (track - thumb).coerceAtLeast(0.dp)
+                            val offset = maxOffset * (scrollState.value.toFloat() / scrollState.maxValue)
+                            Box(
+                                Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(end = 3.dp)
+                                    .offset(y = offset)
+                                    .width(6.dp)
+                                    .height(thumb)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF9E9E9E))
+                                    .border(1.dp, Color(0xFF4A4A4A), CircleShape),
                             )
                         }
-                    },
-                    onClick = {
-                        open = false
-                        onSelect(optionValue)
-                    },
-                )
+                    }
+                }
             }
         }
     }
@@ -5367,6 +5731,12 @@ private fun SettingsFolderEditor(
                     modifier = Modifier.size(20.dp),
                 )
             }
+        }
+        if (folders.isNotEmpty()) {
+            HorizontalDivider(
+                modifier = Modifier.padding(start = 16.dp),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+            )
         }
         if (folders.isEmpty()) {
             Text(

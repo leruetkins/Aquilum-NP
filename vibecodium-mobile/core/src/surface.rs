@@ -1068,6 +1068,7 @@ impl Painter {
         px: f32,
         rgb: u32,
         face: Face,
+        italic: bool,
     ) {
         let (cell_advance, ascent) = self.font_metrics(px, face);
         let baseline = y + ascent;
@@ -1112,12 +1113,19 @@ impl Painter {
                         continue;
                     }
                     let py = py as usize;
+                    // Synthetic oblique: every glyph row is shifted by its
+                    // distance above the baseline, so no italic font is needed.
+                    let lean = if italic {
+                        ((baseline - (gy + row as i32) as f32) * 0.20).round().max(0.0) as i32
+                    } else {
+                        0
+                    };
                     for column in 0..metrics.width {
                         let alpha = bitmap[row * metrics.width + column];
                         if alpha == 0 {
                             continue;
                         }
-                        let px_x = gx + column as i32;
+                        let px_x = gx + column as i32 + lean;
                         if px_x < 0 || px_x >= width as i32 {
                             continue;
                         }
@@ -1230,12 +1238,17 @@ impl Painter {
                     continue;
                 }
                 let py = py as usize;
+                let lean = if italic {
+                    ((baseline - (gy + row as i32) as f32) * 0.20).round().max(0.0) as i32
+                } else {
+                    0
+                };
                 for column in 0..metrics.width {
                     let alpha = bitmap[row * metrics.width + column];
                     if alpha == 0 {
                         continue;
                     }
-                    let px_x = gx + column as i32;
+                    let px_x = gx + column as i32 + lean;
                     if px_x < 0 || px_x >= width as i32 {
                         continue;
                     }
@@ -1310,6 +1323,9 @@ struct WrapLine {
     start: usize,
     end: usize,
     font: f32,
+    /// Row height in device pixels. Headings that outgrow the body pitch get
+    /// a taller row, the same rule the desktop layout uses.
+    height: f32,
 }
 
 const HISTORY_CAP: usize = 10_000;
@@ -1409,10 +1425,15 @@ struct EditorState {
     wrap: Vec<WrapLine>,
     wrap_first: Vec<usize>,
     wrap_count: Vec<usize>,
+    /// Cumulative top offset per visual row and the total content height.
+    wrap_tops: Vec<f32>,
+    wrap_height: f32,
     /// Canonical wrap (all markup hidden) the active-line exceptions build on.
     wrap_canonical: Vec<WrapLine>,
     wrap_canonical_first: Vec<usize>,
     wrap_canonical_count: Vec<usize>,
+    wrap_canonical_tops: Vec<f32>,
+    wrap_canonical_height: f32,
     /// Caret line, selection and visible line window the effective wrap was
     /// built for.
     wrap_paint_key: (usize, usize, usize, usize, usize),
@@ -1446,6 +1467,8 @@ struct SurfaceState {
     text_face: Face,
     /// Face used for fenced/inline code and for code files.
     code_face: Face,
+    /// Per-level heading size, colour and format pushed by the settings screen.
+    headings: [HeadingStyle; 6],
     background: u32,
     painter: Painter,
     tree: TreeState,
@@ -1564,6 +1587,63 @@ const GUTTER_PAD_DP: f32 = 8.0;
 
 /// Smallest line-number column, so a one-digit file still has room to breathe.
 const GUTTER_MIN_DP: f32 = 24.0;
+
+/// Per-level heading style pushed from the settings screen. `size_dp` is stated
+/// at [`EDITOR_FONT_DP`] and scaled with the configured body size, matching the
+/// desktop typography; `color` is opaque RGB.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HeadingStyle {
+    size_dp: f32,
+    color: u32,
+    bold: bool,
+    italic: bool,
+}
+
+/// Defaults keep the sizes and palette the editor was tuned for.
+const DEFAULT_HEADINGS: [HeadingStyle; 6] = [
+    HeadingStyle { size_dp: 19.0, color: 0x0072b2, bold: true, italic: false },
+    HeadingStyle { size_dp: 18.0, color: 0x56b4e9, bold: true, italic: false },
+    HeadingStyle { size_dp: 17.0, color: 0x009e73, bold: true, italic: false },
+    HeadingStyle { size_dp: 16.0, color: 0xe69f00, bold: true, italic: false },
+    HeadingStyle { size_dp: 15.0, color: 0xd55e00, bold: true, italic: false },
+    HeadingStyle { size_dp: 14.0, color: 0xcc79a7, bold: true, italic: false },
+];
+
+fn heading_at(headings: &[HeadingStyle; 6], level: u8) -> HeadingStyle {
+    headings[(level.clamp(1, 6) - 1) as usize]
+}
+
+/// Row height for text drawn at `font_px`. Body text keeps the configured
+/// pitch; a heading tall enough to need more room grows its row on the same
+/// 4 dp grid the desktop layout uses.
+fn visual_line_height(font_px: f32, base_line_px: f32, density: f32) -> f32 {
+    let unrounded = (font_px * 1.35).max(base_line_px);
+    if (unrounded - base_line_px).abs() < 0.5 {
+        return base_line_px;
+    }
+    let step = (4.0 * density).max(1.0);
+    ((unrounded / step).ceil() * step).max(base_line_px)
+}
+
+/// Index of the visual row containing `y` (a document offset in pixels), or the
+/// nearest preceding row.
+fn visual_at_y(tops: &[f32], y: f32) -> usize {
+    if tops.is_empty() {
+        return 0;
+    }
+    let index = tops.partition_point(|&top| top <= y);
+    index.saturating_sub(1).min(tops.len() - 1)
+}
+
+fn accumulate_tops(wrap: &[WrapLine]) -> (Vec<f32>, f32) {
+    let mut tops = Vec::with_capacity(wrap.len());
+    let mut y = 0.0;
+    for chunk in wrap {
+        tops.push(y);
+        y += chunk.height;
+    }
+    (tops, y)
+}
 
 fn line_starts(text: &str) -> (Vec<usize>, Vec<usize>) {
     let mut char_starts = vec![0];
@@ -2075,6 +2155,8 @@ fn wrap_layout(
     model: &[crate::markdown::MarkdownLine],
     code_face: Face,
     fallback_font_px: f32,
+    base_line_px: f32,
+    density: f32,
 ) -> Vec<WrapLine> {
     let all: Vec<char> = text.chars().collect();
     let mut rows = Vec::with_capacity(starts.len());
@@ -2106,27 +2188,29 @@ fn wrap_layout(
                 start,
                 end,
                 font,
+                height: visual_line_height(font, base_line_px, density),
             });
         }
     }
     rows
 }
 
-fn heading_font(line: Option<&crate::markdown::MarkdownLine>, base: f32) -> f32 {
+fn heading_font(
+    line: Option<&crate::markdown::MarkdownLine>,
+    base: f32,
+    headings: &[HeadingStyle; 6],
+    editor_font_dp: f32,
+    density: f32,
+) -> f32 {
     let Some(line) = line else {
         return base;
     };
     if line.kind != "heading" {
         return base;
     }
-    match line.level {
-        1 => base * 1.27,
-        2 => base * 1.20,
-        3 => base * 1.13,
-        4 => base * 1.07,
-        5 => base * 1.03,
-        _ => base,
-    }
+    let style = heading_at(headings, line.level);
+    let scale = editor_font_dp / EDITOR_FONT_DP;
+    (style.size_dp * scale * density).round().max(6.0)
 }
 
 fn model_for_editor(text: &str) -> Vec<crate::markdown::MarkdownLine> {
@@ -2334,6 +2418,7 @@ impl SurfaceState {
             editor_line_dp: EDITOR_LINE_DP,
             text_face: Face::Mono,
             code_face: Face::Mono,
+            headings: DEFAULT_HEADINGS,
             background: 0x000000,
             painter: Painter::new(),
             tree: TreeState::default(),
@@ -2554,7 +2639,7 @@ impl SurfaceState {
             }
             2 => {
                 let content = self.editor.top_inset.round()
-                    + self.editor.wrap.len() as f32 * self.line_px()
+                    + self.editor.wrap_height
                     + self.editor.bottom_inset.round();
                 let max = (content - self.height as f32).max(0.0);
                 (content, self.height as f32, self.editor.scroll.round(), max)
@@ -2707,7 +2792,7 @@ impl SurfaceState {
                 let suffix: String = chars[end..].iter().collect();
                 let mut x = text_x;
                 if !prefix.is_empty() {
-                    painter.draw(pixels, self.width, self.height, x, name_y, &prefix, name_font, name_color, Face::Ui);
+                    painter.draw(pixels, self.width, self.height, x, name_y, &prefix, name_font, name_color, Face::Ui, false);
                     x += painter.width(&prefix, name_font, Face::Ui);
                 }
                 let matched_width = painter.width(&matched, name_font, Face::Ui);
@@ -2731,10 +2816,11 @@ impl SurfaceState {
                     name_font,
                     0xffffff,
                     Face::Ui,
+                    false,
                 );
                 x += matched_width;
                 if !suffix.is_empty() {
-                    painter.draw(pixels, self.width, self.height, x, name_y, &suffix, name_font, name_color, Face::Ui);
+                    painter.draw(pixels, self.width, self.height, x, name_y, &suffix, name_font, name_color, Face::Ui, false);
                 }
             } else {
                 painter.draw(
@@ -2747,6 +2833,7 @@ impl SurfaceState {
                     name_font,
                     name_color,
                     Face::Ui,
+                    false,
                 );
             }
             if show_tag {
@@ -2771,6 +2858,7 @@ impl SurfaceState {
                     9.0 * density,
                     0xb3b3b3,
                     Face::Ui,
+                    false,
                 );
             }
         }
@@ -2824,13 +2912,11 @@ impl SurfaceState {
         if line_count == 0 || self.editor.wrap_canonical.is_empty() {
             return (0, line_count.saturating_sub(1));
         }
-        let line_h = self.line_px();
-        let first_visual = (((self.editor.scroll - self.editor.top_inset) / line_h)
-            .floor()
-            .max(0.0) as usize)
+        let scroll_top = (self.editor.scroll - self.editor.top_inset).max(0.0);
+        let first_visual = visual_at_y(&self.editor.wrap_canonical_tops, scroll_top);
+        let viewport_bottom = scroll_top + self.viewport_height as f32;
+        let last_visual = (visual_at_y(&self.editor.wrap_canonical_tops, viewport_bottom) + 2)
             .min(self.editor.wrap_canonical.len().saturating_sub(1));
-        let visible = (self.viewport_height as f32 / line_h).ceil() as usize + 2;
-        let last_visual = first_visual.saturating_add(visible);
         let mut first_line = 0usize;
         for line in 0..line_count {
             let start = self
@@ -2897,9 +2983,16 @@ impl SurfaceState {
             return;
         }
         let base = self.font_px();
+        let base_line = self.line_px();
         let line_fonts: Vec<(f32, Face)> = (0..self.editor.starts.len())
             .map(|line| {
-                let font = heading_font(self.editor.model.get(line), base);
+                let font = heading_font(
+                    self.editor.model.get(line),
+                    base,
+                    &self.headings,
+                    self.editor_font_dp,
+                    self.density,
+                );
                 (font, self.line_face(line))
             })
             .collect();
@@ -2912,6 +3005,8 @@ impl SurfaceState {
             &self.editor.model,
             self.code_face,
             base,
+            base_line,
+            self.density,
         );
         let mut first = vec![0; self.editor.starts.len()];
         let mut count = vec![0; self.editor.starts.len()];
@@ -2923,14 +3018,19 @@ impl SurfaceState {
                 *value += 1;
             }
         }
+        let (canonical_tops, canonical_height) = accumulate_tops(&wrap);
         self.editor.wrap_canonical = wrap;
         self.editor.wrap_canonical_first = first;
         self.editor.wrap_canonical_count = count;
+        self.editor.wrap_canonical_tops = canonical_tops;
+        self.editor.wrap_canonical_height = canonical_height;
         self.editor.wrap_width = content_width;
         self.editor.wrap_dirty = false;
         self.editor.wrap = self.editor.wrap_canonical.clone();
         self.editor.wrap_first = self.editor.wrap_canonical_first.clone();
         self.editor.wrap_count = self.editor.wrap_canonical_count.clone();
+        self.editor.wrap_tops = self.editor.wrap_canonical_tops.clone();
+        self.editor.wrap_height = self.editor.wrap_canonical_height;
         self.editor.wrap_has_exceptions = false;
         let key = self.paint_key();
         self.apply_wrap_paint(content_width);
@@ -2944,6 +3044,8 @@ impl SurfaceState {
         self.editor.wrap = self.editor.wrap_canonical.clone();
         self.editor.wrap_first = self.editor.wrap_canonical_first.clone();
         self.editor.wrap_count = self.editor.wrap_canonical_count.clone();
+        self.editor.wrap_tops = self.editor.wrap_canonical_tops.clone();
+        self.editor.wrap_height = self.editor.wrap_canonical_height;
         self.editor.wrap_has_exceptions = false;
     }
 
@@ -2984,6 +3086,7 @@ impl SurfaceState {
             return;
         }
         let base = self.font_px();
+        let base_line = self.line_px();
         let mut effective: Vec<WrapLine> = Vec::with_capacity(self.editor.wrap_canonical.len());
         let mut new_first = vec![0usize; line_count];
         let mut new_count = vec![0usize; line_count];
@@ -3003,7 +3106,13 @@ impl SurfaceState {
                     (sel_start, sel_end),
                     false,
                 );
-                let font = heading_font(self.editor.model.get(line), base);
+                let font = heading_font(
+                    self.editor.model.get(line),
+                    base,
+                    &self.headings,
+                    self.editor_font_dp,
+                    self.density,
+                );
                 let line_face = self.line_face(line);
                 let code_face = self.code_face;
                 for (start, end) in wrap_line_chunks(
@@ -3022,6 +3131,7 @@ impl SurfaceState {
                         start,
                         end,
                         font,
+                        height: visual_line_height(font, base_line, self.density),
                     });
                 }
             } else {
@@ -3031,7 +3141,10 @@ impl SurfaceState {
             }
             new_count[line] = effective.len() - new_first[line];
         }
+        let (effective_tops, effective_height) = accumulate_tops(&effective);
         self.editor.wrap = effective;
+        self.editor.wrap_tops = effective_tops;
+        self.editor.wrap_height = effective_height;
         self.editor.wrap_first = new_first;
         self.editor.wrap_count = new_count;
         self.editor.wrap_has_exceptions = true;
@@ -3103,12 +3216,9 @@ impl SurfaceState {
             self.editor.scroll.round()
         };
         let top_inset = self.editor.top_inset.round();
-        let first = (((scroll - top_inset) / line_h)
-            .floor()
-            .max(0.0) as usize)
-            .min(total_visual.saturating_sub(1));
-        let visible = (self.height as f32 / line_h).ceil() as usize + 2;
-        let last = total_visual.min(first + visible);
+        let first = visual_at_y(&self.editor.wrap_tops, (scroll - top_inset).max(0.0));
+        let viewport_bottom = (scroll - top_inset).max(0.0) + self.height as f32;
+        let last = (visual_at_y(&self.editor.wrap_tops, viewport_bottom) + 2).min(total_visual);
         let (selection_start, selection_end) = self.selected_range();
         let cursor_line = if self.editor.preview {
             usize::MAX
@@ -3118,10 +3228,12 @@ impl SurfaceState {
         let (cursor_visual, cursor_offset) =
             self.visual_for_position(&starts, self.editor.selection);
         let line_faces: Vec<Face> = (0..starts.len()).map(|line| self.line_face(line)).collect();
+        let headings = self.headings;
         let model = std::mem::take(&mut self.editor.model);
         let has_model = model.len() == starts.len();
         let mut painter = std::mem::take(&mut self.painter);
         let mut prepared_line = usize::MAX;
+        let mut prepared_heading: Option<HeadingStyle> = None;
         let mut line_start = 0usize;
         let mut chars: Vec<char> = Vec::new();
         let mut colors: Vec<u32> = Vec::new();
@@ -3136,12 +3248,21 @@ impl SurfaceState {
         let mut end_handle: Option<(f32, f32)> = None;
         let mut insertion_handle: Option<(f32, f32)> = None;
         let text_pad_y = (3.0 * density).round();
-        let number_pad_y = (4.0 * density).round();
         for visual in first..last {
             let chunk = self.editor.wrap[visual];
-            let y = top_inset + visual as f32 * line_h - scroll;
+            let row_h = chunk.height;
+            let y = top_inset + self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0) - scroll;
+            let text_y = y + ((row_h - line_h) * 0.5).max(0.0) + text_pad_y;
             if chunk.line != prepared_line {
                 prepared_line = chunk.line;
+                prepared_heading = if has_model {
+                    model
+                        .get(chunk.line)
+                        .filter(|line| line.kind == "heading")
+                        .map(|line| heading_at(&headings, line.level))
+                } else {
+                    None
+                };
                 line_start = starts.get(chunk.line).copied().unwrap_or(0);
                 let raw = logical_line(&self.editor.text, &byte_starts, chunk.line);
                 chars.clear();
@@ -3168,13 +3289,21 @@ impl SurfaceState {
                 } else if has_model {
                     if let Some(line) = model.get(chunk.line) {
                         let base = match line.kind.as_str() {
-                            "heading" => 0xdadada,
+                            "heading" => heading_at(&headings, line.level).color,
                             "quote" => 0xb3b3b3,
                             "code" => 0x44cf6e,
                             _ => 0xdadada,
                         };
                         colors.clear();
                         colors.resize(chars.len(), base);
+                        if line.kind == "heading" {
+                            // The revealed `#` markers stay muted, like the
+                            // desktop heading row.
+                            let length = line.prefix_chars.min(chars.len());
+                            for value in colors.iter_mut().take(length) {
+                                *value = 0x808080;
+                            }
+                        }
                         if line.kind == "code" {
                             if let Some(language) = line.language.as_deref() {
                                 colors = code_colors(raw, language);
@@ -3297,7 +3426,7 @@ impl SurfaceState {
                         text_x + offset_start,
                         y + 2.0 * density,
                         offset_end - offset_start,
-                        line_h - 4.0 * density,
+                        row_h - 4.0 * density,
                         *color,
                     );
                 }
@@ -3321,7 +3450,7 @@ impl SurfaceState {
                             left,
                             y,
                             (right - left).max(2.0 * density),
-                            line_h,
+                            row_h,
                             0x23173d,
                         );
                     }
@@ -3348,28 +3477,31 @@ impl SurfaceState {
                     index += 1;
                 }
                 let segment_x = text_x + local_x(start_idx);
+                let italic = prepared_heading.is_some_and(|style| style.italic);
                 painter.draw(
                     pixels,
                     self.width,
                     self.height,
                     segment_x,
-                    y + text_pad_y,
+                    text_y,
                     &segment,
                     chunk.font,
                     color,
                     face,
+                    italic,
                 );
-                if chunk.font > font_px + 0.1 {
+                if prepared_heading.is_some_and(|style| style.bold) {
                     painter.draw(
                         pixels,
                         self.width,
                         self.height,
                         segment_x + (0.6 * density).round(),
-                        y + text_pad_y,
+                        text_y,
                         &segment,
                         chunk.font,
                         color,
                         face,
+                        italic,
                     );
                 }
             }
@@ -3384,22 +3516,22 @@ impl SurfaceState {
                         x,
                         y,
                         2.0 * density,
-                        line_h,
+                        row_h,
                         0x8a5cf5,
                     );
                 }
                 if self.editor.insertion_handle_visible {
-                    insertion_handle = Some((x + 1.0 * density, y + line_h));
+                    insertion_handle = Some((x + 1.0 * density, y + row_h));
                 }
             }
             if selection_end > selection_start {
                 if visual == start_visual {
                     let col = chunk_start + start_offset;
-                    start_handle = Some((text_x + local_x(col), y + line_h));
+                    start_handle = Some((text_x + local_x(col), y + row_h));
                 }
                 if visual == end_visual {
                     let col = chunk_start + end_offset;
-                    end_handle = Some((text_x + local_x(col), y + line_h));
+                    end_handle = Some((text_x + local_x(col), y + row_h));
                 }
             }
         }
@@ -3409,19 +3541,21 @@ impl SurfaceState {
             if chunk.start != 0 {
                 continue;
             }
-            let y = top_inset + visual as f32 * line_h - scroll;
+            let y = top_inset + self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0) - scroll;
             let number = (chunk.line + 1).to_string();
             let number_width = painter.width(&number, number_font_px, Face::Ui);
+            let number_y = y + ((chunk.height - number_font_px) * 0.5).max(0.0);
             painter.draw(
                 pixels,
                 self.width,
                 self.height,
                 gutter - (GUTTER_PAD_DP * density).round() - number_width,
-                y + number_pad_y,
+                number_y,
                 &number,
                 number_font_px,
                 0x666666,
                 Face::Ui,
+                false,
             );
         }
         if let Some((x, y)) = insertion_handle {
@@ -3532,7 +3666,6 @@ impl SurfaceState {
     }
 
     fn editor_touch(&mut self, x: f32, y: f32, action: i32) -> bool {
-        let line_h = self.line_px();
         match action {
             0 => {
                 self.editor.drag = Some((x, y, self.editor.scroll_x, self.editor.scroll, true));
@@ -3547,7 +3680,7 @@ impl SurfaceState {
                         if dx.abs() <= dy.abs() || !tap {
                             let (_advance, _, content) = self.editor_metrics();
                             self.ensure_wrap(content);
-                            let max_y = (self.editor.top_inset + self.editor.wrap.len() as f32 * line_h
+                            let max_y = (self.editor.top_inset + self.editor.wrap_height
                                 + self.editor.bottom_inset
                                 - self.height as f32)
                                 .max(0.0);
@@ -3590,10 +3723,9 @@ impl SurfaceState {
     }
 
     fn editor_scroll_metrics(&mut self) -> (f32, f32, f32, f32) {
-        let line_h = self.line_px();
         let (advance, gutter, content) = self.editor_metrics();
         self.ensure_wrap(content);
-        let max_y = (self.editor.top_inset + self.editor.wrap.len() as f32 * line_h
+        let max_y = (self.editor.top_inset + self.editor.wrap_height
             + self.editor.bottom_inset
             - self.viewport_height as f32)
             .max(0.0);
@@ -3832,15 +3964,21 @@ impl SurfaceState {
         let (_, _, content) = self.editor_metrics();
         self.ensure_wrap(content);
         let (visual, _) = self.visual_for_position(&self.editor.starts, self.editor.selection);
-        let top = visual as f32 * line_h;
-        let bottom = self.editor.top_inset + top + line_h + 24.0 * self.density;
+        let top = self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0);
+        let row_h = self
+            .editor
+            .wrap
+            .get(visual)
+            .map(|chunk| chunk.height)
+            .unwrap_or(line_h);
+        let bottom = self.editor.top_inset + top + row_h + 24.0 * self.density;
         let visible = (self.viewport_height as f32 - self.editor.bottom_inset).max(line_h);
         if top < self.editor.scroll {
             self.editor.scroll = top;
         } else if bottom > self.editor.scroll + visible {
             self.editor.scroll = bottom - visible;
         }
-        let max_y = (self.editor.top_inset + self.editor.wrap.len() as f32 * line_h
+        let max_y = (self.editor.top_inset + self.editor.wrap_height
             + self.editor.bottom_inset
             - self.viewport_height as f32)
             .max(0.0);
@@ -3906,13 +4044,13 @@ impl SurfaceState {
     }
 
     fn editor_position_at(&mut self, x: f32, y: f32) -> usize {
-        let line_h = self.line_px();
         let (_, gutter, content) = self.editor_metrics();
         self.ensure_wrap(content);
-        let visual = (((y + self.editor.scroll - self.editor.top_inset) / line_h)
-            .floor()
-            .max(0.0) as usize)
-            .min(self.editor.wrap.len().saturating_sub(1));
+        let visual = visual_at_y(
+            &self.editor.wrap_tops,
+            (y + self.editor.scroll - self.editor.top_inset).max(0.0),
+        )
+        .min(self.editor.wrap.len().saturating_sub(1));
         let Some(chunk) = self.editor.wrap.get(visual).copied() else {
             return 0;
         };
@@ -3979,14 +4117,45 @@ impl SurfaceState {
         true
     }
 
+    /// Top offset and total height of every logical line in the effective
+    /// layout. A heading line can occupy several visual rows, all of them at
+    /// the heading's taller height.
+    fn line_extents(&self) -> (Vec<f32>, Vec<f32>) {
+        let line_count = self.editor.wrap_first.len();
+        let mut tops = Vec::with_capacity(line_count);
+        let mut heights = Vec::with_capacity(line_count);
+        for line in 0..line_count {
+            let first = self.editor.wrap_first.get(line).copied().unwrap_or(0);
+            let count = self.editor.wrap_count.get(line).copied().unwrap_or(0);
+            let top = self
+                .editor
+                .wrap_tops
+                .get(first)
+                .copied()
+                .unwrap_or(self.editor.wrap_height);
+            let height = self
+                .editor
+                .wrap
+                .get(first)
+                .map(|chunk| chunk.height * count as f32)
+                .unwrap_or(0.0);
+            tops.push(top);
+            heights.push(height);
+        }
+        (tops, heights)
+    }
+
     fn editor_layout_info(&mut self) -> String {
         let (_advance, _, content) = self.editor_metrics();
         self.ensure_wrap(content);
+        let (tops, heights) = self.line_extents();
         json!({
             "row_height": self.line_px(),
             "top": self.editor.top_inset,
             "first": self.editor.wrap_first,
             "count": self.editor.wrap_count,
+            "tops": tops,
+            "heights": heights,
             "total": self.editor.wrap.len(),
         })
         .to_string()
@@ -4001,10 +4170,14 @@ impl SurfaceState {
 
         if selection_end > selection_start {
             let mut points = Vec::with_capacity(2);
+            let mut handle_row = line_h;
             for position in [selection_start, selection_end] {
                 let (visual, offset) = self.visual_for_position(&self.editor.starts, position);
+                let top = self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0);
+                let mut row_h = line_h;
                 let mut handle_x = text_x;
                 if let Some(chunk) = self.editor.wrap.get(visual).copied() {
+                    row_h = chunk.height;
                     let raw = logical_line(&self.editor.text, &self.editor.byte_starts, chunk.line);
                     let chars: Vec<char> = raw.chars().collect();
                     let hidden = self.hidden_markers(chunk.line, &chars);
@@ -4022,20 +4195,24 @@ impl SurfaceState {
                 }
                 points.push(json!({
                     "x": handle_x,
-                    "y": self.editor.top_inset + visual as f32 * line_h - self.editor.scroll + line_h,
+                    "y": self.editor.top_inset + top - self.editor.scroll + row_h,
                 }));
+                handle_row = handle_row.max(row_h);
             }
             json!({
                 "start": points[0],
                 "end": points[1],
-                "row_height": line_h,
+                "row_height": handle_row,
                 "size": 24.0 * self.density,
             })
             .to_string()
         } else {
             let (visual, offset) = self.visual_for_position(&self.editor.starts, self.editor.selection);
+            let top = self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0);
+            let mut row_h = line_h;
             let mut cursor_x = text_x + 1.0 * self.density;
             if let Some(chunk) = self.editor.wrap.get(visual).copied() {
+                row_h = chunk.height;
                 let raw = logical_line(&self.editor.text, &self.editor.byte_starts, chunk.line);
                 let chars: Vec<char> = raw.chars().collect();
                 let hidden = self.hidden_markers(chunk.line, &chars);
@@ -4053,13 +4230,13 @@ impl SurfaceState {
                     + x_offsets.get(col).copied().unwrap_or(base_x)
                     - base_x;
             }
-            let cursor_y = self.editor.top_inset + visual as f32 * line_h - self.editor.scroll + line_h;
+            let cursor_y = self.editor.top_inset + top - self.editor.scroll + row_h;
             json!({
                 "insertion": {
                     "x": cursor_x,
                     "y": cursor_y,
                 },
-                "row_height": line_h,
+                "row_height": row_h,
                 "size": 24.0 * self.density,
             })
             .to_string()
@@ -4242,6 +4419,69 @@ fn face_from_jni(value: i32) -> Face {
         2 => Face::Serif,
         _ => Face::Ui,
     }
+}
+
+#[derive(Deserialize)]
+struct HeadingStyleJson {
+    size: f32,
+    color: u32,
+    #[serde(default = "default_heading_bold")]
+    bold: bool,
+    #[serde(default)]
+    italic: bool,
+}
+
+fn default_heading_bold() -> bool {
+    true
+}
+
+/// Applies the per-level heading styles. A size change re-wraps the document,
+/// exactly like a body-font change; colour and format only repaint.
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetHeadings(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    json: JString<'_>,
+) {
+    let Ok(raw) = env.get_string(&json) else {
+        return;
+    };
+    let raw: String = raw.into();
+    let Ok(styles) = serde_json::from_str::<Vec<HeadingStyleJson>>(&raw) else {
+        return;
+    };
+    if styles.len() != 6 {
+        return;
+    }
+    let mut next = DEFAULT_HEADINGS;
+    for (slot, style) in next.iter_mut().zip(styles) {
+        *slot = HeadingStyle {
+            size_dp: style.size.clamp(6.0, 64.0),
+            color: style.color & 0x00ff_ffff,
+            bold: style.bold,
+            italic: style.italic,
+        };
+    }
+    let _ = with_surface(id, |state| {
+        if state.headings == next {
+            return;
+        }
+        let size_changed = state
+            .headings
+            .iter()
+            .zip(next.iter())
+            .any(|(old, new)| (old.size_dp - new.size_dp).abs() > 0.01);
+        state.headings = next;
+        if size_changed {
+            state.editor.wrap_dirty = true;
+            let content = state.editor_metrics().2;
+            state.ensure_wrap(content);
+            let (_, _, max_y, _) = state.editor_scroll_metrics();
+            state.editor.scroll = state.editor.scroll.min(max_y);
+        }
+        state.invalidate();
+    });
 }
 
 /// Selects the text/code faces. Layout and glyphs are invalidated here once,
@@ -5124,6 +5364,17 @@ mod tests {
     }
 
     #[test]
+    fn heading_rows_grow_on_the_four_dp_grid() {
+        let base = 22.0;
+        assert_eq!(visual_line_height(15.0, base, 1.0), base);
+        assert_eq!(visual_line_height(16.0, base, 1.0), base);
+        assert_eq!(visual_line_height(17.0, base, 1.0), 24.0);
+        assert_eq!(visual_line_height(18.0, base, 1.0), 28.0);
+        assert_eq!(visual_line_height(19.0, base, 1.0), 28.0);
+        assert_eq!(visual_line_height(40.0, base, 1.0), 56.0);
+    }
+
+    #[test]
     fn test_wrap_layout_emoji_boundary() {
         let text = "hello 😀 world";
         let starts = vec![0];
@@ -5135,7 +5386,18 @@ mod tests {
         // "hello " is 6 cells, 😀 is 2 cells -> 8 cells.
         // "world" is 5 cells, cannot fit on line 1 (8 + 5 = 13 > 10).
         // It wraps after the space at index 7: line 1 gets "hello 😀 ", line 2 gets "world".
-        let rows = wrap_layout(text, &starts, 90.0, &mut painter, &line_fonts, &[], Face::Mono, px);
+        let rows = wrap_layout(
+            text,
+            &starts,
+            90.0,
+            &mut painter,
+            &line_fonts,
+            &[],
+            Face::Mono,
+            px,
+            22.0,
+            1.0,
+        );
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].start, 0);
         assert_eq!(rows[0].end, 8); // "hello 😀 "
