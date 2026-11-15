@@ -64,7 +64,10 @@ import java.util.concurrent.atomic.AtomicReference
 private const val SCROLL_FRICTION = 0.010f
 
 /** Extra rows rendered above and below the viewport, as a fraction of its height. */
-private const val BAND_MARGIN_RATIO = 0.75f
+private const val BAND_MARGIN_RATIO = 0.70f
+
+/** How much of the margin is shifted toward the direction of travel. */
+private const val BAND_DIRECTION_BIAS = 0.35f
 
 /** Request the next band while this much of the leading margin is still left. */
 private const val BAND_TRIGGER_RATIO = 0.75f
@@ -862,11 +865,46 @@ class NativeEditorView(
         rebaseDisplayScroll = null
     }
 
+    private var bandLastScroll = 0f
+    private var bandScrollDirection = 0
+
+    /**
+     * Remembers which way the content is moving so the band can keep more
+     * buffered content ahead of the scroll instead of splitting it evenly.
+     */
+    protected fun noteBandDirection(scroll: Float) {        val delta = scroll - bandLastScroll
+        if (kotlin.math.abs(delta) > 1f) {
+            bandScrollDirection = if (delta > 0f) 1 else -1
+            bandLastScroll = scroll
+        }
+    }
+
+    /** Fraction of the symmetric margin kept above the viewport. */
+    private fun bandAboveFactor(): Float = when (bandScrollDirection) {
+        1 -> 1f - BAND_DIRECTION_BIAS
+        -1 -> 1f + BAND_DIRECTION_BIAS
+        else -> 1f
+    }
+
+    /** Band origin with the buffer biased toward the direction of travel. */
+    protected fun bandTargetOrigin(scroll: Float, maxOrigin: Float): Float {
+        val m = computeBandMargin(safeViewportHeight()).toFloat()
+        return (scroll - m * bandAboveFactor())
+            .coerceIn(0f, maxOrigin)
+            .roundToInt()
+            .toFloat()
+    }
+
     private fun bandCoversScroll(origin: Float, scroll: Float): Boolean {
         val h = safeViewportHeight()
         if (h <= 0) return true
         val m = computeBandMargin(h).toFloat()
-        return scroll >= origin - 0.5f && scroll + h <= origin + h + m + 0.5f
+        // The band texture is laid out from -margin to height + margin, so it
+        // holds `2 * margin` of content beyond the viewport on each side. The
+        // bottom check must use that full buffer; using one margin made every
+        // scroll-down (for example the IME reveal) look uncovered and forced a
+        // repaint on each animation frame.
+        return scroll >= origin - 0.5f && scroll + h <= origin + h + 2f * m + 0.5f
     }
 
     /**
@@ -875,15 +913,12 @@ class NativeEditorView(
      * until it arrives.
      */
     private fun ensureBandCoversScroll(previousScroll: Float) {
+        noteBandDirection(knownScroll)
         if (bandCoversScroll(bandOrigin, knownScroll)) {
             applyScrollTranslation()
             return
         }
-        val m = computeBandMargin(safeViewportHeight()).toFloat()
-        val target = (knownScroll - m)
-            .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
-            .roundToInt()
-            .toFloat()
+        val target = bandTargetOrigin(knownScroll, maxOf(scrollMaxY, knownScroll))
         val queued = rebaseOrigin
         if (queued != null && kotlin.math.abs(queued - target) < 1f) {
             // The same jump is already being rendered.
@@ -912,11 +947,7 @@ class NativeEditorView(
                 "VibecodiumRender",
                 "reject band origin=$rounded knownScroll=$knownScroll maxY=$scrollMaxY",
             )
-            val m = computeBandMargin(safeViewportHeight()).toFloat()
-            val target = (knownScroll - m)
-                .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
-                .roundToInt()
-                .toFloat()
+            val target = bandTargetOrigin(knownScroll, maxOf(scrollMaxY, knownScroll))
             rebaseOrigin = target
             rebaseDisplayScroll = knownScroll
             scheduleBandRender(target, force = true)
@@ -941,7 +972,13 @@ class NativeEditorView(
         if (h <= 0) return
         val m = computeBandMargin(h).toFloat()
         if (m <= 0f) return
-        val trigger = m * BAND_TRIGGER_RATIO
+        noteBandDirection(scroll)
+        // The margin is split unevenly: more of it trails behind the scroll so
+        // a fast fling has content ahead of it.
+        val above = m * bandAboveFactor()
+        val below = 2f * m - above
+        val topTrigger = above * BAND_TRIGGER_RATIO
+        val bottomTrigger = below * BAND_TRIGGER_RATIO
         val minMove = m * BAND_MIN_MOVE_RATIO
         val maxOrigin = maxOf(scrollMaxY, knownScroll)
         // Compare against the newest requested band, not only the last applied
@@ -953,15 +990,20 @@ class NativeEditorView(
             // until the next paint. Never throttle this correction: near the
             // top of the document the required move is smaller than the
             // regular threshold, but the gap is still visible.
-            val targetOrigin = (scroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
+            val targetOrigin = bandTargetOrigin(scroll, maxOrigin)
             scheduleBandRender(targetOrigin, force = true)
             return
         }
         val topHeadroom = scroll - reference
         val bottomHeadroom = (reference + 2f * m) - scroll
-        if ((topHeadroom < trigger && reference > 0.5f) ||
-            (bottomHeadroom < trigger && reference < maxOrigin - 0.5f)) {
-            val targetOrigin = (scroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
+        // Look at the leading side only: the trailing one was deliberately made
+        // smaller by the direction bias, so checking it would schedule a repaint
+        // almost immediately after every render.
+        val needTop = topHeadroom < topTrigger && bandScrollDirection <= 0
+        val needBottom = bottomHeadroom < bottomTrigger && bandScrollDirection >= 0
+        if ((needTop && reference > 0.5f) ||
+            (needBottom && reference < maxOrigin - 0.5f)) {
+            val targetOrigin = bandTargetOrigin(scroll, maxOrigin)
             if (kotlin.math.abs(targetOrigin - reference) >= minMove) {
                 scheduleBandRender(targetOrigin)
             }
@@ -1405,7 +1447,32 @@ class NativeEditorView(
             if (idleTransition) {
                 CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
             }
-            mainHandler.post { syncScrollFromNative() }
+            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
+            val rustScroll = info?.optDouble("scroll", knownScroll.toDouble())?.toFloat() ?: knownScroll
+            val nextScroll = if (wasIncreased && !idleTransition) {
+                rustScroll
+            } else {
+                knownScroll.coerceIn(0f, newMaxY)
+            }
+            mainHandler.post {
+                val previousScroll = knownScroll
+                val scrollChanged = nextScroll != knownScroll
+                knownScroll = nextScroll
+                scrollMaxY = newMaxY
+                noteBandDirection(nextScroll)
+                if (scrollChanged) {
+                    // The IME animates over many frames. Keep the existing
+                    // texture translated while it moves and only rebase when the
+                    // band no longer covers the viewport, otherwise every frame
+                    // would repaint and the text would flicker.
+                    ensureBandCoversScroll(previousScroll)
+                } else {
+                    applyScrollTranslation()
+                }
+                scrollbarOverlay.update(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
+            }
         }
     }
 
@@ -1465,11 +1532,7 @@ class NativeEditorView(
             mainHandler.post {
                 fontRequestInFlight = false
                 scrollMaxY = maxOf(newMaxY, 0f)
-                val m = computeBandMargin(safeViewportHeight()).toFloat()
-                val target = (knownScroll - m)
-                    .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
-                    .roundToInt()
-                    .toFloat()
+                val target = bandTargetOrigin(knownScroll, maxOf(scrollMaxY, knownScroll))
                 // Keep the old texture translated in place until the band in the
                 // new metrics arrives, exactly like a programmatic scroll jump.
                 invalidateBandGeneration()
@@ -1508,11 +1571,7 @@ class NativeEditorView(
             mainHandler.post {
                 faceRequestInFlight = false
                 scrollMaxY = maxOf(newMaxY, 0f)
-                val m = computeBandMargin(safeViewportHeight()).toFloat()
-                val target = (knownScroll - m)
-                    .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
-                    .roundToInt()
-                    .toFloat()
+                val target = bandTargetOrigin(knownScroll, maxOf(scrollMaxY, knownScroll))
                 invalidateBandGeneration()
                 rebaseDisplayScroll = knownScroll
                 rebaseOrigin = target
@@ -1714,9 +1773,8 @@ class NativeEditorView(
         val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
         scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: 0f
         knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
-        val m = computeBandMargin(safeViewportHeight()).toFloat()
         val maxOrigin = maxOf(scrollMaxY, knownScroll)
-        bandOrigin = (knownScroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
+        bandOrigin = bandTargetOrigin(knownScroll, maxOrigin)
         CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
         mainHandler.post {
             applyScrollTranslation()
@@ -1756,8 +1814,7 @@ class NativeEditorView(
         val viewport = if (pathChanged) loadViewport(path) else null
         if (pathChanged) {
             knownScroll = viewport?.first ?: 0f
-            val m = computeBandMargin(safeViewportHeight()).toFloat()
-            bandOrigin = (knownScroll - m).coerceAtLeast(0f).roundToInt().toFloat()
+            bandOrigin = bandTargetOrigin(knownScroll, knownScroll)
             applyScrollTranslation()
         }
         contentDescription = if (nextLanguage.isEmpty()) {
@@ -1790,9 +1847,8 @@ class NativeEditorView(
             val newScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
             scrollMaxY = newMaxY
             knownScroll = newScroll
-            val m = computeBandMargin(safeViewportHeight()).toFloat()
             val maxOrigin = maxOf(scrollMaxY, knownScroll)
-            bandOrigin = (knownScroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
+            bandOrigin = bandTargetOrigin(knownScroll, maxOrigin)
             CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
             mainHandler.post {
                 applyScrollTranslation()
@@ -1830,9 +1886,8 @@ class NativeEditorView(
         val scrollX = viewport?.second ?: 0f
         knownScroll = scroll.roundToInt().toFloat()
         val maxOrigin = maxOf(ensureScrollMaxY(), knownScroll)
-        val m = computeBandMargin(safeViewportHeight()).toFloat()
         invalidateBandGeneration()
-        bandOrigin = (knownScroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
+        bandOrigin = bandTargetOrigin(knownScroll, maxOrigin)
         applyScrollTranslation()
         postRenderTask {
             if (!isSurfaceAttached()) return@postRenderTask
@@ -2883,11 +2938,8 @@ class NativeEditorView(
         val previousScroll = knownScroll
         knownScroll = newScroll
         scrollMaxY = newMaxY
-        val m = computeBandMargin(safeViewportHeight()).toFloat()
-        val target = (knownScroll - m)
-            .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
-            .roundToInt()
-            .toFloat()
+        noteBandDirection(newScroll)
+        val target = bandTargetOrigin(knownScroll, maxOf(scrollMaxY, knownScroll))
         invalidateBandGeneration()
         rebaseDisplayScroll = previousScroll
         rebaseOrigin = target
