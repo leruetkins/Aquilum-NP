@@ -22,6 +22,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -225,6 +226,9 @@ import md.vibecodium.mobile.NoteItem
 import md.vibecodium.mobile.SyncFileCategory
 import md.vibecodium.mobile.SyncProgressKind
 import md.vibecodium.mobile.Tab
+import md.vibecodium.mobile.ThemeEntry
+import md.vibecodium.mobile.ThemeMode
+import md.vibecodium.mobile.ThemeSlot
 import md.vibecodium.mobile.UiState
 import md.vibecodium.mobile.VibecodiumController
 import md.vibecodium.mobile.ExplorerRow
@@ -661,6 +665,53 @@ private val SidebarToggleIcon: ImageVector = ImageVector.Builder(
     }
 }.build()
 
+/** `lucide-sun`, shown in dark mode to switch to light. */
+private val SunIcon: ImageVector = ImageVector.Builder(
+    name = "sun",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(16f, 12f)
+        arcTo(4f, 4f, 0f, true, true, 8f, 12f)
+        arcTo(4f, 4f, 0f, true, true, 16f, 12f)
+        moveTo(12f, 2f)
+        lineTo(12f, 4f)
+        moveTo(12f, 20f)
+        lineTo(12f, 22f)
+        moveTo(2f, 12f)
+        lineTo(4f, 12f)
+        moveTo(20f, 12f)
+        lineTo(22f, 12f)
+        moveTo(4.93f, 4.93f)
+        lineTo(6.34f, 6.34f)
+        moveTo(17.66f, 17.66f)
+        lineTo(19.07f, 19.07f)
+        moveTo(4.93f, 19.07f)
+        lineTo(6.34f, 17.66f)
+        moveTo(17.66f, 6.34f)
+        lineTo(19.07f, 4.93f)
+    }
+}.build()
+
+/** `lucide-moon`, shown in light mode to switch to dark. */
+private val MoonIcon: ImageVector = ImageVector.Builder(
+    name = "moon",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = SolidColor(Color.Black)) {
+        moveTo(21f, 12.79f)
+        arcTo(9f, 9f, 0f, true, true, 11.21f, 3f)
+        arcTo(7f, 7f, 0f, false, false, 21f, 12.79f)
+        close()
+    }
+}.build()
+
 /** `lucide-book-open`, used for the reading-view action. */
 private val BookOpenIcon: ImageVector = ImageVector.Builder(
     name = "book-open",
@@ -722,7 +773,16 @@ private val EditorLineHeight = 22.sp
 fun VibecodiumApp(controller: VibecodiumController) {
     val state = controller.state
     val density = LocalDensity.current
-    VibecodiumTheme {
+    val dark = when (state.settings.themeMode) {
+        ThemeMode.Dark -> true
+        ThemeMode.Light -> false
+        ThemeMode.System -> isSystemInDarkTheme()
+    }
+    val palette = if (dark) state.themeDarkPalette else state.themeLightPalette
+    LaunchedEffect(dark, palette) {
+        controller.applyNativePalette(dark)
+    }
+    VibecodiumTheme(palette) {
         CompositionLocalProvider(
             LocalDensity provides Density(
                 density.density,
@@ -748,7 +808,9 @@ fun VibecodiumApp(controller: VibecodiumController) {
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .windowInsetsBottomHeight(WindowInsets.navigationBars)
-                        .background(MaterialTheme.colorScheme.background),
+                        // The system navigation bar is deliberately independent
+                        // of the Obsidian theme.
+                        .background(Color.Black),
                 )
                 state.message?.let { message ->
                     MessageBar(message) { controller.dismissMessage() }
@@ -904,6 +966,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
     // visible "squeeze"). Own the bottom inset here, with the last real height,
     // instead of letting systemBarsPadding apply an animated value.
     val density = LocalDensity.current
+    val palette = LocalVibecodiumPalette.current
     val orientation = LocalConfiguration.current.orientation
     val navBarBottomPx = WindowInsets.navigationBars.getBottom(density)
     var stableNavBarBottomPx by rememberSaveable(orientation) { mutableStateOf(navBarBottomPx) }
@@ -1122,6 +1185,38 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 }
             }
 
+            if (state.drawer == Drawer.Left) {
+                // Theme and settings live in the same right-side strip as the
+                // close button, but at the bottom: theme above settings.
+                Column(
+                    Modifier
+                        .align(Alignment.CenterStart)
+                        .offset(x = closeButtonX)
+                        .fillMaxHeight()
+                        .width(CloseButtonSlot),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
+                ) {
+                    FloatingIconButton(
+                        icon = if (palette.dark) SunIcon else MoonIcon,
+                        description = if (palette.dark) {
+                            "Switch to light theme"
+                        } else {
+                            "Switch to dark theme"
+                        },
+                        modifier = Modifier.size(CloseButtonSize),
+                    ) { controller.toggleThemeMode() }
+                    FloatingIconButton(
+                        icon = Icons.Default.Settings,
+                        description = "Settings",
+                        modifier = Modifier.size(CloseButtonSize),
+                    ) {
+                        focusManager.clearFocus()
+                        controller.openSettings()
+                    }
+                }
+            }
+
             if (state.drawer == Drawer.Right) {
                 DrawerBackdrop {
                     focusManager.clearFocus()
@@ -1224,9 +1319,6 @@ private val DrawerTopBarHeight = 44.dp
 
 /** Same 44 dp circle as the open note's header actions. */
 private val CloseButtonSize = DrawerTopBarHeight
-
-/** Drawer and panel surface tone, the dark scheme's `surfaceContainerHigh`. */
-private val DrawerSurfaceColor = Color(0xFF282828)
 
 /** Panel corners, curved like the note header pills: half the 44 dp header. */
 private val PanelCornerRadius = ViewHeaderHeight / 2
@@ -2189,7 +2281,7 @@ private fun annotatedFromSpans(
                 "strikethrough" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
                 "link" -> SpanStyle(color = accent, textDecoration = TextDecoration.Underline)
                 "underline" -> SpanStyle(textDecoration = TextDecoration.Underline)
-                "highlight" -> SpanStyle(background = Color(0x33A882FF))
+                "highlight" -> SpanStyle(background = accent.copy(alpha = 0.20f))
                 "tag" -> SpanStyle(color = accent)
                 "grammar" -> SpanStyle(fontStyle = FontStyle.Italic)
                 else -> null
@@ -2519,11 +2611,27 @@ private fun RowScope.ModeTab(
 
 @Composable
 private fun BoxScope.DrawerBackdrop(alpha: Float = 0.5f, onDismiss: () -> Unit) {
+    val palette = LocalVibecodiumPalette.current
+    // Keep the theme's cover colour but flatten its own alpha over the theme
+    // background. The left drawer then paints an opaque, theme-tinted sheet
+    // that hides text/buttons behind it instead of becoming pure black.
+    val cover = palette.overlay.compositeOver(palette.background)
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = alpha))
+            .background(cover.copy(alpha = alpha.coerceIn(0f, 1f)))
             .clickable(onClick = onDismiss),
+    )
+}
+
+private fun Color.compositeOver(background: Color): Color {
+    val a = alpha
+    if (a >= 0.999f) return this
+    return Color(
+        red = red * a + background.red * (1f - a),
+        green = green * a + background.green * (1f - a),
+        blue = blue * a + background.blue * (1f - a),
+        alpha = 1f,
     )
 }
 
@@ -2700,6 +2808,7 @@ private fun LeftDrawer(
 ) {
     val focusManager = LocalFocusManager.current
     val density = LocalDensity.current
+    val palette = LocalVibecodiumPalette.current
     // The shell already keeps the drawer above the navigation bar. While the
     // inline rename field is open, shrink the content by the keyboard height
     // minus that navigation inset; imePadding() alone would leave a strip the
@@ -2716,7 +2825,7 @@ private fun LeftDrawer(
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(topEnd = PanelCornerRadius, bottomEnd = PanelCornerRadius),
-        color = DrawerSurfaceColor,
+        color = palette.surfaceAlt,
         tonalElevation = 0.dp,
     ) {
         Column(Modifier.fillMaxSize().padding(bottom = contentBottom)) {
@@ -2784,7 +2893,7 @@ private fun LeftDrawer(
                 if (overlayMode) {
                     Surface(
                         modifier = Modifier.fillMaxSize(),
-                        color = DrawerSurfaceColor,
+                        color = palette.surfaceAlt,
                         tonalElevation = 0.dp,
                     ) {
                         when (state.drawerMode) {
@@ -2841,19 +2950,6 @@ private fun LeftDrawer(
                     }
                 }
                 DrawerSyncButton(state, controller)
-                IconButton(
-                    onClick = {
-                        focusManager.clearFocus()
-                        controller.openSettings()
-                    },
-                    modifier = Modifier.size(44.dp),
-                ) {
-                    Icon(
-                        Icons.Default.Settings,
-                        contentDescription = "Settings",
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
             }
         }
     }
@@ -3115,6 +3211,7 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
     var filterFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
+    val palette = LocalVibecodiumPalette.current
     Column(Modifier.fillMaxSize()) {
         Box(
             Modifier.pointerInput(Unit) {
@@ -3142,14 +3239,14 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
                     .height(36.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(
-                        if (filterFocused) Color(0xFF1B1B1B) else Color(0xFF222222),
+                        if (filterFocused) palette.backgroundAlt else palette.surface,
                     )
                     .border(
                         width = if (filterFocused) 1.5.dp else 1.dp,
                         color = if (filterFocused) {
                             MaterialTheme.colorScheme.primary
                         } else {
-                            Color(0xFF383838)
+                            palette.outline
                         },
                         shape = RoundedCornerShape(8.dp),
                     )
@@ -3192,7 +3289,7 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
                                 Text(
                                     "Quick filter...",
                                     fontSize = 14.sp,
-                                    color = Color(0xFF8A8A8A),
+                                    color = palette.textMuted,
                                 )
                             }
                             innerTextField()
@@ -3336,8 +3433,8 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
                     .height(TreeEdgeFade)
                     .background(
                         Brush.verticalGradient(
-                            0f to DrawerSurfaceColor.copy(alpha = 0f),
-                            1f to DrawerSurfaceColor,
+                            0f to palette.surfaceAlt.copy(alpha = 0f),
+                            1f to palette.surfaceAlt,
                         ),
                     ),
             )
@@ -3391,6 +3488,7 @@ private fun BoxScope.TreeInlineRename(
     if (rowIndex < 0) return
     val depth = rows[rowIndex].depth
     val density = LocalDensity.current
+    val palette = LocalVibecodiumPalette.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
     val initialSelection = remember(path) {
@@ -3453,7 +3551,7 @@ private fun BoxScope.TreeInlineRename(
             .fillMaxWidth()
             .height(rowHeight)
             .clip(shape)
-            .background(Color(0xFF1B1B1B))
+            .background(palette.backgroundAlt)
             .border(1.5.dp, MaterialTheme.colorScheme.primary, shape)
             .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -3470,7 +3568,7 @@ private fun BoxScope.TreeInlineRename(
             singleLine = true,
             textStyle = TextStyle(
                 fontSize = with(density) { 17.dp.toSp() },
-                color = Color(0xFFDADADA),
+                color = palette.text,
             ),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -3786,6 +3884,7 @@ private fun NoteRow(
 private fun SearchPanel(state: UiState, controller: VibecodiumController) {
     var queryFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
+    val palette = LocalVibecodiumPalette.current
     Column(Modifier.fillMaxSize()) {
         // Same field as the explorer's quick filter (`TreeList`): 36 dp tall,
         // 8 dp corners, #222222 on #383838, primary accent while focused.
@@ -3800,14 +3899,14 @@ private fun SearchPanel(state: UiState, controller: VibecodiumController) {
                     .height(36.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(
-                        if (queryFocused) Color(0xFF1B1B1B) else Color(0xFF222222),
+                        if (queryFocused) palette.backgroundAlt else palette.surface,
                     )
                     .border(
                         width = if (queryFocused) 1.5.dp else 1.dp,
                         color = if (queryFocused) {
                             MaterialTheme.colorScheme.primary
                         } else {
-                            Color(0xFF383838)
+                            palette.outline
                         },
                         shape = RoundedCornerShape(8.dp),
                     )
@@ -3850,7 +3949,7 @@ private fun SearchPanel(state: UiState, controller: VibecodiumController) {
                                 Text(
                                     "Search notes...",
                                     fontSize = 14.sp,
-                                    color = Color(0xFF8A8A8A),
+                                    color = palette.textMuted,
                                 )
                             }
                             innerTextField()
@@ -4328,6 +4427,430 @@ private fun SettingsRoot(onOpen: (SettingsSection) -> Unit) {
 }
 
 @Composable
+private fun ThemeAppearanceGroup(state: UiState, controller: VibecodiumController) {
+    val settings = state.settings
+    var themeDialogSlot by remember { mutableStateOf<ThemeSlot?>(null) }
+    val installedNames = state.installedThemes.map { it.name }
+    fun themeOptions(current: String): List<Pair<String, String>> = buildList {
+        add("Default (built-in)" to "")
+        for (name in installedNames) add(name to name)
+        if (current.isNotEmpty() && current !in installedNames) add("$current (missing)" to current)
+    }
+    val currentSlot = when (settings.themeMode) {
+        ThemeMode.Dark -> ThemeSlot.Dark
+        ThemeMode.Light -> ThemeSlot.Light
+        ThemeMode.System -> if (isSystemInDarkTheme()) ThemeSlot.Dark else ThemeSlot.Light
+    }
+    val updateCount = state.themeUpdates.size
+    SettingsGroup("Theme") {
+        SettingsChoiceRow(
+            title = "Base color scheme",
+            description = "Obsidian's palette for the built-in theme and community themes",
+            value = settings.themeMode,
+            options = listOf(
+                "Dark" to ThemeMode.Dark,
+                "Light" to ThemeMode.Light,
+                "Adapt to system" to ThemeMode.System,
+            ),
+            onSelect = controller::setThemeMode,
+        )
+        SettingsChoiceRow(
+            title = "Light theme",
+            description = "Independent theme used when the light scheme is active",
+            value = settings.lightThemeName,
+            options = themeOptions(settings.lightThemeName),
+            onSelect = { controller.setThemeName(ThemeSlot.Light, it) },
+        )
+        SettingsChoiceRow(
+            title = "Dark theme",
+            description = "Independent theme used when the dark scheme is active",
+            value = settings.darkThemeName,
+            options = themeOptions(settings.darkThemeName),
+            onSelect = { controller.setThemeName(ThemeSlot.Dark, it) },
+        )
+        SettingsActionRow(
+            title = "Manage themes",
+            description = if (state.themeCatalogLoading) {
+                "Loading the catalog…"
+            } else {
+                "Install, update and remove themes; installs into the current scheme slot"
+            },
+            onClick = {
+                controller.loadThemeCatalog()
+                themeDialogSlot = currentSlot
+            },
+            showDivider = true,
+            enabled = !state.themeCatalogLoading,
+        )
+        SettingsActionRow(
+            title = "Check for updates",
+            description = when {
+                state.themeCheckingUpdates -> "Checking installed themes…"
+                updateCount > 0 -> "$updateCount update${if (updateCount == 1) "" else "s"} available"
+                else -> "Compare installed themes with GitHub"
+            },
+            onClick = controller::checkThemeUpdates,
+            showDivider = false,
+            enabled = state.installedThemes.isNotEmpty() && !state.themeCheckingUpdates,
+        )
+    }
+    SettingsGroup("Accent") {
+        SettingsAccentRow(
+            selected = settings.accentColor,
+            onSelect = controller::setAccentColor,
+        )
+    }
+    if (state.themeWarnings.isNotEmpty()) {
+        SettingsGroup("Compatibility") {
+            SettingsInfoRow(
+                title = "Theme notes",
+                value = state.themeWarnings.joinToString("\n"),
+                multiline = true,
+            )
+        }
+    }
+    themeDialogSlot?.let { slot ->
+        ThemeManagerDialog(
+            state = state,
+            controller = controller,
+            slot = slot,
+            onClose = { themeDialogSlot = null },
+        )
+    }
+}
+
+@Composable
+private fun SettingsAccentRow(selected: Int?, onSelect: (Int?) -> Unit) {
+    val palette = LocalVibecodiumPalette.current
+    val presets = listOf(
+        "Theme" to null,
+        "Violet" to 0xFF8A5CF5.toInt(),
+        "Red" to 0xFFE93147.toInt(),
+        "Green" to 0xFF08B94E.toInt(),
+        "Blue" to 0xFF086DDD.toInt(),
+        "Orange" to 0xFFEC7500.toInt(),
+        "Pink" to 0xFFD53984.toInt(),
+    )
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Text("Accent color", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Text(
+            "Used by buttons, links and selection; “Theme” keeps the theme's own accent",
+            modifier = Modifier.padding(top = 2.dp),
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            presets.forEach { (label, argb) ->
+                val color = if (argb == null) palette.accent else Color(argb)
+                val active = selected == argb
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(color)
+                            .border(
+                                width = if (active) 3.dp else 1.dp,
+                                color = if (active) MaterialTheme.colorScheme.onSurface else palette.outline,
+                                shape = CircleShape,
+                            )
+                            .clickable { onSelect(argb) },
+                    )
+                    Text(
+                        label,
+                        modifier = Modifier.padding(top = 4.dp),
+                        fontSize = 10.sp,
+                        color = if (active) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeManagerDialog(
+    state: UiState,
+    controller: VibecodiumController,
+    slot: ThemeSlot,
+    onClose: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var installedOnly by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { controller.loadThemeCatalog() }
+
+    val installed = state.installedThemes
+    val installedByName = installed.associateBy { it.name }
+    val merged = LinkedHashMap<String, ThemeEntry>()
+    for (theme in installed) {
+        merged[theme.name] = theme.entry?.copy(
+            installedVersion = theme.version,
+            updateVersion = state.themeUpdates[theme.name],
+        ) ?: ThemeEntry(
+            name = theme.name,
+            author = theme.author,
+            installedVersion = theme.version,
+            updateVersion = state.themeUpdates[theme.name],
+        )
+    }
+    for (entry in state.themeCatalog) {
+        val current = merged[entry.name]
+        merged[entry.name] = if (current == null) {
+            entry.copy(
+                installedVersion = installedByName[entry.name]?.version,
+                updateVersion = state.themeUpdates[entry.name],
+            )
+        } else {
+            entry.copy(
+                installedVersion = current.installedVersion,
+                updateVersion = state.themeUpdates[entry.name],
+            )
+        }
+    }
+    val needle = query.trim().lowercase()
+    val visible = merged.values
+        .filter { entry ->
+            (needle.isEmpty() || entry.name.lowercase().contains(needle) ||
+                entry.author.lowercase().contains(needle)) &&
+                (!installedOnly || entry.installed)
+        }
+        .sortedWith(
+            compareByDescending<ThemeEntry> { it.installed }
+                .thenByDescending { it.downloads }
+                .thenBy { it.name.lowercase() },
+        )
+
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = RoundedCornerShape(0.dp),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().height(52.dp).padding(start = 12.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (slot == ThemeSlot.Light) "Light theme" else "Dark theme",
+                        modifier = Modifier.weight(1f),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    TextButton(onClick = { installedOnly = !installedOnly }) {
+                        Text(if (installedOnly) "Show all" else "Installed only")
+                    }
+                    IconButton(onClick = onClose, modifier = Modifier.size(44.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(20.dp))
+                    }
+                }
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp),
+                    placeholder = { Text("Search themes", fontSize = 14.sp) },
+                )
+                if (state.themeCatalogLoading || state.themeCheckingUpdates) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
+                }
+                state.themeError?.let { error ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            error,
+                            modifier = Modifier.weight(1f),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        TextButton(onClick = { controller.clearThemeError() }) { Text("Dismiss") }
+                    }
+                }
+                if (visible.isEmpty() && !state.themeCatalogLoading) {
+                    Text(
+                        if (installedOnly) "No installed themes yet." else "No themes match this search.",
+                        modifier = Modifier.padding(16.dp),
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                    items(visible, key = { it.name }) { entry ->
+                        ThemeCatalogRow(entry, slot, state, controller)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeCatalogRow(
+    entry: ThemeEntry,
+    slot: ThemeSlot,
+    state: UiState,
+    controller: VibecodiumController,
+) {
+    val lightActive = state.settings.lightThemeName == entry.name
+    val darkActive = state.settings.darkThemeName == entry.name
+    val active = if (slot == ThemeSlot.Light) lightActive else darkActive
+    val busy = state.themeBusy == entry.name
+    val badge = when {
+        active -> "Active" to true
+        lightActive && darkActive -> "Light + Dark" to false
+        lightActive -> "Light" to false
+        darkActive -> "Dark" to false
+        entry.installed -> "Installed" to false
+        else -> null
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                modifier = Modifier.padding(end = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                ThemeThumbnail(
+                    entry = entry,
+                    modifier = Modifier
+                        .width(76.dp)
+                        .height(57.dp),
+                )
+                badge?.let { (label, isActive) ->
+                    ThemeBadge(label = label, active = isActive)
+                }
+            }
+            Column(Modifier.weight(1f)) {
+                Text(entry.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                val meta = buildString {
+                    if (entry.author.isNotBlank()) append(entry.author)
+                    if (entry.modesLabel.isNotBlank()) {
+                        if (isNotEmpty()) append(" · ")
+                        append(entry.modesLabel)
+                    }
+                    if (entry.downloads > 0) {
+                        if (isNotEmpty()) append(" · ")
+                        append(formatDownloads(entry.downloads))
+                    }
+                }
+                if (meta.isNotBlank()) {
+                    Text(
+                        meta,
+                        modifier = Modifier.padding(top = 2.dp),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier.padding(start = 8.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else if (!entry.installed) {
+                    ThemeActionButton("Install", primary = true) {
+                        controller.installTheme(entry.name, slot)
+                    }
+                } else {
+                    if (!active) {
+                        ThemeActionButton("Use", primary = true) {
+                            controller.setThemeName(slot, entry.name)
+                        }
+                    }
+                    if (entry.updateVersion != null) {
+                        ThemeActionButton("Update") { controller.updateTheme(entry.name) }
+                    }
+                    ThemeActionButton("Remove") { controller.uninstallTheme(entry.name) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeBadge(label: String, active: Boolean) {
+    val primary = MaterialTheme.colorScheme.primary
+    val background = if (active) {
+        primary.copy(alpha = 0.14f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val border = if (active) primary.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outline
+    Box(
+        Modifier
+            .padding(top = 4.dp)
+            .clip(CircleShape)
+            .background(background)
+            .border(1.dp, border, CircleShape)
+            .padding(horizontal = 9.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontSize = 9.sp,
+            lineHeight = 11.sp,
+            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+            color = if (active) primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun ThemeActionButton(
+    text: String,
+    primary: Boolean = false,
+    onClick: () -> Unit,
+) {
+    if (primary) {
+        Button(
+            onClick = onClick,
+            modifier = Modifier.height(34.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+        ) {
+            Text(text, fontSize = 12.sp, maxLines = 1)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = Modifier.height(34.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+        ) {
+            Text(text, fontSize = 12.sp, maxLines = 1)
+        }
+    }
+}
+
+private fun formatDownloads(count: Int): String = when {
+    count >= 1_000_000 -> "${count / 1_000_000}.${(count % 1_000_000) / 100_000}M"
+    count >= 1_000 -> "${count / 1_000}.${(count % 1_000) / 100}K"
+    else -> count.toString()
+}
+
+@Composable
 private fun SettingsSectionContent(
     section: SettingsSection,
     state: UiState,
@@ -4343,6 +4866,7 @@ private fun SettingsSectionContent(
     ) {
         when (section) {
             SettingsSection.Appearance -> {
+                ThemeAppearanceGroup(state, controller)
                 SettingsGroup("Text") {
                     SettingsSliderRow(
                         title = "Text scale",
@@ -5043,8 +5567,8 @@ private fun <T> SettingsChoiceRow(
                 .fillMaxWidth()
                 .padding(top = 8.dp)
                 .clip(buttonShape)
-                .background(Color(0xFF3E3E3E))
-                .border(1.dp, Color(0xFF5E5E5E), buttonShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .border(1.dp, MaterialTheme.colorScheme.outline, buttonShape)
                 .clickable { open = true }
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,

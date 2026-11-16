@@ -84,6 +84,9 @@ public final class CoreBridge {
 
     public static native void nativeSurfaceSetTree(int id, String json);
 
+    /** Applies a theme palette (JSON produced by ThemePalette.toNativeJson()). */
+    public static native void nativeThemeSetPalette(String json);
+
     public static native void nativeSurfaceSetEditor(int id, String text, int selection, String language);
 
     public static native String nativeSurfaceTouch(int id, float x, float y, int action);

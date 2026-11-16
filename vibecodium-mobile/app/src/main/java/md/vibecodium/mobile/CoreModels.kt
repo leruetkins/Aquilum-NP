@@ -158,6 +158,18 @@ data class UiState(
     /** Section name inside the settings sheet, or null for the root list. */
     val settingsSection: String? = null,
     val settings: AppSettings = AppSettings(),
+    /** Resolved Obsidian theme tokens for the current theme selection. */
+    val themeDarkPalette: ThemePalette = ThemePalette.defaultDark(),
+    val themeLightPalette: ThemePalette = ThemePalette.defaultLight(),
+    val themeWarnings: List<String> = emptyList(),
+    val installedThemes: List<InstalledTheme> = emptyList(),
+    val themeCatalog: List<ThemeEntry> = emptyList(),
+    val themeUpdates: Map<String, String> = emptyMap(),
+    val themeCatalogLoading: Boolean = false,
+    val themeCheckingUpdates: Boolean = false,
+    /** Theme name currently being installed/removed. */
+    val themeBusy: String? = null,
+    val themeError: String? = null,
     val vaultSync: VaultSyncSettings = VaultSyncSettings(),
     val sync: SyncUiState = SyncUiState(),
     val searchQuery: String = "",

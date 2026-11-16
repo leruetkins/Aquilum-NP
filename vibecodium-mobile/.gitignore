@@ -10,12 +10,6 @@ captures/
 *.aab
 *.hprof
 
-# Local SDK and signing configuration
-local.properties
-keystore.properties
-keystore/
-*.jks
-*.keystore
 
 # Rust core build output and machine-specific NDK linker paths
 target/

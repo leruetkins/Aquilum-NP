@@ -1,0 +1,409 @@
+# Приложение B. Карта «селектор → переменные» (Obsidian Mobile 1.15.0)
+
+Индекс по `app.css`: для каждого блока, который объявляет custom properties, перечислены селектор и имена переменных (первые 15, если их больше). Полные значения — в `obsidian-mobile-themes-variables.md` и в самом `app.css`.
+
+Это удобно для ответа на вопрос «какой элемент чем управляется»: ищем селектор (например, `.callout[data-callout=warning]`) и видим, какие переменные он задаёт. Обратный поиск (переменная → селекторы) делается обычным grep по этому файлу.
+
+Всего блоков с переменными: 401.
+
+- `.messageBar` — 10: `--message-bar-close-button-color`, `--message-bar-close-button-color-hover`, `--message-bar-close-button-border-radius`, `--message-bar-close-button-border`, `--csstools-light-dark-toggle--24`, `--message-bar-close-button-hover-bg-color`, `--csstools-light-dark-toggle--25`, `--message-bar-close-button-active-bg-color`, `--csstools-light-dark-toggle--26`, `--message-bar-close-button-focus-bg-color`
+- `.messageBar *` — 6: `--csstools-light-dark-toggle--24`, `--message-bar-close-button-hover-bg-color`, `--csstools-light-dark-toggle--25`, `--message-bar-close-button-active-bg-color`, `--csstools-light-dark-toggle--26`, `--message-bar-close-button-focus-bg-color`
+- `.messageBar button:focus-visible` — 1: `--csstools-light-dark-toggle--27`
+- `#editorUndoBar` — 20: `--csstools-light-dark-toggle--0`, `--text-primary-color`, `--csstools-light-dark-toggle--1`, `--message-bar-icon-color`, `--csstools-light-dark-toggle--2`, `--message-bar-bg-color`, `--message-bar-fg-color`, `--csstools-light-dark-toggle--29`, `--message-bar-border-color`, `--csstools-light-dark-toggle--30`, `--undo-button-bg-color`, `--csstools-light-dark-toggle--31`, `--undo-button-bg-color-hover`, `--csstools-light-dark-toggle--32`, `--undo-button-bg-color-active` …
+- `#editorUndoBar *` — 16: `--csstools-light-dark-toggle--29`, `--message-bar-border-color`, `--csstools-light-dark-toggle--30`, `--undo-button-bg-color`, `--csstools-light-dark-toggle--31`, `--undo-button-bg-color-hover`, `--csstools-light-dark-toggle--32`, `--undo-button-bg-color-active`, `--csstools-light-dark-toggle--0`, `--text-primary-color`, `--csstools-light-dark-toggle--1`, `--message-bar-icon-color`, `--csstools-light-dark-toggle--2`, `--message-bar-bg-color`, `--csstools-light-dark-toggle--3` …
+- `.dialog` — 67: `--csstools-light-dark-toggle--4`, `--dialog-bg-color`, `--csstools-light-dark-toggle--5`, `--dialog-border-color`, `--csstools-light-dark-toggle--33`, `--dialog-shadow`, `--csstools-light-dark-toggle--6`, `--text-primary-color`, `--csstools-light-dark-toggle--7`, `--text-secondary-color`, `--hover-filter`, `--csstools-light-dark-toggle--8`, `--link-fg-color`, `--csstools-light-dark-toggle--9`, `--link-hover-fg-color` …
+- `.dialog *` — 40: `--csstools-light-dark-toggle--33`, `--dialog-shadow`, `--csstools-light-dark-toggle--34`, `--button-secondary-bg-color`, `--csstools-light-dark-toggle--35`, `--button-secondary-active-bg-color`, `--csstools-light-dark-toggle--36`, `--button-secondary-hover-bg-color`, `--csstools-light-dark-toggle--4`, `--dialog-bg-color`, `--csstools-light-dark-toggle--5`, `--dialog-border-color`, `--csstools-light-dark-toggle--6`, `--text-primary-color`, `--csstools-light-dark-toggle--7` …
+- `.dialog .mainContainer *:focus-visible` — 1: `--csstools-light-dark-toggle--28`
+- `.dialog .mainContainer .messageBar` — 8: `--csstools-light-dark-toggle--20`, `--message-bar-bg-color`, `--csstools-light-dark-toggle--21`, `--message-bar-fg-color`, `--csstools-light-dark-toggle--41`, `--message-bar-border-color`, `--csstools-light-dark-toggle--22`, `--message-bar-icon-color`
+- `.dialog .mainContainer .messageBar *` — 8: `--csstools-light-dark-toggle--41`, `--message-bar-border-color`, `--csstools-light-dark-toggle--20`, `--message-bar-bg-color`, `--csstools-light-dark-toggle--21`, `--message-bar-fg-color`, `--csstools-light-dark-toggle--22`, `--message-bar-icon-color`
+- `.textLayer .highlight` — 4: `--highlight-bg-color`, `--highlight-selected-bg-color`, `--highlight-backdrop-filter`, `--highlight-selected-backdrop-filter`
+- `.annotationLayer` — 8: `--csstools-color-scheme--dark`, `--annotation-unfocused-field-background`, `--input-focus-border-color`, `--input-focus-outline`, `--input-unfocused-border-color`, `--input-disabled-border-color`, `--input-hover-border-color`, `--link-outline`
+- `:root` — 24: `--xfa-unfocused-field-background`, `--xfa-focus-outline`, `--csstools-color-scheme--dark`, `--viewer-container-height`, `--pdfViewer-padding-bottom`, `--page-margin`, `--page-border`, `--spreadHorizontalWrapped-margin-LR`, `--loading-icon-delay`, `--csstools-light-dark-toggle--23`, `--focus-ring-color`, `--focus-ring-outline`, `--h1-weight`, `--h2-weight`, `--h3-weight` …
+- `.xfaLayer` — 1: `--csstools-color-scheme--dark`
+- `:root *` — 2: `--csstools-light-dark-toggle--23`, `--focus-ring-color`
+- `.pdfViewer` — 4: `--scale-factor`, `--page-bg-color`, `--hcm-highlight-filter`, `--hcm-highlight-selected-filter`
+- `.pdfViewer .page` — 4: `--user-unit`, `--total-scale-factor`, `--scale-round-x`, `--scale-round-y`
+- `body` — 922: `--anim-duration-none`, `--anim-duration-superfast`, `--anim-duration-fast`, `--anim-duration-moderate`, `--anim-duration-slow`, `--anim-motion-smooth`, `--anim-motion-delay`, `--anim-motion-jumpy`, `--anim-motion-swing`, `--anim-motion-spring`, `--bases-header-border-width`, `--bases-header-height`, `--bases-header-padding-start`, `--bases-header-padding-end`, `--bases-toolbar-label-display` …
+- `.theme-light` — 46: `--highlight-mix-blend-mode`, `--mono-0`, `--mono-100`, `--color-red`, `--color-orange`, `--color-yellow`, `--color-green`, `--color-cyan`, `--color-blue`, `--color-purple`, `--color-pink`, `--color-base-00`, `--color-base-05`, `--color-base-10`, `--color-base-20` …
+- `.theme-dark` — 61: `--highlight-mix-blend-mode`, `--mono-0`, `--mono-100`, `--color-red`, `--color-orange`, `--color-yellow`, `--color-green`, `--color-cyan`, `--color-blue`, `--color-purple`, `--color-pink`, `--color-base-00`, `--color-base-05`, `--color-base-10`, `--color-base-20` …
+- `.mod-macos` — 31: `--clickable-icon-radius`, `--corner-shape`, `--input-radius`, `--input-icon-inset`, `--input-shadow`, `--input-shadow-hover`, `--interactive-normal`, `--interactive-hover`, `--modal-radius`, `--scrollbar-thumb-bg`, `--search-input-radius`, `--search-input-corner-shape`, `--slider-thumb-border-width`, `--slider-thumb-width`, `--slider-thumb-opacity-active` …
+- `body.is-mobile>.print` — 1: `--file-margins`
+- `.attachments-gallery .download-attachment-item` — 2: `--checkbox-marker-color`, `--checkbox-size`
+- `.drag-ghost-self>.svg-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.markdown-source-view:not(.is-live-preview)` — 1: `--p-spacing`
+- `.markdown-source-view.mod-cm6 .cm-table-widget` — 1: `--table-drag-handle-size`
+- `.is-mobile .markdown-source-view.mod-cm6 .cm-table-widget` — 1: `--table-drag-handle-size`
+- `.markdown-source-view.mod-cm6 .cm-table-widget.has-selection` — 1: `--text-selection`
+- `.markdown-source-view.mod-cm6 .cm-table-widget.is-selected` — 1: `--text-selection`
+- `.markdown-source-view.mod-cm6 .cm-table-widget .table-row-drag-handle,.markdown-source-view.mod-cm6 .cm-table-widget .table-col-drag-handle` — 2: `--icon-size`, `--icon-stroke`
+- `.markdown-source-view.mod-cm6 .cm-table-widget .table-row-btn,.markdown-source-view.mod-cm6 .cm-table-widget .table-col-btn` — 2: `--icon-size`, `--icon-stroke`
+- `.empty-state-action-list>.text-icon-button.mod-pill` — 1: `--no-tooltip`
+- `.mod-rtl` — 5: `--frame-ribbon-left`, `--frame-ribbon-right`, `--tab-stacked-text-transform`, `--status-bar-border-width`, `--status-bar-radius`
+- `.is-popout-window` — 2: `--frame-ribbon-left`, `--frame-ribbon-right`
+- `.mod-macos.mod-system-rtl` — 2: `--frame-left-space`, `--frame-right-space`
+- `.mod-windows,.mod-linux` — 2: `--frame-left-space`, `--frame-right-space`
+- `.mod-windows.mod-system-rtl,.mod-linux.mod-system-rtl` — 2: `--frame-left-space`, `--frame-right-space`
+- `.mod-macos.is-fullscreen,.mod-windows.is-fullscreen,.mod-linux.is-fullscreen` — 2: `--frame-left-space`, `--frame-right-space`
+- `.sidebar-toggle-button,.workspace-tabs.mod-top` — 2: `--tab-container-background`, `--sidebar-tab-container-background`
+- `body.is-focused .titlebar,body.is-focused .workspace-ribbon.mod-primary,body.is-focused .sidebar-toggle-button,body.is-focused .workspace-tabs.mod-top` — 1: `--titlebar-background`
+- `.is-hidden-frameless` — 1: `--divider-vertical-height`
+- `body.is-frameless.in-progress` — 2: `--titlebar-background`, `--titlebar-background-focused`
+- `.loader-spinner` — 2: `--icon-size`, `--icon-stroke`
+- `.view-header-title` — 1: `--scrollbar-native-width`
+- `body:not(.show-ribbon)` — 1: `--ribbon-width`
+- `.workspace-ribbon` — 1: `--drag-item-background`
+- `body,[dir=ltr]` — 5: `--direction`, `--inset-start`, `--inset-end`, `--safe-area-inline-start`, `--safe-area-inline-end`
+- `.mod-rtl,[dir=rtl]` — 5: `--direction`, `--inset-start`, `--inset-end`, `--safe-area-inline-start`, `--safe-area-inline-end`
+- `.markdown-rendered .is-collapsed:dir(ltr),.cm-line:dir(ltr)` — 1: `--direction`
+- `.markdown-rendered .is-collapsed:dir(rtl),.cm-line:dir(rtl)` — 1: `--direction`
+- `.mod-rtl,.is-rtl,.rtl` — 4: `--callout-padding`, `--embed-padding`, `--nav-item-padding`, `--dropdown-padding`
+- `.mod-rtl .metadata-container,.is-rtl .metadata-container,.rtl .metadata-container` — 1: `--direction`
+- `.cm-callout:has(.callout .callout-title .callout-title-inner:dir(rtl))>.callout-title,.callout:has(>.callout-title .callout-title-inner:dir(rtl))>.callout-title` — 1: `--direction`
+- `.mod-rtl.is-mobile` — 1: `--nav-item-padding`
+- `.mod-macos:not(.is-mobile) .mod-settings` — 4: `--dropdown-background`, `--dropdown-background-hover`, `--dropdown-icon-background`, `--dropdown-text-align`
+- `.modal.mod-settings` — 1: `--setting-group-center-offset`
+- `.setting-item:focus-visible` — 2: `--setting-items-radius`, `--setting-items-divider-width`
+- `.setting-item.mod-empty-state` — 1: `--setting-items-padding-y`
+- `.setting-item.mod-empty-state .setting-item-name` — 1: `--setting-item-name-color`
+- `.setting-group.mod-list` — 2: `--setting-items-padding-x`, `--setting-items-padding-y`
+- `.setting-item-chevron` — 2: `--icon-size`, `--icon-stroke`
+- `.setting-item-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.setting-item-status` — 2: `--icon-size`, `--icon-stroke`
+- `.setting-item-description` — 2: `--link-color`, `--link-color-hover`
+- `.setting-group-filters` — 1: `--scrollbar-native-width`
+- `.search-input-container.mod-hotkey .input-right-decorator.mod-active-hotkey-filter .hotkey-filter-clear` — 2: `--icon-size`, `--icon-stroke`
+- `.suggestion-item.mod-complex.suggestion-secret-key` — 1: `--checkbox-size`
+- `body.is-popout-modal` — 2: `--traffic-lights-offset-x`, `--traffic-lights-offset-y`
+- `.community-item .flair` — 2: `--flair-background`, `--flair-color`
+- `.community-item-downloads` — 3: `--icon-color`, `--icon-size`, `--icon-stroke`
+- `.community-item-badge.mod-update` — 2: `--icon-size`, `--icon-stroke`
+- `.community-modal-info-downloads` — 2: `--icon-size`, `--icon-stroke`
+- `.community-plugins-banner` — 2: `--link-external-color`, `--link-external-color-hover`
+- `.community-plugins-feature-icon` — 1: `--icon-size`
+- `.is-translucent:not(.is-fullscreen)` — 3: `--nav-collapse-icon-color`, `--nav-collapse-icon-color-collapsed`, `--divider-color`
+- `body:not(.is-mobile) .workspace-split.mod-primary-split .workspace-sidedock-vault-profile .workspace-drawer-vault-switcher-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.view-header-nav-buttons` — 1: `--icon-size`
+- `.workspace-tab-header-container-inner` — 1: `--scrollbar-native-width`
+- `.workspace-tab-header-status-icon,.workspace-tab-header-inner-close-button` — 2: `--icon-size`, `--icon-stroke`
+- `.workspace-tab-header-tab-list .clickable-icon,.workspace-tab-header-new-tab .clickable-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.mod-root .workspace-tab-header-status-icon,.mod-root .workspace-tab-header-inner-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.mod-root .mod-pinned,.mod-root .workspace-tab-header-inner-close-button` — 2: `--icon-size`, `--icon-stroke`
+- `.mod-secondary-split .markdown-preview-view,.mod-primary-split .markdown-preview-view,.mod-secondary-split .markdown-source-view.mod-cm6 .cm-scroller,.mod-primary-split .markdown-source-view.mod-cm6 .cm-scroller` — 1: `--file-margins`
+- `.workspace .mod-root .workspace-tabs.mod-stacked .workspace-tab-container .workspace-tab-header` — 1: `--no-tooltip`
+- `.sidebar-toggle-button` — 2: `--icon-size`, `--icon-stroke`
+- `.workspace.is-left-sidedock-open .sidebar-toggle-button.mod-left .sidebar-toggle-icon-inner` — 1: `--sidebar-left-toggle-inner-width`
+- `.workspace.is-right-sidedock-open .sidebar-toggle-button.mod-right .clickable-icon .sidebar-toggle-icon-inner` — 1: `--sidebar-right-toggle-inner-width`
+- `button` — 1: `--text-color`
+- `button.mod-cta` — 1: `--text-color`
+- `button.mod-warning` — 1: `--text-color`
+- `button.mod-destructive` — 1: `--text-color`
+- `button.mod-destructive.mod-cta` — 1: `--text-color`
+- `.combobox .search-input-container` — 1: `--search-icon-color`
+- `.combobox-button` — 1: `--dropdown-padding`
+- `.combobox-button .combobox-button-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.combobox-button .combobox-clear-button` — 2: `--icon-size`, `--icon-stroke`
+- `.combobox-button .combobox-button-chevron` — 2: `--icon-size`, `--icon-stroke`
+- `.is-mobile .combobox-button` — 1: `--dropdown-padding`
+- `.is-mobile .combobox-clear-button` — 2: `--icon-size`, `--icon-stroke`
+- `.flair.mod-pop` — 2: `--flair-background`, `--flair-color`
+- `.view-actions` — 1: `--icon-size`
+- `.nav-file-icon .svg-icon,.suggestion-flair .svg-icon,.menu-item-icon .svg-icon,.status-bar-item .svg-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.clickable-icon.side-dock-ribbon-action .svg-icon,.mod-primary-split .workspace-tab-header-inner-icon .svg-icon,.mod-secondary-split .workspace-tab-header-inner-icon .svg-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.text-icon-button.mod-pill` — 2: `--icon-size`, `--icon-color-hover`
+- `.text-icon-button .mod-aux` — 1: `--icon-size`
+- `.text-icon-button.mod-destructive` — 1: `--icon-color-hover`
+- `input[type=range].slider` — 1: `--slider-fill-position`
+- `.lightbox .modal-close-button` — 1: `--icon-stroke`
+- `.lightbox-titlebar` — 2: `--lightbox-close-top`, `--lightbox-close-size`
+- `.is-mobile .lightbox-titlebar` — 2: `--lightbox-close-top`, `--lightbox-close-size`
+- `.modal-status-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.modal` — 1: `--checkbox-size`
+- `.modal-sidebar-inner` — 1: `--modal-sidebar-inset`
+- `.multi-select-pill` — 2: `--icon-size`, `--icon-stroke`
+- `.multi-select-pill-remove-button` — 2: `--icon-size`, `--icon-stroke`
+- `.multi-select-input` — 1: `--scrollbar-native-width`
+- `0%` — 1: `--link-color`
+- `.popover.hover-popover` — 1: `--callout-blend-mode`
+- `.popover.hover-popover>.markdown-embed[data-type=footnote]:not(.mod-empty)` — 1: `--popover-font-size`
+- `.popover.hover-popover>.markdown-embed[data-type=footnote]>.markdown-embed-content .cm-scroller,.popover.hover-popover>.markdown-embed[data-type=footnote]>.markdown-embed-content .markdown-preview-view` — 1: `--file-margins`
+- `.prompt-input-container` — 1: `--search-clear-button-size`
+- `.is-android` — 5: `--scrollbar-border-width`, `--scrollbar-width`, `--scrollbar-height`, `--scrollbar-radius`, `--setting-item-name-weight`
+- `.cm-tooltip.cm-tooltip-autocomplete` — 1: `--no-tooltip`
+- `.is-phone .suggestion-item.mod-toggle` — 2: `--icon-size`, `--icon-stroke`
+- `.suggestion-item.mod-toggle .mod-checked` — 2: `--icon-size`, `--icon-stroke`
+- `.horizontal-tab-nav-item.mobile-tap,.vertical-tab-nav-item.mobile-tap` — 1: `--icon-color`
+- `.setting-search-results,.vertical-tab-header-group-items` — 2: `--icon-size`, `--icon-stroke`
+- `.horizontal-tab-nav-item,.vertical-tab-nav-item` — 1: `--interactive-accent`
+- `.tree-item-self .tree-item-icon .svg-icon:not(.right-triangle)` — 2: `--icon-size`, `--icon-stroke`
+- `.pdf-content-container` — 1: `--sidebar-width`
+- `.pdf-sidebar-container .thumbnail` — 2: `--thumbnail-width`, `--thumbnail-height`
+- `.pdf-findbar .mod-not-found` — 2: `--background-modifier-form-field`, `--background-modifier-border-focus`
+- `.pdf-lock-icon .svg-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.pdf-container .pdfViewer .page` — 3: `--page-border`, `--page-margin`, `--page-bg-color`
+- `.pdf-container .pdfViewer.removePageBorders.spread .page,.pdf-container .pdfViewer.removePageBorders:is(.scrollHorizontal,.scrollWrapped) .page` — 1: `--spreadHorizontalWrapped-margin-LR`
+- `.pdf-container .textLayer .highlight` — 4: `--highlight-bg-color`, `--highlight-selected-bg-color`, `--highlight-backdrop-filter`, `--highlight-selected-backdrop-filter`
+- `.popupWrapper` — 1: `--pdf-popup-width`
+- `.is-phone .pdf-annotation-modal .popupContent:empty+.popupMeta,.is-phone .pdf-annotation-modal .popupMeta` — 2: `--icon-size`, `--icon-stroke`
+- `.popupMeta` — 2: `--icon-size`, `--icon-stroke`
+- `.callout` — 7: `--callout-color`, `--callout-icon`, `--bases-table-header-background`, `--bases-table-header-background-hover`, `--bases-embed-border-color`, `--bases-table-border-color`, `--table-border-color`
+- `.callout[data-callout=abstract],.callout[data-callout=summary],.callout[data-callout=tldr]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=info]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=todo]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=important]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=tip],.callout[data-callout=hint]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=success],.callout[data-callout=check],.callout[data-callout=done]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=question],.callout[data-callout=help],.callout[data-callout=faq]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=warning],.callout[data-callout=caution],.callout[data-callout=attention]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=failure],.callout[data-callout=fail],.callout[data-callout=missing]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=danger],.callout[data-callout=error]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=bug]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=example]` — 2: `--callout-color`, `--callout-icon`
+- `.callout[data-callout=quote],.callout[data-callout=cite]` — 2: `--callout-color`, `--callout-icon`
+- `.callout-title-inner` — 1: `--font-weight`
+- `body,.mermaid` — 24: `--pele-bg`, `--pele-fg`, `--pele-muted`, `--pele-line`, `--pele-surface`, `--pele-surface-alt`, `--pele-border`, `--pele-accent`, `--pele-critical`, `--pele-error`, `--pele-font`, `--pele-font-mono`, `--pele-radius`, `--pele-title-weight`, `--pele-heading-weight` …
+- `.pele-math mjx-menclose>:is(mjx-ustrike,mjx-dstrike,mjx-hstrike,mjx-vstrike,mjx-arrow)` — 1: `--mjx-strike`
+- `.pele-math mjx-menclose>mjx-dstrike` — 1: `--mjx-strike`
+- `.pele-math mjx-menclose>mjx-hstrike` — 1: `--mjx-strike`
+- `.pele-math mjx-menclose>mjx-vstrike` — 1: `--mjx-strike`
+- `.markdown-source-view.mod-cm6 .cm-hmd-codeblock` — 1: `--indentation-guide-editing-indent`
+- `.markdown-source-view.mod-cm6 .cm-preview-code-block .mermaid` — 2: `--pele-zoom-top`, `--pele-zoom-right`
+- `.markdown-preview-view .markdown-embed .markdown-preview-view` — 1: `--file-folding-offset`
+- `.markdown-embed-link,.file-embed-link` — 2: `--icon-size`, `--icon-stroke`
+- `.is-mobile .cm-content .image-embed .embed-action,.is-mobile .cm-image-reveal-tooltip .image-embed .embed-action` — 1: `--icon-size`
+- `.cm-editor.cm-focused .image-embed.is-selected,.cm-editor .image-embed.has-active-menu` — 1: `--image-radius`
+- `.metadata-container` — 1: `--input-height`
+- `.metadata-property` — 3: `--input-border-width`, `--input-border-width-focus`, `--input-radius`
+- `.metadata-property:hover` — 1: `--metadata-divider-color`
+- `.metadata-property.has-focus,.metadata-property:focus-within` — 1: `--metadata-divider-color`
+- `.metadata-property-warning-icon` — 1: `--icon-size`
+- `.metadata-property-value` — 1: `--input-padding`
+- `.metadata-property-value .multi-select-pill` — 4: `--pill-border-width`, `--pill-padding-x`, `--pill-padding-y`, `--pill-color`
+- `.metadata-property-value .multi-select-container` — 2: `--background-modifier-form-field`, `--background-modifier-border`
+- `.metadata-property-value .multi-select-container .multi-select-pill.is-invalid` — 3: `--pill-background`, `--pill-color`, `--pill-color-remove`
+- `.metadata-property-value .clickable-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.metadata-property-value[data-property-type=tags] .multi-select-pill` — 18: `--pill-color`, `--pill-color-hover`, `--pill-color-remove`, `--pill-color-remove-hover`, `--pill-decoration`, `--pill-decoration-hover`, `--pill-background`, `--pill-background-hover`, `--pill-border-color`, `--pill-border-color-hover`, `--pill-border-width`, `--pill-padding-x`, `--pill-padding-y`, `--pill-radius`, `--pill-corner-shape` …
+- `.metadata-link-flair` — 1: `--icon-size`
+- `h1,.markdown-rendered h1` — 1: `--font-weight`
+- `h1 a,.markdown-rendered h1 a` — 1: `--link-weight`
+- `h2,.markdown-rendered h2` — 1: `--font-weight`
+- `h2 a,.markdown-rendered h2 a` — 1: `--link-weight`
+- `h3,.markdown-rendered h3` — 1: `--font-weight`
+- `h3 a,.markdown-rendered h3 a` — 1: `--link-weight`
+- `h4,.markdown-rendered h4` — 1: `--font-weight`
+- `h4 a,.markdown-rendered h4 a` — 1: `--link-weight`
+- `h5,.markdown-rendered h5` — 1: `--font-weight`
+- `h5 a,.markdown-rendered h5 a` — 1: `--link-weight`
+- `h6,.markdown-rendered h6` — 1: `--font-weight`
+- `h6 a,.markdown-rendered h6 a` — 1: `--link-weight`
+- `.HyperMD-header-1,.inline-title h1,.HyperMD-list-line .cm-header-1` — 1: `--font-weight`
+- `.HyperMD-header-1 a,.inline-title h1 a,.HyperMD-list-line .cm-header-1 a,.HyperMD-header-1 .cm-hmd-internal-link,.inline-title h1 .cm-hmd-internal-link,.HyperMD-list-line .cm-header-1 .cm-hmd-internal-link` — 1: `--link-weight`
+- `.HyperMD-header-2,.inline-title h2,.HyperMD-list-line .cm-header-2` — 1: `--font-weight`
+- `.HyperMD-header-2 a,.inline-title h2 a,.HyperMD-list-line .cm-header-2 a,.HyperMD-header-2 .cm-hmd-internal-link,.inline-title h2 .cm-hmd-internal-link,.HyperMD-list-line .cm-header-2 .cm-hmd-internal-link` — 1: `--link-weight`
+- `.HyperMD-header-3,.inline-title h3,.HyperMD-list-line .cm-header-3` — 1: `--font-weight`
+- `.HyperMD-header-3 a,.inline-title h3 a,.HyperMD-list-line .cm-header-3 a,.HyperMD-header-3 .cm-hmd-internal-link,.inline-title h3 .cm-hmd-internal-link,.HyperMD-list-line .cm-header-3 .cm-hmd-internal-link` — 1: `--link-weight`
+- `.HyperMD-header-4,.inline-title h4,.HyperMD-list-line .cm-header-4` — 1: `--font-weight`
+- `.HyperMD-header-4 a,.inline-title h4 a,.HyperMD-list-line .cm-header-4 a,.HyperMD-header-4 .cm-hmd-internal-link,.inline-title h4 .cm-hmd-internal-link,.HyperMD-list-line .cm-header-4 .cm-hmd-internal-link` — 1: `--link-weight`
+- `.HyperMD-header-5,.inline-title h5,.HyperMD-list-line .cm-header-5` — 1: `--font-weight`
+- `.HyperMD-header-5 a,.inline-title h5 a,.HyperMD-list-line .cm-header-5 a,.HyperMD-header-5 .cm-hmd-internal-link,.inline-title h5 .cm-hmd-internal-link,.HyperMD-list-line .cm-header-5 .cm-hmd-internal-link` — 1: `--link-weight`
+- `.HyperMD-header-6,.inline-title h6,.HyperMD-list-line .cm-header-6` — 1: `--font-weight`
+- `.HyperMD-header-6 a,.inline-title h6 a,.HyperMD-list-line .cm-header-6 a,.HyperMD-header-6 .cm-hmd-internal-link,.inline-title h6 .cm-hmd-internal-link,.HyperMD-list-line .cm-header-6 .cm-hmd-internal-link` — 1: `--link-weight`
+- `.markdown-source-view` — 2: `--list-padding-inline-start`, `--list-marker-space`
+- `.markdown-source-view.is-live-preview` — 2: `--list-padding-inline-start`, `--list-marker-space`
+- `a` — 1: `--font-weight`
+- `.metadata-property-value .internal-link,.markdown-rendered .internal-link` — 1: `--font-weight`
+- `.cm-s-obsidian .HyperMD-table-row span.cm-inline-code` — 1: `--code-size`
+- `.markdown-rendered mark[data-highlight=red]` — 1: `--highlight-background`
+- `.markdown-rendered mark[data-highlight=orange]` — 1: `--highlight-background`
+- `.markdown-rendered mark[data-highlight=yellow]` — 1: `--highlight-background`
+- `.markdown-rendered mark[data-highlight=green]` — 1: `--highlight-background`
+- `.markdown-rendered mark[data-highlight=blue]` — 1: `--highlight-background`
+- `.markdown-rendered mark[data-highlight=purple]` — 1: `--highlight-background`
+- `.cm-s-obsidian span.cm-highlight-red` — 1: `--highlight-background`
+- `.cm-s-obsidian span.cm-highlight-orange` — 1: `--highlight-background`
+- `.cm-s-obsidian span.cm-highlight-yellow` — 1: `--highlight-background`
+- `.cm-s-obsidian span.cm-highlight-green` — 1: `--highlight-background`
+- `.cm-s-obsidian span.cm-highlight-blue` — 1: `--highlight-background`
+- `.cm-s-obsidian span.cm-highlight-purple` — 1: `--highlight-background`
+- `.cm-s-obsidian .cm-highlight-color-widget[data-highlight=red]` — 1: `--highlight-background`
+- `.cm-s-obsidian .cm-highlight-color-widget[data-highlight=orange]` — 1: `--highlight-background`
+- `.cm-s-obsidian .cm-highlight-color-widget[data-highlight=yellow]` — 1: `--highlight-background`
+- `.cm-s-obsidian .cm-highlight-color-widget[data-highlight=green]` — 1: `--highlight-background`
+- `.cm-s-obsidian .cm-highlight-color-widget[data-highlight=blue]` — 1: `--highlight-background`
+- `.cm-s-obsidian .cm-highlight-color-widget[data-highlight=purple]` — 1: `--highlight-background`
+- `.cm-strong` — 1: `--link-weight`
+- `.workspace-leaf-content[data-type=bases]` — 6: `--bases-table-container-border-width`, `--bases-table-container-border-radius`, `--bases-table-cell-edge-padding`, `--bases-view-padding`, `--bases-header-padding-start`, `--bases-header-padding-end`
+- `.bases-formula-error .warning-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.app-container .block-language-base,.app-container .bases-embed` — 1: `--bases-header-border-width`
+- `.markdown-source-view.mod-cm6 .cm-content>.bases-embed,.markdown-source-view.mod-cm6 .cm-content>.cm-lang-base` — 1: `--bases-header-padding-end`
+- `.hover-popover>.bases-embed` — 3: `--bases-table-cell-edge-padding`, `--bases-embed-border-width`, `--bases-embed-border-radius`
+- `.hover-popover>.bases-embed .bases-header` — 2: `--bases-header-padding-start`, `--bases-header-padding-end`
+- `.canvas-node .bases-embed` — 3: `--bases-embed-border-width`, `--bases-embed-border-radius`, `--bases-header-border-width`
+- `.bases-rendered-value` — 1: `--input-border-width`
+- `.bases-group-heading` — 6: `--link-color`, `--link-unresolved-color`, `--link-unresolved-opacity`, `--link-decoration`, `--link-weight`, `--link-color-hover`
+- `.bases-header .bases-toolbar-item:not(.bases-toolbar-result-count)` — 2: `--bases-toolbar-label-display`, `--bases-toolbar-badge-display`
+- `body:not(.is-phone) .base-toolbar-sort-item,body:not(.is-phone) .base-toolbar-groupby-item` — 1: `--metadata-property-box-shadow`
+- `.bases-toolbar .bases-toolbar-item.bases-toolbar-views-menu .text-icon-button` — 1: `--icon-color-hover`
+- `.bases-toolbar .toolbar-badge` — 1: `--flair-background`
+- `.bases-toolbar .mod-error` — 2: `--flair-background`, `--flair-color`
+- `.grip-handle` — 2: `--icon-size`, `--icon-stroke`
+- `.bases-toolbar-menu-container` — 3: `--icon-size`, `--icon-stroke`, `--bases-property-menu-item-radius`
+- `.bases-toolbar-menu-container .search-input-container` — 1: `--search-icon-color`
+- `.bases-toolbar-menu` — 1: `--input-height`
+- `.bases-toolbar-menu .bases-toolbar-section-header` — 2: `--flair-background`, `--flair-color`
+- `.bases-group-page .bases-group-add-line` — 7: `--metadata-property-box-shadow`, `--metadata-property-box-shadow-hover`, `--metadata-property-box-shadow-focus`, `--metadata-input-background-active`, `--metadata-input-font-size`, `--input-height`, `--metadata-input-padding`
+- `.base-toolbar-sort-item,.base-toolbar-groupby-item` — 6: `--input-shadow`, `--icon-size`, `--icon-stroke`, `--metadata-divider-width`, `--metadata-label-width`, `--metadata-property-background`
+- `.bases-toolbar-menu-form .input-row .help-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.bases-toolbar-menu-form .input-row .formula-editor-status .status-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.bases-toolbar-menu-item.is-disabled` — 1: `--icon-color`
+- `.bases-toolbar-menu-item.mod-hidden` — 1: `--icon-color`
+- `.bases-toolbar-menu-item.mod-hidden .bases-toolbar-menu-item-name` — 3: `--link-color`, `--link-color-hover`, `--link-unresolved-color`
+- `.bases-toolbar-menu-item .bases-property-visibility-button` — 1: `--icon-size`
+- `.bases-toolbar-menu-item.mod-active` — 1: `--icon-color`
+- `.bases-toolbar-menu-item .bases-toolbar-menu-item-name` — 5: `--link-color`, `--link-color-hover`, `--link-unresolved-color`, `--link-decoration`, `--link-unresolved-opacity`
+- `.bases-search-row` — 4: `--input-border-width`, `--input-border-width-focus`, `--background-modifier-form-field`, `--background-modifier-form-field-hover`
+- `:where(.bases-query-container,.drag-reorder-ghost) .filter-group-header-actions` — 2: `--icon-size`, `--icon-stroke`
+- `:where(.bases-query-container,.drag-reorder-ghost) .filter-expression` — 7: `--input-shadow`, `--icon-size`, `--icon-stroke`, `--metadata-divider-width`, `--metadata-label-width`, `--metadata-input-font-size`, `--metadata-property-box-shadow`
+- `:where(.bases-query-container,.drag-reorder-ghost) .filter-statement.mod-error .filer-expression-mode-toggle` — 1: `--icon-color`
+- `.bases-view[data-view-type=cards]` — 2: `--bases-view-padding`, `--bases-embed-padding`
+- `.is-phone .bases-view[data-view-type=cards]` — 1: `--bases-embed-padding`
+- `.bases-cards-item` — 1: `--input-height`
+- `.bases-cards-property.mod-title` — 5: `--link-color`, `--link-unresolved-color`, `--link-unresolved-opacity`, `--link-decoration`, `--link-weight`
+- `.bases-view[data-view-type=kanban]` — 4: `--bases-view-padding`, `--bases-embed-padding`, `--bases-embed-border-width`, `--bases-embed-height`
+- `.bases-kanban-column-create` — 2: `--icon-size`, `--icon-stroke`
+- `.bases-kanban-card` — 1: `--input-height`
+- `.bases-kanban-card-property.mod-title` — 5: `--link-color`, `--link-unresolved-color`, `--link-unresolved-opacity`, `--link-decoration`, `--link-weight`
+- `.bases-view[data-view-type=list]` — 2: `--bases-view-padding`, `--bases-embed-padding`
+- `.bases-view[data-view-type=list].is-grouped` — 1: `--bases-view-padding`
+- `.bases-view[data-view-type=table]` — 2: `--bases-view-padding`, `--bases-embed-border-width`
+- `.mod-sidedock` — 1: `--bases-table-header-background`
+- `.bases-table-container` — 5: `--metadata-input-font-size`, `--metadata-input-background-active`, `--metadata-input-longtext-lines`, `--metadata-divider-width`, `--input-placeholder-color`
+- `[dir=rtl],.rtl,.mod-rtl` — 1: `--bases-table-header-sort-mask`
+- `.bases-table-header-sort` — 2: `--icon-size`, `--icon-stroke`
+- `.bases-table-header-label` — 2: `--icon-size`, `--icon-stroke`
+- `.bases-table-summary-cell` — 2: `--icon-size`, `--icon-stroke`
+- `.bases-table-summary-cell .summary-content` — 1: `--input-placeholder-color`
+- `.bases-td .metadata-input.mod-date,.bases-td .metadata-input.mod-datetime` — 1: `--input-placeholder-color`
+- `.bases-table-container:not(.mod-multiline) .bases-tr` — 1: `--input-height`
+- `.table-col-drag-ghost` — 2: `--icon-size`, `--icon-stroke`
+- `.view-action.mod-bookmarked` — 2: `--icon-color`, `--icon-color-hover`
+- `.file-tree-item-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.file-tree .clickable-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.graph-controls` — 1: `--scrollbar-native-width`
+- `.graph-color-group` — 2: `--swatch-height`, `--swatch-width`
+- `.is-phone .metadata-container,.workspace-drawer .metadata-container` — 5: `--metadata-input-height`, `--metadata-padding`, `--metadata-divider-color-hover`, `--metadata-property-radius`, `--metadata-property-radius-hover`
+- `.is-phone .metadata-properties,.workspace-drawer .metadata-properties` — 1: `--metadata-gap`
+- `.workspace>.workspace-split:not(.mod-root) .metadata-container` — 8: `--metadata-label-font-size`, `--metadata-input-font-size`, `--icon-size`, `--icon-stroke`, `--metadata-padding`, `--metadata-divider-width`, `--metadata-divider-color-hover`, `--metadata-property-radius`
+- `.workspace>.workspace-split:not(.mod-root) .metadata-container .metadata-properties` — 1: `--metadata-gap`
+- `.workspace>.workspace-split:not(.mod-root) .metadata-container .metadata-property-value .clickable-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.publish-changes-switch-site .clickable-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.publish-upload-item .list-item-part` — 2: `--icon-size`, `--icon-stroke`
+- `.search-result-file-match-destination-file-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.search-params` — 1: `--scrollbar-native-width`
+- `.more-options-icon` — 1: `--icon-size`
+- `.is-phone .slides-close-btn` — 1: `--icon-size`
+- `.sync-history-list-item-header.is-active` — 1: `--nav-collapse-icon-color`
+- `.sync-history-list-item-header.is-active:hover` — 1: `--nav-collapse-icon-color`
+- `.sync-history-list-item-header.is-active .tree-item-flair:hover` — 1: `--nav-collapse-icon-color`
+- `.sync-history-list-item-header .tree-item-flair:hover` — 1: `--nav-collapse-icon-color`
+- `.sync-history-preview` — 1: `--cursor-link`
+- `.mod-canvas-color-1` — 1: `--canvas-color`
+- `.mod-canvas-color-2` — 1: `--canvas-color`
+- `.mod-canvas-color-3` — 1: `--canvas-color`
+- `.mod-canvas-color-4` — 1: `--canvas-color`
+- `.mod-canvas-color-5` — 1: `--canvas-color`
+- `.mod-canvas-color-6` — 1: `--canvas-color`
+- `body.theme-dark` — 1: `--canvas-color`
+- `.canvas-wrapper` — 5: `--resizer-size`, `--shadow-stationary`, `--shadow-drag`, `--shadow-border-accent`, `--zoom-multiplier`
+- `.canvas-card-menu .canvas-card-menu-button` — 2: `--icon-size`, `--icon-stroke`
+- `.canvas-control-item` — 2: `--icon-size`, `--icon-stroke`
+- `.canvas-node-label` — 1: `--icon-size`
+- `.canvas-node` — 2: `--shadow-border-themed-inset`, `--shadow-border-themed`
+- `body.is-mobile .canvas-node-resizer` — 1: `--zoom-multiplier`
+- `.canvas-color-picker-item input[type=color]` — 2: `--swatch-width`, `--swatch-height`
+- `.view-action.mod-webviewer` — 2: `--icon-color`, `--icon-color-hover`
+- `.view-header-reload-button` — 1: `--icon-size`
+- `.webviewer-addressbar-suggestion.suggestion-item .suggestion-flair-left,.webviewer-addressbar-suggestion.suggestion-item .suggestion-icon:first-child` — 2: `--icon-size`, `--icon-stroke`
+- `.is-mobile` — 106: `--ribbon-width`, `--view-header-height`, `--view-header-action-radius`, `--bases-header-height`, `--mobile-toolbar-height`, `--autoscroll-padding`, `--button-transition`, `--system-status-background`, `--canvas-controls-radius`, `--canvas-controls-icon-size`, `--canvas-controls-icon-stroke`, `--caret-color`, `--clickable-icon-radius`, `--dropdown-padding-end`, `--dropdown-padding-start` …
+- `.is-mobile.theme-light` — 1: `--color-base-100`
+- `.is-mobile.theme-dark` — 15: `--color-base-00`, `--color-base-10`, `--color-base-20`, `--tag-background`, `--search-result-background`, `--background-modifier-message`, `--modal-border-color`, `--settings-background`, `--setting-items-background`, `--setting-items-divider-color`, `--menu-divider-color`, `--mobile-sidebar-background`, `--modal-background`, `--interactive-normal`, `--interactive-hover`
+- `.is-phone` — 25: `--file-header-justify`, `--nav-item-size`, `--metadata-label-width`, `--modal-community-sidebar-width`, `--modal-border-width`, `--prompt-border-width`, `--view-bottom-spacing`, `--view-bottom-fade-opacity`, `--view-bottom-fade-mask`, `--view-top-fade-opacity`, `--view-top-fade-mask`, `--view-top-spacing-markdown`, `--view-top-spacing`, `--view-header-height`, `--view-header-top-offset` …
+- `.is-phone.is-mobile` — 3: `--mobile-sidebar-min-width`, `--mobile-sidebar-width`, `--mobile-sidebar-radius`
+- `.is-tablet` — 5: `--nav-item-padding`, `--tab-font-size`, `--system-status-background`, `--mobile-sidebar-radius`, `--toolbar-option-width`
+- `.is-tablet.theme-dark` — 2: `--titlebar-background`, `--titlebar-background-focused`
+- `.is-ios` — 10: `--slider-thumb-width`, `--toggle-width`, `--toggle-radius`, `--toggle-thumb-radius`, `--toggle-thumb-height`, `--toggle-thumb-width`, `--toggle-thumb-opacity-active`, `--toggle-s-width`, `--toggle-s-thumb-height`, `--toggle-s-thumb-width`
+- `body.emulate-mobile` — 4: `--safe-area-inset-top`, `--safe-area-inset-bottom`, `--safe-area-inset-left`, `--safe-area-inset-right`
+- `.is-phone .bases-header .bases-toolbar-item` — 1: `--bases-toolbar-label-display`
+- `.is-phone .callout-content` — 2: `--bases-embed-transform`, `--bases-embed-width`
+- `.is-phone .bases-toolbar-menu-container-header` — 2: `--icon-size`, `--icon-stroke`
+- `.is-phone .bases-toolbar-menu-container` — 1: `--bases-property-menu-item-radius`
+- `.menu.mod-sheet .bases-filter-page .conjunction-chevron,.drag-reorder-ghost.mod-sheet .conjunction-chevron` — 2: `--icon-size`, `--icon-stroke`
+- `.menu.mod-sheet .bases-filter-page .filter-row,.drag-reorder-ghost.mod-sheet .filter-row` — 1: `--filter-card-padding`
+- `.menu.mod-sheet .bases-filter-page .filter-row .filter-row-actions,.drag-reorder-ghost.mod-sheet .filter-row .filter-row-actions` — 3: `--icon-size`, `--icon-stroke`, `--icon-opacity`
+- `.menu.mod-sheet .bases-filter-page .filter-row .filter-group-header-actions,.drag-reorder-ghost.mod-sheet .filter-row .filter-group-header-actions` — 3: `--icon-size`, `--icon-stroke`, `--icon-opacity`
+- `.menu.mod-sheet .bases-filter-page .filter-row .filter-expression,.drag-reorder-ghost.mod-sheet .filter-row .filter-expression` — 1: `--metadata-property-box-shadow`
+- `.menu.mod-sheet .bases-filter-page .filter-row .filter-rhs-container,.drag-reorder-ghost.mod-sheet .filter-row .filter-rhs-container` — 3: `--metadata-input-background-active`, `--metadata-input-padding`, `--input-height`
+- `.menu.mod-sheet .bases-filter-page .bases-query-container .filter-group-actions .text-icon-button,.drag-reorder-ghost.mod-sheet .bases-query-container .filter-group-actions .text-icon-button` — 2: `--icon-size`, `--icon-stroke`
+- `.bases-toolbar-menu.mod-sheet .bases-toolbar-menu-header .clickable-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.is-mobile .workspace-leaf-content[data-type=bases-query]` — 2: `--bases-header-padding-start`, `--bases-header-padding-end`
+- `.is-mobile .bases-header` — 2: `--icon-size`, `--icon-stroke`
+- `.is-mobile .document-search-container+.markdown-preview-view,.is-mobile .document-search-container+.cm-editor` — 1: `--view-top-spacing-markdown`
+- `.mobile-onboarding` — 3: `--nav-height`, `--content-height`, `--input-border-width`
+- `.is-mobile .modal-header-button,.is-mobile .modal-close-button,.is-mobile .modal-setting-back-button,.is-mobile .view-header-nav-buttons,.is-mobile .view-header .view-action` — 6: `--icon-color`, `--icon-color-hover`, `--icon-color-active`, `--icon-color-focus`, `--icon-size`, `--icon-stroke`
+- `.is-tablet .view-actions` — 1: `--raised`
+- `.is-phone.is-hidden-nav .view-header` — 1: `--hidden-nav-offset`
+- `.is-phone .modal .setting-group.mod-list` — 2: `--setting-items-padding-x`, `--setting-items-padding-y`
+- `.is-phone .search-input-container.mod-raised` — 1: `--background-modifier-form-field`
+- `.theme-dark.is-phone .search-input-container.mod-raised` — 1: `--background-modifier-form-field`
+- `.is-phone .modal.mod-settings` — 1: `--setting-group-max-width`
+- `.is-phone .modal.mod-settings .vertical-tab-header-group-items,.is-phone .modal.mod-settings .setting-search-result-group` — 2: `--icon-size`, `--icon-stroke`
+- `.is-phone .modal.mod-settings .vertical-tab-nav-item-chevron` — 1: `--icon-stroke`
+- `.is-mobile .mod-community-modal` — 1: `--modal-background`
+- `.workspace-drawer .search-input-container` — 4: `--background-modifier-form-field`, `--background-modifier-form-field-hover`, `--search-input-radius`, `--input-border-width-focus`
+- `.workspace-drawer.mod-primary.is-pinned` — 1: `--mobile-sidebar-radius`
+- `.workspace-drawer.mod-secondary.is-pinned` — 1: `--mobile-sidebar-radius`
+- `.workspace-drawer .nav-buttons-container` — 7: `--icon-size`, `--icon-stroke`, `--icon-color`, `--icon-color-hover`, `--icon-color-active`, `--icon-color-focus`, `--icon-opacity-hover`
+- `.workspace-drawer-header-name-chevron` — 2: `--icon-size`, `--icon-stroke`
+- `.workspace-drawer-header-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.workspace-drawer-tab-options` — 2: `--no-tooltip`, `--icon-color`
+- `.workspace-drawer-tab-options .workspace-tab-header.is-swiping .workspace-tab-header-inner,.workspace-drawer-tab-options .workspace-tab-header.mobile-tap .workspace-tab-header-inner` — 1: `--icon-color`
+- `.workspace-drawer-tab-options .workspace-tab-header.is-active` — 1: `--icon-color`
+- `.workspace-drawer-tab-options .workspace-tab-header-inner-icon` — 2: `--icon-size`, `--icon-stroke`
+- `.workspace-drawer-tab-options .workspace-tab-header-inner-chevron` — 2: `--icon-size`, `--icon-stroke`
+- `.workspace-drawer-tab-options.is-collapsed .workspace-drawer-tab-select` — 1: `--icon-color`
+- `.workspace-drawer-tab-select` — 1: `--icon-color`
+- `.workspace-drawer-tab-select .workspace-tab-header-inner .workspace-drawer-active-tab-chevron` — 2: `--icon-size`, `--icon-stroke`
+- `.is-phone .mod-root .workspace-leaf-content[data-type=markdown]` — 1: `--view-top-spacing`
+- `body.is-tablet .sidebar-toggle-button` — 6: `--icon-color`, `--icon-color-hover`, `--icon-color-active`, `--icon-color-focus`, `--icon-size`, `--icon-stroke`
+- `.is-mobile.theme-light .menu` — 1: `--interactive-normal`
+- `.is-mobile .menu` — 3: `--background-modifier-form-field`, `--dropdown-background`, `--input-height`
+- `.menu.mod-sheet` — 1: `--menu-padding`
+- `.mod-sheet .menu-scroll` — 1: `--scrollbar-native-width`
+- `.is-mobile .modal-sidebar-inner` — 1: `--modal-sidebar-inset`
+- `.is-phone .modal-container` — 7: `--dialog-max-height`, `--dialog-max-width`, `--dialog-width`, `--modal-width`, `--modal-radius`, `--modal-max-height`, `--prompt-max-width`
+- `.is-phone .modal .modal:not(.mod-lg)` — 1: `--interactive-normal`
+- `.is-phone .modal-container.mod-confirmation .modal,.is-phone .modal.mod-lg,.is-phone .modal.mod-sidebar-layout` — 4: `--modal-radius`, `--dialog-max-height`, `--dialog-max-width`, `--dialog-width`
+- `.is-phone .modal.mod-settings.mod-sidebar-layout` — 2: `--modal-header-inset-top`, `--modal-header-height`
+- `.is-phone .modal.mod-community-modal .community-modal-details` — 2: `--modal-header-height`, `--modal-radius`
+- `.is-hidden-nav .mobile-navbar` — 1: `--hidden-nav-navbar-transform`
+- `.mobile-navbar-actions` — 6: `--icon-size`, `--icon-stroke`, `--icon-color`, `--icon-color-hover`, `--icon-color-active`, `--icon-color-focus`
+- `.mobile-navbar-action.has-longpress-menu .navbar-action-flair` — 2: `--icon-size`, `--icon-stroke`
+- `.is-phone .prompt` — 1: `--prompt-top`
+- `.is-mobile .prompt-input-cta` — 3: `--icon-color`, `--icon-size`, `--icon-stroke`
+- `.is-tablet .prompt-input-container` — 1: `--raised`
+- `.mobile-toolbar-options-container` — 3: `--icon-size`, `--icon-stroke`, `--scroll-fade-offset-right`
+- `.mobile-tab-switcher-menubar` — 6: `--icon-size`, `--icon-stroke`, `--icon-color`, `--icon-color-hover`, `--icon-color-active`, `--icon-color-focus`
+- `.mobile-tab-switcher-menu-button-chevron` — 2: `--icon-size`, `--icon-stroke`
+- `.mobile-tab` — 2: `--drag-item-background`, `--drag-item-shadow`
+- `.mobile-tab .mobile-tab-pin,.mobile-tab .close-button` — 1: `--icon-size`
+- `.mobile-tab-preview-empty` — 2: `--icon-size`, `--icon-stroke`
+- `.mobile-tab-preview-embed` — 1: `--scrollbar-native-width`
+- `.mod-fade` — 2: `--scroll-fade-offset-right`, `--scroll-fade-offset-left`
+- `.is-phone.is-floating-nav,.is-phone.auto-full-screen` — 5: `--navbar-position`, `--view-header-position`, `--view-top-spacing`, `--view-top-spacing-markdown`, `--view-bottom-spacing`
+- `.is-mobile.is-floating-nav` — 5: `--navbar-max-width`, `--navbar-width`, `--navbar-height`, `--navbar-radius`, `--navbar-position`
+- `.is-mobile.is-floating-nav.is-ios` — 1: `--raised-mask-border-width`
+- `.is-mobile.is-floating-nav.is-ios.theme-light` — 1: `--shadow-edges`
+- `.is-mobile.is-floating-nav.is-ios.theme-dark` — 1: `--shadow-edges`
+- `.is-phone.is-floating-nav` — 2: `--view-top-fade-mask`, `--view-bottom-fade-mask`
+- `.is-phone.is-hidden-nav` — 2: `--view-top-fade-mask`, `--view-bottom-fade-mask`
+- `.is-phone:not(.is-floating-nav) .workspace-drawer,.is-phone:not(.is-floating-nav) .view-header` — 1: `--raised-background`
+- `.is-phone:not(.is-floating-nav) .mobile-navbar` — 1: `--raised-background`

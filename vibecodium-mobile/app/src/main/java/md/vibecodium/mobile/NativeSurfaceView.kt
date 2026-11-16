@@ -101,6 +101,7 @@ abstract class NativeSurfaceView(context: Context) : FrameLayout(context), Textu
     protected open fun onBandLayoutChanged() = Unit
 
     init {
+        LIVE_VIEWS.add(this)
         textureView.surfaceTextureListener = this
         addView(textureView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         clipChildren = true
@@ -325,8 +326,16 @@ abstract class NativeSurfaceView(context: Context) : FrameLayout(context), Textu
         // updates still run in order.
     }
 
-    private companion object {
+    companion object {
         val NEXT_ID = AtomicInteger(1)
+
+        /** Attached surfaces, weakly held; used to repaint after a theme change. */
+        private val LIVE_VIEWS: MutableSet<NativeSurfaceView> =
+            java.util.Collections.newSetFromMap(java.util.WeakHashMap())
+
+        fun refreshTheme() {
+            for (view in LIVE_VIEWS.toList()) view.requestFullRender()
+        }
 
         /**
          * One dedicated render thread shared by every surface. It keeps a

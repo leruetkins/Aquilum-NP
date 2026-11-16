@@ -67,6 +67,111 @@ unsafe fn ANativeWindow_unlockAndPost(_window: *mut ANativeWindow) -> i32 { 0 }
 
 const WINDOW_FORMAT_RGBA_8888: i32 = 1;
 
+/// Colors supplied by the Kotlin theme layer. Every field is 0xRRGGBB;
+/// alpha is handled by the painter where it matters. The palette is global
+/// because one app theme applies to both the tree and editor surfaces.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct SurfacePalette {
+    background: u32,
+    surface: u32,
+    surface_alt: u32,
+    text: u32,
+    text_muted: u32,
+    text_faint: u32,
+    accent: u32,
+    accent_hover: u32,
+    border: u32,
+    selection: u32,
+    code_background: u32,
+    code_normal: u32,
+    code_comment: u32,
+    code_keyword: u32,
+    code_string: u32,
+    code_number: u32,
+    code_function: u32,
+    code_type: u32,
+    code_punctuation: u32,
+    heading: u32,
+    marker: u32,
+    link: u32,
+    tag: u32,
+    inline_code: u32,
+    inline_code_background: u32,
+    highlight: u32,
+    tree_background: u32,
+    tree_text: u32,
+    tree_muted: u32,
+    tree_folder: u32,
+    active_row: u32,
+    tag_background: u32,
+    editor_background: u32,
+    scrollbar: u32,
+}
+
+impl Default for SurfacePalette {
+    fn default() -> Self {
+        Self {
+            background: 0x000000,
+            surface: 0x1e1e1e,
+            surface_alt: 0x282828,
+            text: 0xdadada,
+            text_muted: 0xb3b3b3,
+            text_faint: 0x666666,
+            accent: 0x8a5cf5,
+            accent_hover: 0xa68af9,
+            border: 0x333333,
+            selection: 0x23173d,
+            code_background: 0x111111,
+            code_normal: 0xdadada,
+            code_comment: 0x666666,
+            code_keyword: 0xfa99cd,
+            code_string: 0x44cf6e,
+            code_number: 0xe9973f,
+            code_function: 0xe0de71,
+            code_type: 0x53dfdd,
+            code_punctuation: 0xb3b3b3,
+            heading: 0xdadada,
+            marker: 0x666666,
+            link: 0x8a5cf5,
+            tag: 0x8a5cf5,
+            inline_code: 0x53dfdd,
+            inline_code_background: 0x111111,
+            highlight: 0x2a2140,
+            tree_background: 0x282828,
+            tree_text: 0xdadada,
+            tree_muted: 0x8a8a8a,
+            tree_folder: 0x8a5cf5,
+            active_row: 0x333333,
+            tag_background: 0x2a2a2a,
+            editor_background: 0x000000,
+            scrollbar: 0x6a6a6a,
+        }
+    }
+}
+
+static THEME_PALETTE: OnceLock<Mutex<SurfacePalette>> = OnceLock::new();
+
+fn palette() -> SurfacePalette {
+    THEME_PALETTE
+        .get_or_init(|| Mutex::new(SurfacePalette::default()))
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
+}
+
+fn set_palette(value: SurfacePalette) {
+    if let Ok(mut guard) = THEME_PALETTE
+        .get_or_init(|| Mutex::new(SurfacePalette::default()))
+        .lock()
+    {
+        *guard = value;
+    }
+}
+
+
+
+
 
 #[inline(always)]
 fn logical(rgb: u32) -> u32 {
@@ -800,14 +905,19 @@ impl Face {
     }
 }
 
-#[derive(Default)]
+struct FontSet {
+    ui: Option<Font>,
+    mono: Option<Font>,
+    serif: Option<Font>,
+    symbols: Option<Font>,
+    symbols2: Option<Font>,
+    cjk: Option<Font>,
+}
+
+static SYSTEM_FONTS: OnceLock<Arc<FontSet>> = OnceLock::new();
+
 struct Painter {
-    ui_font: Option<Font>,
-    mono_font: Option<Font>,
-    serif_font: Option<Font>,
-    symbols_font: Option<Font>,
-    symbols2_font: Option<Font>,
-    cjk_font: Option<Font>,
+    fonts: Arc<FontSet>,
     glyphs: HashMap<(u8, char, u32), (fontdue::Metrics, Vec<u8>)>,
     icons: HashMap<(usize, u32, u32), IconRaster>,
     emojis: HashMap<(String, u32), EmojiRaster>,
@@ -829,39 +939,51 @@ fn load_font(paths: &[&str]) -> Option<Font> {
     None
 }
 
+/// System fonts are immutable and expensive to read/parse; every surface
+/// shares one copy instead of re-reading the TTFs on each Painter creation.
+fn system_fonts() -> Arc<FontSet> {
+    SYSTEM_FONTS
+        .get_or_init(|| {
+            Arc::new(FontSet {
+                ui: load_font(&[
+                    "/system/fonts/Roboto-Regular.ttf",
+                    "/system/fonts/RobotoStatic-Regular.ttf",
+                    "/system/fonts/NotoSans-Regular.ttf",
+                ]),
+                mono: load_font(&[
+                    "/system/fonts/RobotoMono-Regular.ttf",
+                    "/system/fonts/DroidSansMono.ttf",
+                    "/system/fonts/NotoSansMono-Regular.ttf",
+                ]),
+                serif: load_font(&[
+                    "/system/fonts/NotoSerif-Regular.ttf",
+                    "/system/fonts/NotoSerifStatic-Regular.ttf",
+                    "/system/fonts/DroidSerif-Regular.ttf",
+                ]),
+                symbols: load_font(&[
+                    "/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf",
+                    "/system/fonts/NotoSansSymbols-Regular.ttf",
+                ]),
+                symbols2: load_font(&[
+                    "/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf",
+                    "/system/fonts/NotoSansSymbols2-Regular.ttf",
+                ]),
+                cjk: None,
+            })
+        })
+        .clone()
+}
+
+impl Default for Painter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Painter {
     fn new() -> Self {
-        let ui_font = load_font(&[
-            "/system/fonts/Roboto-Regular.ttf",
-            "/system/fonts/RobotoStatic-Regular.ttf",
-            "/system/fonts/NotoSans-Regular.ttf",
-        ]);
-        let mono_font = load_font(&[
-            "/system/fonts/RobotoMono-Regular.ttf",
-            "/system/fonts/DroidSansMono.ttf",
-            "/system/fonts/NotoSansMono-Regular.ttf",
-        ]);
-        let serif_font = load_font(&[
-            "/system/fonts/NotoSerif-Regular.ttf",
-            "/system/fonts/NotoSerifStatic-Regular.ttf",
-            "/system/fonts/DroidSerif-Regular.ttf",
-        ]);
-        let symbols_font = load_font(&[
-            "/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf",
-            "/system/fonts/NotoSansSymbols-Regular.ttf",
-        ]);
-        let symbols2_font = load_font(&[
-            "/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf",
-            "/system/fonts/NotoSansSymbols2-Regular.ttf",
-        ]);
-        let cjk_font = None;
         Self {
-            ui_font,
-            mono_font,
-            serif_font,
-            symbols_font,
-            symbols2_font,
-            cjk_font,
+            fonts: system_fonts(),
             glyphs: HashMap::new(),
             icons: HashMap::new(),
             emojis: HashMap::new(),
@@ -926,25 +1048,27 @@ impl Painter {
 
     fn font(&self, face: Face) -> Option<&Font> {
         match face {
-            Face::Mono => self.mono_font.as_ref().or(self.ui_font.as_ref()),
+            Face::Mono => self.fonts.mono.as_ref().or(self.fonts.ui.as_ref()),
             Face::Serif => self
-                .serif_font
+                .fonts
+                .serif
                 .as_ref()
-                .or(self.ui_font.as_ref())
-                .or(self.mono_font.as_ref()),
-            Face::Ui => self.ui_font.as_ref().or(self.mono_font.as_ref()),
+                .or(self.fonts.ui.as_ref())
+                .or(self.fonts.mono.as_ref()),
+            Face::Ui => self.fonts.ui.as_ref().or(self.fonts.mono.as_ref()),
         }
     }
 
     fn font_for_char(&self, character: char, face: Face) -> Option<&Font> {
         let primary = match face {
-            Face::Mono => self.mono_font.as_ref().or(self.ui_font.as_ref()),
+            Face::Mono => self.fonts.mono.as_ref().or(self.fonts.ui.as_ref()),
             Face::Serif => self
-                .serif_font
+                .fonts
+                .serif
                 .as_ref()
-                .or(self.ui_font.as_ref())
-                .or(self.mono_font.as_ref()),
-            Face::Ui => self.ui_font.as_ref().or(self.mono_font.as_ref()),
+                .or(self.fonts.ui.as_ref())
+                .or(self.fonts.mono.as_ref()),
+            Face::Ui => self.fonts.ui.as_ref().or(self.fonts.mono.as_ref()),
         };
         if let Some(font) = primary {
             if font.lookup_glyph_index(character) != 0 {
@@ -952,16 +1076,16 @@ impl Painter {
             }
         }
         let secondary = if face.is_mono() {
-            self.ui_font.as_ref()
+            self.fonts.ui.as_ref()
         } else {
-            self.mono_font.as_ref()
+            self.fonts.mono.as_ref()
         };
         if let Some(font) = secondary {
             if font.lookup_glyph_index(character) != 0 {
                 return Some(font);
             }
         }
-        for fallback in [&self.symbols_font, &self.symbols2_font, &self.cjk_font] {
+        for fallback in [&self.fonts.symbols, &self.fonts.symbols2, &self.fonts.cjk] {
             if let Some(font) = fallback.as_ref() {
                 if font.lookup_glyph_index(character) != 0 {
                     return Some(font);
@@ -1476,6 +1600,9 @@ struct SurfaceState {
     pixels: Vec<u32>,
     frame_valid: bool,
     suspend_render: bool,
+    /// 0 = none, 1 = tree, 2 = editor. Used to restore the background when a
+    /// palette arrives after the surface was attached.
+    content_kind: u8,
     last_mode: u8,
     last_scroll: f32,
     last_width: usize,
@@ -2261,12 +2388,13 @@ fn blank_range(chars: &mut [char], start: usize, end: usize) {
     }
 }
 
-fn inline_color(kind: &str, base: u32) -> u32 {
+fn inline_color(kind: &str, base: u32, palette: &SurfacePalette) -> u32 {
     match kind {
-        "inline_code" => 0x53dfdd,
-        "link" | "tag" => 0x8a5cf5,
-        "grammar" => 0xb3b3b3,
-        "highlight" => 0xdadada,
+        "inline_code" => palette.inline_code,
+        "link" => palette.link,
+        "tag" => palette.tag,
+        "grammar" => palette.text_muted,
+        "highlight" => palette.heading,
         _ => base,
     }
 }
@@ -2326,9 +2454,9 @@ fn keyword(language: &str, word: &str) -> bool {
     words.contains(&word)
 }
 
-fn code_colors(line: &str, language: &str) -> Vec<u32> {
+fn code_colors(line: &str, language: &str, palette: &SurfacePalette) -> Vec<u32> {
     let chars: Vec<char> = line.chars().collect();
-    let mut colors = vec![0xdadadau32; chars.len()];
+    let mut colors = vec![palette.code_normal; chars.len()];
     let language = language.to_ascii_lowercase();
     let hash_comments = language.contains("py")
         || language.contains("sh")
@@ -2342,7 +2470,7 @@ fn code_colors(line: &str, language: &str) -> Vec<u32> {
             && chars.get(index + 1) == Some(&'/');
         if slash_comment || (hash_comments && character == '#') {
             for color in colors.iter_mut().skip(index) {
-                *color = 0x666666;
+                *color = palette.code_comment;
             }
             break;
         }
@@ -2362,7 +2490,7 @@ fn code_colors(line: &str, language: &str) -> Vec<u32> {
                 index += 1;
             }
             for color in colors.iter_mut().take(index.min(chars.len())).skip(start) {
-                *color = 0x44cf6e;
+                *color = palette.code_string;
             }
             continue;
         }
@@ -2373,7 +2501,7 @@ fn code_colors(line: &str, language: &str) -> Vec<u32> {
                 index += 1;
             }
             for color in colors.iter_mut().take(index).skip(start) {
-                *color = 0xe9973f;
+                *color = palette.code_number;
             }
             continue;
         }
@@ -2385,15 +2513,15 @@ fn code_colors(line: &str, language: &str) -> Vec<u32> {
             }
             let word: String = chars[start..index].iter().collect();
             let color = if keyword(&language, &word) {
-                0xfa99cd
+                palette.code_keyword
             } else {
                 let next = chars[index..].iter().find(|character| !character.is_whitespace());
                 if next == Some(&'(') {
-                    0xe0de71
+                    palette.code_function
                 } else if word.chars().next().is_some_and(|character| character.is_uppercase()) {
-                    0x53dfdd
+                    palette.code_type
                 } else {
-                    0xdadada
+                    palette.code_normal
                 }
             };
             for color_slot in colors.iter_mut().take(index).skip(start) {
@@ -2419,7 +2547,8 @@ impl SurfaceState {
             text_face: Face::Mono,
             code_face: Face::Mono,
             headings: DEFAULT_HEADINGS,
-            background: 0x000000,
+            background: palette().editor_background,
+            content_kind: 0,
             painter: Painter::new(),
             tree: TreeState::default(),
             editor: EditorState {
@@ -2630,6 +2759,7 @@ impl SurfaceState {
     }
 
     fn draw_scrollbar(&self, pixels: &mut [u32], line_width: usize, mode: u8) {
+        let palette = palette();
         let density = self.density;
         let (content, viewport, scroll, max_scroll) = match mode {
             1 => {
@@ -2675,7 +2805,7 @@ impl SurfaceState {
             y,
             bar_width,
             thumb_height,
-            0x6a6a6a,
+            palette.scrollbar,
         );
     }
 
@@ -2722,6 +2852,7 @@ impl SurfaceState {
     }
 
     fn draw_tree(&mut self, pixels: &mut [u32]) {
+        let palette = palette();
         let row_h = row_height(self.density);
         let density = self.density;
         let max_x = self.tree_max_x();
@@ -2742,7 +2873,7 @@ impl SurfaceState {
                 continue;
             }
             if active.as_deref() == Some(row.path.as_str()) {
-                rect(pixels, self.width, self.height, 0.0, y, self.width as f32, row_h, 0x333333);
+                rect(pixels, self.width, self.height, 0.0, y, self.width as f32, row_h, palette.active_row);
             }
             let center_y = y + row_h / 2.0;
             let indent = 10.0 * density + row.depth as f32 * 16.0 * density - scroll_x;
@@ -2759,7 +2890,7 @@ impl SurfaceState {
                     chevron_size,
                     chevron_thickness,
                     chevron_paths(row.expanded),
-                    0x8a8a8a,
+                    palette.tree_muted,
                 );
             }
             painter.draw_stroke_icon(
@@ -2771,7 +2902,7 @@ impl SurfaceState {
                 icon_size,
                 icon_thickness,
                 icon_paths(row.folder, row.expanded),
-                if row.folder { 0x8a5cf5 } else { 0x8a8a8a },
+                if row.folder { palette.tree_folder } else { palette.tree_muted },
             );
             let extension = row.extension.to_ascii_uppercase();
             let show_tag = !row.folder && !extension.is_empty() && extension != "MD";
@@ -2781,7 +2912,7 @@ impl SurfaceState {
                 0.0
             };
             let name = row.name.clone();
-            let name_color = if row.folder || row.note { 0xdadada } else { 0xb3b3b3 };
+            let name_color = if row.folder || row.note { palette.tree_text } else { palette.tree_muted };
             let name_y = y + (row_h - name_font) / 2.0;
             let chars: Vec<char> = name.chars().collect();
             let start = row.match_start.min(chars.len());
@@ -2804,7 +2935,7 @@ impl SurfaceState {
                     name_y,
                     matched_width,
                     name_font,
-                    0x4a3a5e,
+                    palette.selection,
                 );
                 painter.draw(
                     pixels,
@@ -2814,7 +2945,7 @@ impl SurfaceState {
                     name_y,
                     &matched,
                     name_font,
-                    0xffffff,
+                    palette.text,
                     Face::Ui,
                     false,
                 );
@@ -2846,7 +2977,7 @@ impl SurfaceState {
                     y + (row_h - 18.0 * density) / 2.0,
                     tag_width,
                     18.0 * density,
-                    0x2a2a2a,
+                    palette.tag_background,
                 );
                 painter.draw(
                     pixels,
@@ -2856,7 +2987,7 @@ impl SurfaceState {
                     y + (row_h - 9.0 * density) / 2.0,
                     &extension,
                     9.0 * density,
-                    0xb3b3b3,
+                    palette.tree_muted,
                     Face::Ui,
                     false,
                 );
@@ -3169,6 +3300,7 @@ impl SurfaceState {
     }
 
     fn draw_editor(&mut self, pixels: &mut [u32]) {
+        let palette = palette();
         let density = self.density;
         let line_h = self.line_px();
         let font_px = self.font_px();
@@ -3268,7 +3400,7 @@ impl SurfaceState {
                 chars.clear();
                 chars.extend(raw.chars());
                 colors.clear();
-                colors.resize(chars.len(), 0xdadadau32);
+                colors.resize(chars.len(), palette.code_normal);
                 hidden = compute_hidden(
                     &model,
                     chunk.line,
@@ -3285,14 +3417,14 @@ impl SurfaceState {
                 );
                 overlays.clear();
                 if !self.editor.language.is_empty() {
-                    colors = code_colors(raw, &self.editor.language);
+                    colors = code_colors(raw, &self.editor.language, &palette);
                 } else if has_model {
                     if let Some(line) = model.get(chunk.line) {
                         let base = match line.kind.as_str() {
                             "heading" => heading_at(&headings, line.level).color,
-                            "quote" => 0xb3b3b3,
-                            "code" => 0x44cf6e,
-                            _ => 0xdadada,
+                            "quote" => palette.text_muted,
+                            "code" => palette.code_string,
+                            _ => palette.code_normal,
                         };
                         colors.clear();
                         colors.resize(chars.len(), base);
@@ -3301,12 +3433,12 @@ impl SurfaceState {
                             // desktop heading row.
                             let length = line.prefix_chars.min(chars.len());
                             for value in colors.iter_mut().take(length) {
-                                *value = 0x808080;
+                                *value = palette.marker;
                             }
                         }
                         if line.kind == "code" {
                             if let Some(language) = line.language.as_deref() {
-                                colors = code_colors(raw, language);
+                                colors = code_colors(raw, language, &palette);
                             }
                         }
                         if chunk.line != cursor_line {
@@ -3323,7 +3455,7 @@ impl SurfaceState {
                                     if line.indent < chars.len() {
                                         chars[line.indent] = icon;
                                         if line.checked == Some(true) {
-                                            colors[line.indent] = 0x808080;
+                                            colors[line.indent] = palette.marker;
                                         }
                                         if line.indent + 1 < chars.len() {
                                             chars[line.indent + 1] = ' ';
@@ -3336,7 +3468,7 @@ impl SurfaceState {
                                     }
                                     if line.checked == Some(true) {
                                         for color in colors[line.prefix_chars.min(chars.len())..].iter_mut() {
-                                            *color = 0x808080;
+                                            *color = palette.marker;
                                         }
                                     }
                                 }
@@ -3378,10 +3510,14 @@ impl SurfaceState {
                                 continue;
                             }
                             for index in start.min(chars.len())..end.min(chars.len()) {
-                                colors[index] = inline_color(&span.kind, base);
+                                colors[index] = inline_color(&span.kind, base, &palette);
                             }
                             if (span.kind == "highlight" || span.kind == "inline_code") && end > start {
-                                let color = if span.kind == "inline_code" { 0x111111 } else { 0x2a2140 };
+                                let color = if span.kind == "inline_code" {
+                                    palette.inline_code_background
+                                } else {
+                                    palette.highlight
+                                };
                                 overlays.push((start.min(chars.len()), end.min(chars.len()), color));
                             }
                         }
@@ -3451,7 +3587,7 @@ impl SurfaceState {
                             y,
                             (right - left).max(2.0 * density),
                             row_h,
-                            0x23173d,
+                            palette.selection,
                         );
                     }
                 }
@@ -3517,7 +3653,7 @@ impl SurfaceState {
                         y,
                         2.0 * density,
                         row_h,
-                        0x8a5cf5,
+                        palette.accent,
                     );
                 }
                 if self.editor.insertion_handle_visible {
@@ -3535,7 +3671,7 @@ impl SurfaceState {
                 }
             }
         }
-        rect(pixels, self.width, self.height, 0.0, 0.0, gutter, self.height as f32, 0x000000);
+        rect(pixels, self.width, self.height, 0.0, 0.0, gutter, self.height as f32, palette.editor_background);
         for visual in first..last {
             let chunk = self.editor.wrap[visual];
             if chunk.start != 0 {
@@ -3553,7 +3689,7 @@ impl SurfaceState {
                 number_y,
                 &number,
                 number_font_px,
-                0x666666,
+                palette.marker,
                 Face::Ui,
                 false,
             );
@@ -3568,7 +3704,7 @@ impl SurfaceState {
                     y,
                     density,
                     2,
-                    0x8a5cf5,
+                    palette.accent,
                 );
             }
         }
@@ -3582,7 +3718,7 @@ impl SurfaceState {
                     y,
                     density,
                     0,
-                    0x8a5cf5,
+                    palette.accent,
                 );
             }
         }
@@ -3596,7 +3732,7 @@ impl SurfaceState {
                     y,
                     density,
                     1,
-                    0x8a5cf5,
+                    palette.accent,
                 );
             }
         }
@@ -4769,6 +4905,33 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceInvalid
 }
 
 #[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeThemeSetPalette(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    json: JString<'_>,
+) {
+    let Ok(text) = env.get_string(&json) else {
+        return;
+    };
+    let text: String = text.into();
+    let Ok(value) = serde_json::from_str::<SurfacePalette>(&text) else {
+        return;
+    };
+    set_palette(value.clone());
+    if let Ok(map) = surfaces().lock() {
+        for surface in map.values() {
+            if let Ok(mut state) = surface.lock() {
+                state.background = match state.content_kind {
+                    1 => value.tree_background,
+                    _ => value.editor_background,
+                };
+                state.invalidate();
+            }
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceSetTree(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -4782,7 +4945,8 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceSetTree
     let doc = serde_json::from_str::<TreeDoc>(&text).unwrap_or_default();
     let _ = with_surface(id, |state| {
         state.invalidate();
-        state.background = 0x282828;
+        state.background = palette().tree_background;
+        state.content_kind = 1;
         state.tree.doc = doc;
         let max = (state.tree.doc.rows.len() as f32 * row_height(state.density)
             - state.height as f32)
@@ -4855,7 +5019,8 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceSetEdit
         .unwrap_or_default();
     let _ = with_surface(id, |state| {
         state.invalidate();
-        state.background = 0x000000;
+        state.background = palette().editor_background;
+        state.content_kind = 2;
         if state.editor.text != text {
             state.editor.text = text;
             state.editor.model_dirty = true;

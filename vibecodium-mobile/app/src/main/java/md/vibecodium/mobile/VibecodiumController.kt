@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.PowerManager
 import android.os.SystemClock
@@ -16,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -37,6 +39,7 @@ class VibecodiumController(context: Context) {
     private var locator: VaultLocator? = null
 
     private val prefs = appContext.getSharedPreferences("vibecodium", Context.MODE_PRIVATE)
+    private val themeManager by lazy { ThemeManager(appContext) }
     private val syncRecords by lazy { SyncDatabase(appContext) }
     private val dropboxTokens by lazy { DropboxTokenStore(appContext) }
     private var syncJob: Job? = null
@@ -49,6 +52,8 @@ class VibecodiumController(context: Context) {
     private var derivedJob: Job? = null
     private var searchJob: Job? = null
     private var tabPersistJob: Job? = null
+    private var themeJob: Job? = null
+    private var nativePaletteKey: Pair<Boolean, ThemePalette>? = null
     private var syncWakeLock: PowerManager.WakeLock? = null
     private var syncProgressAt = 0L
 
@@ -63,10 +68,43 @@ class VibecodiumController(context: Context) {
     }
 
     init {
+        val settings = SettingsStore.load(appContext)
+        val tablet = appContext.resources.configuration.smallestScreenWidthDp >= 600
+        val lightConfig = if (settings.lightThemeName.isNotBlank()) {
+            themeManager.readConfig(settings.lightThemeName, dark = false)
+        } else {
+            null
+        }
+        val darkConfig = if (settings.darkThemeName.isNotBlank()) {
+            themeManager.readConfig(settings.darkThemeName, dark = true)
+        } else {
+            null
+        }
         state = state.copy(
-            settings = SettingsStore.load(appContext),
+            settings = settings,
             knownVaults = VaultListStore.load(appContext),
+            themeLightPalette = lightConfig
+                ?.palette(dark = false, isTablet = tablet)
+                ?.withAccent(settings.accentColor)
+                ?: ThemePalette.defaultLight(),
+            themeDarkPalette = darkConfig
+                ?.palette(dark = true, isTablet = tablet)
+                ?.withAccent(settings.accentColor)
+                ?: ThemePalette.defaultDark(),
+            themeWarnings = ThemeManager.collapseWarnings(
+                lightConfig?.warnings.orEmpty() + darkConfig?.warnings.orEmpty(),
+            ),
         )
+        // Publish the parsed palette before the first Compose frame and before
+        // the native surfaces attach. Only cold/missing configs need a parse.
+        applyNativePalette()
+        // Warm start: the configs already contain both palettes. Only rebuild
+        // when a selected theme has no valid artifact yet; the installed list
+        // is loaded lazily when Settings/Appearance opens.
+        val needsThemeRebuild =
+            (settings.lightThemeName.isNotBlank() && lightConfig == null) ||
+                (settings.darkThemeName.isNotBlank() && darkConfig == null)
+        if (needsThemeRebuild) refreshThemeState()
         VaultLocatorStore.load(appContext)?.let { locator ->
             // Keep the launch spinner up until the repository and the saved
             // tabs are ready, instead of flashing the start and empty screens.
@@ -1340,6 +1378,7 @@ class VibecodiumController(context: Context) {
 
     fun openSettings(section: String? = null) {
         closeExplorerActions()
+        refreshInstalledThemes()
         state = state.copy(
             settingsOpen = true,
             settingsSection = section,
@@ -1423,7 +1462,273 @@ class VibecodiumController(context: Context) {
 
     fun resetSettings() {
         updateSettings { AppSettings() }
+        refreshThemeState()
         showMessage("Settings reset")
+    }
+
+    // ------------------------------------------------------------- appearance
+
+    fun setThemeMode(mode: ThemeMode) {
+        updateSettings { it.copy(themeMode = mode) }
+        refreshThemeState()
+    }
+
+    /** Flips between explicit light and dark modes using the two theme slots. */
+    fun toggleThemeMode() {
+        setThemeMode(if (effectiveDark()) ThemeMode.Light else ThemeMode.Dark)
+    }
+
+    fun setThemeName(slot: ThemeSlot, name: String) {
+        val clean = state.installedThemes.firstOrNull { it.name == name }?.name ?: ""
+        updateSettings {
+            when (slot) {
+                ThemeSlot.Light -> it.copy(lightThemeName = clean)
+                ThemeSlot.Dark -> it.copy(darkThemeName = clean)
+            }
+        }
+        refreshThemeState()
+    }
+
+    fun setAccentColor(argb: Int?) {
+        updateSettings { it.copy(accentColor = argb) }
+        refreshThemeState()
+    }
+
+    fun clearThemeError() {
+        if (state.themeError != null) state = state.copy(themeError = null)
+    }
+
+    fun refreshThemeState(loadInstalled: Boolean = false) {
+        val settings = state.settings
+        val configuration = appContext.resources.configuration
+        val tablet = configuration.smallestScreenWidthDp >= 600
+        themeJob?.cancel()
+        themeJob = scope.launch {
+            val lightDeferred = async(Dispatchers.IO) {
+                themeManager.ensureConfig(settings.lightThemeName, dark = false)
+            }
+            val darkDeferred = async(Dispatchers.IO) {
+                themeManager.ensureConfig(settings.darkThemeName, dark = true)
+            }
+            val lightConfig = lightDeferred.await()
+            val darkConfig = darkDeferred.await()
+            val installed = if (loadInstalled) {
+                withContext(Dispatchers.IO) { themeManager.installed() }
+            } else {
+                state.installedThemes
+            }
+            state = state.copy(
+                themeLightPalette = lightConfig
+                    .palette(dark = false, isTablet = tablet)
+                    .withAccent(settings.accentColor),
+                themeDarkPalette = darkConfig
+                    .palette(dark = true, isTablet = tablet)
+                    .withAccent(settings.accentColor),
+                themeWarnings = ThemeManager.collapseWarnings(
+                    lightConfig.warnings + darkConfig.warnings,
+                ),
+                installedThemes = installed,
+            )
+            applyNativePalette()
+        }
+    }
+
+    fun refreshInstalledThemes() {
+        scope.launch {
+            val installed = withContext(Dispatchers.IO) { themeManager.installed() }
+            state = state.copy(installedThemes = installed)
+        }
+    }
+
+    fun loadThemeCatalog(force: Boolean = false) {
+        if (state.themeCatalogLoading) return
+        state = state.copy(themeCatalogLoading = true, themeError = null)
+        scope.launch {
+            try {
+                val entries = themeManager.catalog(force)
+                val installed = withContext(Dispatchers.IO) { themeManager.installed() }
+                val installedByName = installed.associateBy { it.name }
+                val updates = state.themeUpdates
+                val merged = entries.map { entry ->
+                    entry.copy(
+                        installedVersion = installedByName[entry.name]?.version,
+                        updateVersion = updates[entry.name],
+                    )
+                }
+                state = state.copy(
+                    themeCatalog = merged,
+                    installedThemes = installed,
+                    themeCatalogLoading = false,
+                )
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(
+                    themeCatalogLoading = false,
+                    themeError = error.message ?: "Could not load community themes",
+                )
+            }
+        }
+    }
+
+    fun installTheme(name: String, slot: ThemeSlot) {
+        if (state.themeBusy != null) return
+        state = state.copy(themeError = null)
+        scope.launch {
+            try {
+                val entry = state.themeCatalog.firstOrNull { it.name == name }
+                    ?: themeManager.catalog(false).firstOrNull { it.name == name }
+                    ?: error("Theme “$name” was not found in the catalog")
+                state = state.copy(themeBusy = name, themeError = null)
+                val theme = withContext(Dispatchers.IO) { themeManager.install(entry) }
+                val installed = withContext(Dispatchers.IO) { themeManager.installed() }
+                updateSettings {
+                    when (slot) {
+                        ThemeSlot.Light -> it.copy(lightThemeName = entry.name)
+                        ThemeSlot.Dark -> it.copy(darkThemeName = entry.name)
+                    }
+                }
+                state = state.copy(
+                    installedThemes = installed,
+                    themeBusy = null,
+                    themeUpdates = state.themeUpdates - entry.name,
+                    themeCatalog = state.themeCatalog.map { item ->
+                        if (item.name == entry.name) {
+                            item.copy(installedVersion = theme.version, updateVersion = null)
+                        } else {
+                            item
+                        }
+                    },
+                )
+                refreshThemeState()
+                showMessage("Installed theme “${entry.name}”")
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(
+                    themeBusy = null,
+                    themeError = error.message ?: "Could not install the theme",
+                )
+            }
+        }
+    }
+
+    fun uninstallTheme(name: String) {
+        if (state.themeBusy != null) return
+        scope.launch {
+            try {
+                state = state.copy(themeBusy = name, themeError = null)
+                withContext(Dispatchers.IO) { themeManager.remove(name) }
+                val installed = withContext(Dispatchers.IO) { themeManager.installed() }
+                if (state.settings.lightThemeName == name || state.settings.darkThemeName == name) {
+                    updateSettings {
+                        it.copy(
+                            lightThemeName = if (it.lightThemeName == name) "" else it.lightThemeName,
+                            darkThemeName = if (it.darkThemeName == name) "" else it.darkThemeName,
+                        )
+                    }
+                }
+                state = state.copy(
+                    installedThemes = installed,
+                    themeBusy = null,
+                    themeUpdates = state.themeUpdates - name,
+                    themeCatalog = state.themeCatalog.map { item ->
+                        if (item.name == name) item.copy(installedVersion = null, updateVersion = null) else item
+                    },
+                )
+                refreshThemeState()
+                showMessage("Removed theme “$name”")
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(
+                    themeBusy = null,
+                    themeError = error.message ?: "Could not remove the theme",
+                )
+            }
+        }
+    }
+
+    fun checkThemeUpdates() {
+        if (state.themeCheckingUpdates || state.installedThemes.isEmpty()) return
+        state = state.copy(themeCheckingUpdates = true, themeError = null)
+        scope.launch {
+            try {
+                val entries = state.themeCatalog.ifEmpty { themeManager.catalog(false) }
+                val installed = withContext(Dispatchers.IO) { themeManager.installed() }
+                val updates = themeManager.updates(installed, entries)
+                state = state.copy(
+                    installedThemes = installed,
+                    themeCatalog = entries.map { entry ->
+                        entry.copy(
+                            installedVersion = installed.firstOrNull { it.name == entry.name }?.version,
+                            updateVersion = updates[entry.name],
+                        )
+                    },
+                    themeUpdates = updates,
+                    themeCheckingUpdates = false,
+                )
+                showMessage(
+                    if (updates.isEmpty()) "No theme updates found"
+                    else "Found ${updates.size} theme update${if (updates.size == 1) "" else "s"}",
+                )
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(
+                    themeCheckingUpdates = false,
+                    themeError = error.message ?: "Could not check for theme updates",
+                )
+            }
+        }
+    }
+
+    fun updateTheme(name: String) {
+        if (state.themeBusy != null) return
+        val entry = state.themeCatalog.firstOrNull { it.name == name } ?: return
+        state = state.copy(themeBusy = name, themeError = null)
+        scope.launch {
+            try {
+                val theme = withContext(Dispatchers.IO) { themeManager.install(entry) }
+                val installed = withContext(Dispatchers.IO) { themeManager.installed() }
+                state = state.copy(
+                    installedThemes = installed,
+                    themeBusy = null,
+                    themeUpdates = state.themeUpdates - name,
+                    themeCatalog = state.themeCatalog.map { item ->
+                        if (item.name == name) {
+                            item.copy(installedVersion = theme.version, updateVersion = null)
+                        } else {
+                            item
+                        }
+                    },
+                )
+                if (state.settings.lightThemeName == name || state.settings.darkThemeName == name) {
+                    refreshThemeState()
+                }
+                showMessage("Updated theme “$name”")
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(
+                    themeBusy = null,
+                    themeError = error.message ?: "Could not update the theme",
+                )
+            }
+        }
+    }
+
+    fun applyNativePalette(dark: Boolean = effectiveDark()) {
+        val palette = if (dark) state.themeDarkPalette else state.themeLightPalette
+        val previous = nativePaletteKey
+        if (previous != null && previous.first == dark && previous.second === palette) return
+        nativePaletteKey = dark to palette
+        runCatching { CoreBridge.nativeThemeSetPalette(palette.toNativeJson()) }
+        NativeSurfaceView.refreshTheme()
+    }
+
+    private fun effectiveDark(): Boolean = when (state.settings.themeMode) {
+        ThemeMode.Dark -> true
+        ThemeMode.Light -> false
+        ThemeMode.System -> {
+            val mode = appContext.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+            mode == Configuration.UI_MODE_NIGHT_YES
+        }
     }
 
     fun resetCollapsedFolders() {

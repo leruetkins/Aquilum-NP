@@ -139,6 +139,14 @@ data class AppSettings(
     val autoSaveDelayMs: Int = 600,
     val dailyNotes: DailyNoteSettings = DailyNoteSettings(),
     val headings: HeadingsSettings = HeadingsSettings(),
+    /** Base color scheme; [ThemeMode.System] follows the device setting. */
+    val themeMode: ThemeMode = ThemeMode.System,
+    /** Theme used when the effective scheme is light. Empty means built-in. */
+    val lightThemeName: String = "",
+    /** Theme used when the effective scheme is dark. Empty means built-in. */
+    val darkThemeName: String = "",
+    /** ARGB accent override; null lets the theme decide. */
+    val accentColor: Int? = null,
 )
 
 /**
@@ -190,6 +198,10 @@ object AppSettingsJson {
             .put("autoSaveDelayMs", settings.autoSaveDelayMs)
             .put("dailyNotes", dailyNotes)
             .put("headings", headings)
+            .put("themeMode", settings.themeMode.name)
+            .put("lightThemeName", settings.lightThemeName)
+            .put("darkThemeName", settings.darkThemeName)
+            .put("accentColor", settings.accentColor ?: JSONObject.NULL)
             .toString()
     }
 
@@ -223,6 +235,22 @@ object AppSettingsJson {
                 autoSaveDelayMs = value.optInt("autoSaveDelayMs", 600).coerceIn(0, 5000),
                 dailyNotes = dailyNoteSettings(value.optJSONObject("dailyNotes")),
                 headings = headingsSettings(value.optJSONObject("headings")),
+                themeMode = runCatching {
+                    ThemeMode.valueOf(value.optString("themeMode", ThemeMode.System.name))
+                }.getOrDefault(ThemeMode.System),
+                lightThemeName = value.optString(
+                    "lightThemeName",
+                    value.optString("themeName", ""),
+                ).trim(),
+                darkThemeName = value.optString(
+                    "darkThemeName",
+                    value.optString("themeName", ""),
+                ).trim(),
+                accentColor = if (value.has("accentColor") && !value.isNull("accentColor")) {
+                    value.optInt("accentColor")
+                } else {
+                    null
+                },
             )
         }.getOrDefault(AppSettings())
     }
