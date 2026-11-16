@@ -1553,8 +1553,9 @@ private fun TabsDropdown(
             .coerceAtLeast(140.dp.toPx())
             .toDp()
     }
-    val headerHeight = 44.dp
-    val listMaxHeight = (maxMenuHeight - headerHeight - 1.dp).coerceAtLeast(72.dp)
+    val footerHeight = 44.dp
+    val footerGap = 6.dp
+    val listMaxHeight = (maxMenuHeight - footerHeight - footerGap).coerceAtLeast(72.dp)
     val listState = rememberLazyListState()
     val tabOrder = remember(state.tabs) { newestFirstTabOrder(state.tabs) }
     Popup(
@@ -1598,22 +1599,77 @@ private fun TabsDropdown(
                     controller.openDailyNote()
                 }
             }
-            Surface(
-                modifier = Modifier
+            Column(
+                Modifier
                     .offset(x = leftInset, y = menuOffsetY)
                     .width(menuWidth)
                     .heightIn(max = maxMenuHeight),
-                shape = RoundedCornerShape(PanelCornerRadius),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                tonalElevation = 3.dp,
-                shadowElevation = 6.dp,
             ) {
-            Column {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = listMaxHeight),
+                    shape = RoundedCornerShape(PanelCornerRadius),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    tonalElevation = 3.dp,
+                    shadowElevation = 6.dp,
+                ) {
+                    Box(Modifier.fillMaxWidth().heightIn(max = listMaxHeight)) {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                        ) {
+                            itemsIndexed(tabOrder, key = { _, index -> state.tabs[index].path }) { position, index ->
+                                val item = state.tabs[index]
+                                // The first and last rows follow the dropdown's
+                                // own rounding; the inner corners stay small.
+                                val shape = when {
+                                    tabOrder.size == 1 -> RoundedCornerShape(PanelCornerRadius)
+                                    position == 0 -> RoundedCornerShape(
+                                        topStart = PanelCornerRadius,
+                                        topEnd = PanelCornerRadius,
+                                        bottomStart = 8.dp,
+                                        bottomEnd = 8.dp,
+                                    )
+                                    position == tabOrder.lastIndex -> RoundedCornerShape(
+                                        topStart = 8.dp,
+                                        topEnd = 8.dp,
+                                        bottomStart = PanelCornerRadius,
+                                        bottomEnd = PanelCornerRadius,
+                                    )
+                                    else -> RoundedCornerShape(8.dp)
+                                }
+                                TabListRow(
+                                    tab = item,
+                                    active = index == state.activeTab,
+                                    bookmarked = item.path in state.bookmarks,
+                                    shape = shape,
+                                    onSelect = {
+                                        onDismiss()
+                                        controller.selectTab(index)
+                                    },
+                                    onClose = { controller.closeTab(index) },
+                                )
+                            }
+                        }
+                        TabScrollBar(
+                            state = listState,
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .fillMaxHeight()
+                                .padding(end = 1.dp, top = 2.dp, bottom = 2.dp),
+                        )
+                    }
+                }
+                // Under the whole dropdown, on the page cover, so the action
+                // reads as separate from the list of tabs it closes.
+                Spacer(Modifier.height(footerGap))
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .height(headerHeight)
-                        .padding(start = 8.dp, end = 8.dp),
+                        .height(footerHeight),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.End,
                 ) {
@@ -1637,38 +1693,7 @@ private fun TabsDropdown(
                         },
                     )
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-                Box(Modifier.fillMaxWidth().heightIn(max = listMaxHeight)) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                    ) {
-                        itemsIndexed(tabOrder, key = { _, index -> state.tabs[index].path }) { _, index ->
-                            val item = state.tabs[index]
-                            TabListRow(
-                                tab = item,
-                                active = index == state.activeTab,
-                                bookmarked = item.path in state.bookmarks,
-                                onSelect = {
-                                    onDismiss()
-                                    controller.selectTab(index)
-                                },
-                                onClose = { controller.closeTab(index) },
-                            )
-                        }
-                    }
-                    TabScrollBar(
-                        state = listState,
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .fillMaxHeight()
-                            .padding(end = 1.dp, top = 2.dp, bottom = 2.dp),
-                    )
-                }
             }
-        }
     }
 }
 }
@@ -3141,6 +3166,7 @@ private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifi
                             tab = tab,
                             active = index == state.activeTab,
                             bookmarked = tab.path in state.bookmarks,
+                            shape = RoundedCornerShape(8.dp),
                             onSelect = { controller.selectTab(index) },
                             onClose = { controller.closeTab(index) },
                         )
@@ -3163,6 +3189,7 @@ private fun TabListRow(
     tab: Tab,
     active: Boolean,
     bookmarked: Boolean,
+    shape: RoundedCornerShape,
     onSelect: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -3172,8 +3199,9 @@ private fun TabListRow(
             .background(
                 if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                 else Color.Transparent,
-                RoundedCornerShape(8.dp),
+                shape,
             )
+            .clip(shape)
             .clickable(onClick = onSelect)
             .padding(start = 8.dp, top = 4.dp, end = 4.dp, bottom = 4.dp),
     ) {
