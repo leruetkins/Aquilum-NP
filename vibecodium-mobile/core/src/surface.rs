@@ -1635,10 +1635,12 @@ struct EditorState {
     /// One entry per source line: the callout block that covers it, if any.
     /// Built with the model so a frame never re-derives it.
     callout_blocks: Vec<Option<crate::markdown::CalloutBlock>>,
-    /// Header line of the table that holds the caret. That one table renders
-    /// its raw markdown while it is being edited; every other table keeps its
-    /// grid, the way the desktop switches a table to raw mode.
-    table_mode_key: Option<usize>,
+    /// Tables the user switched to raw source with the header button. Every
+    /// other table is a grid and edits its cells in place.
+    raw_tables: HashSet<usize>,
+    /// Horizontal pan of each wide table, keyed by its header line. One
+    /// table sliding must not move the others.
+    table_scroll: HashMap<usize, f32>,
     history: History,
 }
 
@@ -1925,6 +1927,53 @@ fn table_align(cell: &str) -> TableAlign {
     }
 }
 
+/// Char ranges of the cells of one raw table row, mirroring `split_cells`.
+fn table_cell_ranges(line: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    let trim = |mut start: usize, mut end: usize| {
+        while start < end && chars[start].is_whitespace() {
+            start += 1;
+        }
+        while end > start && chars[end - 1].is_whitespace() {
+            end -= 1;
+        }
+        (start, end)
+    };
+    let mut start = 0usize;
+    let mut end = chars.len();
+    while start < end && chars[start].is_whitespace() {
+        start += 1;
+    }
+    while end > start && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    if start < end && chars[start] == '|' {
+        start += 1;
+    }
+    if end > start && chars[end - 1] == '|' {
+        end -= 1;
+    }
+    let mut ranges = Vec::new();
+    let mut cell_start = start;
+    let mut escaped = false;
+    for index in start..end {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if chars[index] == '\\' {
+            escaped = true;
+            continue;
+        }
+        if chars[index] == '|' {
+            ranges.push(trim(cell_start, index));
+            cell_start = index + 1;
+        }
+    }
+    ranges.push(trim(cell_start, end));
+    ranges
+}
+
 /// A cell as the reader sees it: inline markup stripped, link text kept.
 fn cell_visible_text(cell: &str) -> String {
     use crate::markdown::SyntaxSpan;
@@ -2001,12 +2050,10 @@ fn build_table_layout(
         *width = width.max(min);
     }
     let total: f32 = widths.iter().sum();
-    if total > available && total > 0.0 {
-        let scale = available / total;
-        for width in widths.iter_mut() {
-            *width = (*width * scale).max(min * 0.75);
-        }
-    } else if total < available {
+    // A table wider than the viewport keeps its measured columns and scrolls
+    // horizontally instead of squeezing the text; a narrow one spreads out to
+    // fill the row.
+    if total < available {
         let extra = (available - total) / cols as f32;
         for width in widths.iter_mut() {
             *width += extra;
@@ -2034,6 +2081,8 @@ fn paint_table_row(
     model: &[crate::markdown::MarkdownLine],
     line: usize,
     layout: &TableLayout,
+    x_shift: f32,
+    cursor_char: Option<usize>,
     text_x: f32,
     y: f32,
     row_h: f32,
@@ -2051,7 +2100,7 @@ fn paint_table_row(
         return;
     }
     let header = kind == "table";
-    let text_x = text_x + layout.indent;
+    let text_x = text_x + layout.indent - x_shift;
     let hair = (1.0 * density).max(1.0);
     let pad = (12.0 * density).round();
     let text_pad_y = (3.0 * density).round();
@@ -2177,6 +2226,69 @@ fn paint_table_row(
             hair,
             palette.border,
         );
+    }
+    // The cell being edited shows a caret; the grid otherwise has no cursor.
+    if let Some(cursor) = cursor_char {
+        let ranges = table_cell_ranges(&model[line].raw);
+        let mut cell_x = text_x;
+        let mut placed = false;
+        for col in 0..layout.cols {
+            let width = layout.widths.get(col).copied().unwrap_or(0.0);
+            if let Some((start, end)) = ranges.get(col).copied() {
+                if cursor >= start && cursor <= end {
+                    let raw_cell: String = model[line]
+                        .raw
+                        .chars()
+                        .skip(start)
+                        .take(cursor.saturating_sub(start))
+                        .collect();
+                    let prefix = cell_visible_text(&raw_cell);
+                    let cell = model[line]
+                        .cells
+                        .get(col)
+                        .map(String::as_str)
+                        .unwrap_or("");
+                    let full = cell_visible_text(cell);
+                    let inner = (width - pad).max(0.0);
+                    let text_width = painter.width(&full, font, face);
+                    let align_offset =
+                        match layout.aligns.get(col).copied().unwrap_or(TableAlign::Left) {
+                            TableAlign::Left => 0.0,
+                            TableAlign::Center => ((inner - text_width) * 0.5).max(0.0),
+                            TableAlign::Right => (inner - text_width).max(0.0),
+                        };
+                    let prefix_width = painter.width(&prefix, font, face);
+                    let caret_x = cell_x + pad * 0.5 + align_offset + prefix_width;
+                    rect(
+                        pixels,
+                        surface_width,
+                        surface_height,
+                        caret_x,
+                        y + 2.0 * density,
+                        2.0 * density,
+                        (row_h - 4.0 * density).max(2.0),
+                        palette.accent,
+                    );
+                    placed = true;
+                    break;
+                }
+            }
+            cell_x += width;
+        }
+        if !placed {
+            // The caret sits past the last cell's text (end of the source
+            // row), so it goes to the table's right edge.
+            rect(
+                pixels,
+                surface_width,
+                surface_height,
+                text_x + layout.total - pad * 0.5,
+                y + 2.0 * density,
+                2.0 * density,
+                (row_h - 4.0 * density).max(2.0),
+                palette.accent,
+            );
+        }
     }
 }
 
@@ -3352,7 +3464,7 @@ fn wrap_layout(
     density: f32,
     preview: bool,
     folded_code: &HashSet<usize>,
-    raw_table: Option<usize>,
+    raw_tables: &HashSet<usize>,
 ) -> Vec<WrapLine> {
     let all: Vec<char> = text.chars().collect();
     let mut rows = Vec::with_capacity(starts.len());
@@ -3375,8 +3487,9 @@ fn wrap_layout(
         // The table holding the caret keeps its raw source lines so it can be
         // edited; every other table is painted as a grid.
         let raw_table_here = table.is_some()
-            && !preview
-            && table_header_at(model, line_index) == raw_table;
+            && table_header_at(model, line_index)
+                .map(|header| raw_tables.contains(&header))
+                .unwrap_or(false);
         let hidden = if table.is_some() && !raw_table_here {
             vec![true; chars.len()]
         } else {
@@ -4293,19 +4406,6 @@ impl SurfaceState {
     fn ensure_wrap(&mut self, content_width: f32) {
         self.ensure_starts();
         self.ensure_model();
-        // The table under the caret renders raw; every other table is a grid.
-        // Entering or leaving it changes the wrap, so it forces a rebuild.
-        let table_mode = if self.editor.preview {
-            None
-        } else {
-            let line = line_of(&self.editor.starts, self.editor.selection)
-                .min(self.editor.starts.len().saturating_sub(1));
-            table_header_at(&self.editor.model, line)
-        };
-        if self.editor.table_mode_key != table_mode {
-            self.editor.table_mode_key = table_mode;
-            self.editor.wrap_dirty = true;
-        }
         let content_changed = self.editor.wrap_dirty
             || (self.editor.wrap_width - content_width).abs() >= 0.5
             || self.editor.wrap_canonical.is_empty();
@@ -4336,7 +4436,7 @@ impl SurfaceState {
             self.density,
             self.editor.preview,
             &self.editor.code_collapsed,
-            self.editor.table_mode_key,
+            &self.editor.raw_tables,
         );
         let mut first = vec![0; self.editor.starts.len()];
         let mut count = vec![0; self.editor.starts.len()];
@@ -4422,7 +4522,13 @@ impl SurfaceState {
         let mut new_count = vec![0usize; line_count];
         for line in 0..line_count {
             new_first[line] = effective.len();
-            if exception[line] {
+            // A grid table line stays one row even while its cell holds the
+            // caret; rebuilding it from the visible raw pipes would wrap it
+            // into several rows and stretch the whole table.
+            let grid_table = table_header_at(&self.editor.model, line)
+                .map(|header| !self.editor.raw_tables.contains(&header))
+                .unwrap_or(false);
+            if exception[line] && !grid_table {
                 let raw = logical_line(&self.editor.text, &self.editor.byte_starts, line);
                 let chars: Vec<char> = raw.chars().collect();
                 let line_start = self.editor.starts.get(line).copied().unwrap_or(0);
@@ -4555,7 +4661,6 @@ impl SurfaceState {
         self.ensure_wrap(content_width);
         let starts = std::mem::take(&mut self.editor.starts);
         let byte_starts = std::mem::take(&mut self.editor.byte_starts);
-        self.editor.scroll_x = 0.0;
         let total_visual = self.editor.wrap.len();
         let text_x = gutter;
         let scroll = if self.editor.band_origin >= 0.0 {
@@ -4771,18 +4876,20 @@ impl SurfaceState {
                     .filter(|line| is_table_kind(&line.kind))
                     .and_then(|_| table_bounds(&model, chunk.line))
                     .map(|(start, _)| start);
-                let raw_table = if self.editor.preview {
-                    None
-                } else {
-                    self.editor.table_mode_key
-                };
-                if let Some(start) = header.filter(|start| raw_table != Some(*start)) {
+                if let Some(start) = header
+                    .filter(|start| !self.editor.raw_tables.contains(start))
+                {
+                    if chunk.start != 0 {
+                        prepared_line = usize::MAX;
+                        continue;
+                    }
+                    let table_font = self.code_font_px();
                     if (self.editor.table_layout_width - content_width).abs() >= 0.5
-                        || (self.editor.table_layout_font - font_px).abs() >= 0.5
+                        || (self.editor.table_layout_font - table_font).abs() >= 0.5
                     {
                         self.editor.table_layouts.clear();
                         self.editor.table_layout_width = content_width;
-                        self.editor.table_layout_font = font_px;
+                        self.editor.table_layout_font = table_font;
                     }
                     if !self.editor.table_layouts.contains_key(&start) {
                         let (_, end) = table_bounds(&model, chunk.line).unwrap_or((start, start));
@@ -4792,13 +4899,29 @@ impl SurfaceState {
                             start,
                             end,
                             content_width,
-                            font_px,
-                            self.text_face,
+                            self.code_font_px(),
+                            self.code_face,
                             density,
                         );
                         self.editor.table_layouts.insert(start, layout);
                     }
                     if let Some(layout) = self.editor.table_layouts.get(&start).cloned() {
+                        let shift = self
+                            .editor
+                            .table_scroll
+                            .get(&start)
+                            .copied()
+                            .unwrap_or(0.0)
+                            .min((layout.indent + layout.total - content_width).max(0.0));
+                        let cursor_char = if chunk.line == cursor_line {
+                            Some(
+                                self.editor.selection.saturating_sub(
+                                    starts.get(chunk.line).copied().unwrap_or(0),
+                                ),
+                            )
+                        } else {
+                            None
+                        };
                         paint_table_row(
                             pixels,
                             self.width,
@@ -4807,12 +4930,14 @@ impl SurfaceState {
                             &model,
                             chunk.line,
                             &layout,
+                            shift,
+                            cursor_char,
                             text_x,
                             y,
                             row_h,
                             line_h,
-                            font_px,
-                            self.text_face,
+                            self.code_font_px(),
+                            self.code_face,
                             density,
                             &palette,
                         );
@@ -5415,6 +5540,87 @@ impl SurfaceState {
         if chunk.height <= 0.0 {
             return None;
         }
+        // A table grid tap chooses a caret inside the tapped cell and keeps
+        // the grid; only tables switched to source take the normal caret path.
+        if self
+            .editor
+            .model
+            .get(chunk.line)
+            .map(|row| is_table_kind(&row.kind))
+            .unwrap_or(false)
+        {
+            let header = table_header_at(&self.editor.model, chunk.line)?;
+            if self.editor.raw_tables.contains(&header) {
+                return None;
+            }
+            let (start, end) = table_bounds(&self.editor.model, chunk.line)?;
+            let code_font = self.code_font_px();
+            let code_face = self.code_face;
+            let density = self.density;
+            let layout = build_table_layout(
+                &mut self.painter,
+                &self.editor.model,
+                start,
+                end,
+                content,
+                code_font,
+                code_face,
+                density,
+            );
+            let raw = self.editor.model[chunk.line].raw.clone();
+            let shift = self
+                .editor
+                .scroll_x
+                .min((layout.indent + layout.total - content).max(0.0));
+            let pad = (12.0 * density).round();
+            let local = x - gutter - layout.indent + shift;
+            let mut cell_x = 0.0f32;
+            let mut column = 0usize;
+            for col in 0..layout.cols {
+                let width = layout.widths.get(col).copied().unwrap_or(0.0);
+                if local < cell_x + width || col + 1 == layout.cols {
+                    column = col;
+                    break;
+                }
+                cell_x += width;
+            }
+            let width = layout.widths.get(column).copied().unwrap_or(0.0);
+            let ranges = table_cell_ranges(&raw);
+            let (range_start, range_end) = ranges
+                .get(column)
+                .copied()
+                .unwrap_or((0, raw.chars().count()));
+            let inner = (width - pad).max(1.0);
+            let target = local - cell_x - pad * 0.5;
+            let cell = self.editor.model[chunk.line]
+                .cells
+                .get(column)
+                .map(String::as_str)
+                .unwrap_or("");
+            let text_width = self
+                .painter
+                .width(&cell_visible_text(cell), code_font, code_face);
+            let raw_len = raw.chars().count();
+            // Tapping past the last header cell's text belongs to the end of
+            // the source line, not to the middle of the last cell.
+            let offset = if column + 1 == layout.cols && target >= text_width {
+                raw_len
+            } else {
+                let fraction = (target / inner).clamp(0.0, 1.0);
+                range_start + (((range_end - range_start) as f32) * fraction).round() as usize
+            };
+            let line_start = self
+                .editor
+                .starts
+                .get(chunk.line)
+                .copied()
+                .unwrap_or(0);
+            self.editor.selection = line_start + offset;
+            self.editor.anchor = self.editor.selection;
+            self.editor.insertion_handle_visible = true;
+            self.invalidate();
+            return Some(json!({ "kind": "table_cell" }).to_string());
+        }
         let (start, end, open, block_id) = {
             let line = self.editor.model.get(chunk.line)?;
             if !is_code_kind(&line.kind) {
@@ -5518,17 +5724,121 @@ impl SurfaceState {
         (gutter, advance, max_y, 0.0)
     }
 
-    fn editor_set_scroll(&mut self, y: f32, _x: f32) {
+    fn editor_set_scroll(&mut self, y: f32, x: f32) {
         let (_, _, max_y, _) = self.editor_scroll_metrics();
         self.editor.scroll = y.round().clamp(0.0, max_y);
-        self.editor.scroll_x = 0.0;
+        self.editor.scroll_x = x.max(0.0);
+    }
+
+    /// Switches the table under the caret between grid and raw source.
+    fn toggle_table_source(&mut self) -> bool {
+        let (_, _, content) = self.editor_metrics();
+        self.ensure_wrap(content);
+        self.ensure_model();
+        let line = line_of(&self.editor.starts, self.editor.selection)
+            .min(self.editor.starts.len().saturating_sub(1));
+        let header = table_header_at(&self.editor.model, line).or_else(|| {
+            let scroll = self.editor.scroll + self.viewport_height as f32 * 0.5;
+            let visual = visual_at_y(&self.editor.wrap_tops, scroll.max(0.0))
+                .min(self.editor.wrap.len().saturating_sub(1));
+            let center = self.editor.wrap.get(visual)?.line;
+            table_header_at(&self.editor.model, center)
+        });
+        let Some(header) = header else {
+            return false;
+        };
+        if !self.editor.raw_tables.insert(header) {
+            self.editor.raw_tables.remove(&header);
+        }
+        self.editor.wrap_dirty = true;
+        self.invalidate();
+        true
+    }
+
+    /// Current horizontal pan and overflow of the table under `y`.
+    fn table_scroll_state_at(&mut self, y: f32) -> (f32, f32) {
+        let (_advance, _gutter, content) = self.editor_metrics();
+        self.ensure_wrap(content);
+        self.ensure_model();
+        if self.editor.wrap.is_empty() {
+            return (0.0, 0.0);
+        }
+        let scroll = self.editor.scroll;
+        let top_inset = self.editor.top_inset.round();
+        let visual = visual_at_y(
+            &self.editor.wrap_tops,
+            (y + scroll - top_inset).max(0.0),
+        )
+        .min(self.editor.wrap.len() - 1);
+        let line = self.editor.wrap[visual].line;
+        let code_font = self.code_font_px();
+        let code_face = self.code_face;
+        let density = self.density;
+        let model = &self.editor.model;
+        if !model
+            .get(line)
+            .map(|row| is_table_kind(&row.kind))
+            .unwrap_or(false)
+        {
+            return (0.0, 0.0);
+        }
+        if table_header_at(model, line)
+            .map(|header| self.editor.raw_tables.contains(&header))
+            .unwrap_or(false)
+        {
+            return (0.0, 0.0);
+        }
+        let Some((start, end)) = table_bounds(model, line) else {
+            return (0.0, 0.0);
+        };
+        let layout = build_table_layout(
+            &mut self.painter,
+            model,
+            start,
+            end,
+            content,
+            code_font,
+            code_face,
+            density,
+        );
+        let max = (layout.indent + layout.total - content).max(0.0);
+        let x = self
+            .editor
+            .table_scroll
+            .get(&start)
+            .copied()
+            .unwrap_or(0.0)
+            .min(max);
+        (x, max)
+    }
+
+    /// Applies a horizontal pan to the table under `y`.
+    fn set_table_scroll_at(&mut self, y: f32, x: f32) {
+        let (_, max) = self.table_scroll_state_at(y);
+        let (_advance, _gutter, content) = self.editor_metrics();
+        self.ensure_wrap(content);
+        let scroll = self.editor.scroll;
+        let top_inset = self.editor.top_inset.round();
+        if self.editor.wrap.is_empty() {
+            return;
+        }
+        let visual = visual_at_y(
+            &self.editor.wrap_tops,
+            (y + scroll - top_inset).max(0.0),
+        )
+        .min(self.editor.wrap.len() - 1);
+        let line = self.editor.wrap[visual].line;
+        if let Some(header) = table_header_at(&self.editor.model, line) {
+            self.editor.table_scroll.insert(header, x.clamp(0.0, max));
+            self.invalidate();
+        }
     }
 
     fn editor_viewport(&mut self) -> String {
         let (_, _, max_y, _) = self.editor_scroll_metrics();
         json!({
             "scroll": self.editor.scroll,
-            "scroll_x": 0.0,
+            "scroll_x": self.editor.scroll_x,
             "max_y": max_y,
             "max_x": 0.0,
         })
@@ -6713,8 +7023,11 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceSetEdit
             state.editor.model_dirty = true;
             state.editor.wrap_dirty = true;
             state.editor.starts_dirty = true;
-            // A different document was loaded: its undo history is separate.
+            // A different document was loaded: its undo history and table pans
+            // are separate.
             state.editor.history.clear();
+            state.editor.table_scroll.clear();
+            state.editor.raw_tables.clear();
         }
         if state.editor.language != language {
             state.editor.language = language;
@@ -7119,6 +7432,48 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorViewport
 }
 
 #[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorTableScrollMax(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    y: jfloat,
+) -> jfloat {
+    drain_input(id);
+    with_surface(id, |state| state.table_scroll_state_at(y).1).unwrap_or(0.0)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorTableScrollX(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    y: jfloat,
+) -> jfloat {
+    drain_input(id);
+    with_surface(id, |state| state.table_scroll_state_at(y).0).unwrap_or(0.0)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetTableScroll(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    y: jfloat,
+    x: jfloat,
+) {
+    let _ = with_surface(id, |state| state.set_table_scroll_at(y, x));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorToggleTableSource(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+) -> jboolean {
+    with_surface(id, |state| state.toggle_table_source()).unwrap_or(false) as jboolean
+}
+
+#[no_mangle]
 pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetScroll(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -7271,7 +7626,7 @@ mod tests {
             1.0,
             false,
             &HashSet::new(),
-            None,
+            &HashSet::new(),
         );
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].start, 0);
@@ -7448,8 +7803,10 @@ mod tests {
             1.0,
             false,
             &HashSet::new(),
-            None,
+            &HashSet::new(),
         );
+        let mut raw_tables = HashSet::new();
+        raw_tables.insert(0usize);
         let raw = wrap_layout(
             text,
             &starts,
@@ -7463,7 +7820,7 @@ mod tests {
             1.0,
             false,
             &HashSet::new(),
-            Some(0),
+            &raw_tables,
         );
         assert_eq!(grid[1].height, 0.0, "the separator collapses in grid mode");
         assert!(
@@ -7605,7 +7962,7 @@ mod tests {
             1.0,
             true,
             &folded,
-            None,
+            &HashSet::new(),
         );
         assert!(rows[0].height > 22.0, "the header keeps its height");
         assert!(
@@ -7637,7 +7994,7 @@ mod tests {
             1.0,
             true,
             &HashSet::new(),
-            None,
+            &HashSet::new(),
         );
         assert_eq!(rows.len(), 3, "one visual row per source line: {rows:?}");
         assert_eq!(rows[1].height, 0.0, "the separator line has no height");

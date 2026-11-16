@@ -515,6 +515,10 @@ class VibecodiumController(context: Context) {
         activeEditorView = view
     }
 
+    fun toggleActiveTableSource() {
+        activeEditorView?.toggleTableSource()
+    }
+
     fun undoEditor() {
         activeEditorView?.undo()
     }

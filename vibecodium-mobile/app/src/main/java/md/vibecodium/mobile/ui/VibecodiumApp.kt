@@ -2032,6 +2032,10 @@ private fun NoteActionItems(
             text = { Text("Outline") },
             onClick = { onDismiss(); controller.toggleDrawer(Drawer.Right) },
         )
+        DropdownMenuItem(
+            text = { Text("Table source / grid") },
+            onClick = { onDismiss(); controller.toggleActiveTableSource() },
+        )
     }
     DropdownMenuItem(
         text = { Text("Sync") },

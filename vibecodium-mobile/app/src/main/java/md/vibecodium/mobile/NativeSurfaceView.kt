@@ -807,9 +807,29 @@ class NativeEditorView(
                 android.util.Log.d("VibecodiumTap", "copied code block: ${text.length} chars")
             }
             "code_toggle" -> requestRender()
+            "table_cell" -> {
+                syncSelectionFromNative()
+                requestFocus()
+                startCaretBlink()
+                applyInsertionHandleVisible(true)
+                onCaretPlaced?.invoke()
+                requestRender()
+            }
         }
         helper.invalidateRoot()
         return true
+    }
+
+    /** Switches the table under the caret between its grid and raw source. */
+    fun toggleTableSource(): Boolean {
+        val toggled = CoreBridge.nativeEditorToggleTableSource(surfaceId)
+        if (toggled) {
+            syncSelectionFromNative()
+            refreshLayoutInfo()
+            syncHandles()
+            requestRender()
+        }
+        return toggled
     }
 
     private fun ensureScrollMaxY(): Float {
@@ -1209,6 +1229,11 @@ class NativeEditorView(
      */
     private var onTabFrameShown: ((String) -> Unit)? = null
     @Volatile private var knownScroll = 0f
+    /** Horizontal pan of a table wider than the viewport. */
+    private var knownScrollX = 0f
+    private var tableScrollMaxX = 0f
+    private var tableDragX = false
+    private var downScrollX = 0f
     private var wasHidden = false
     private val flingRunnable = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -1226,7 +1251,7 @@ class NativeEditorView(
                 flinging = false
                 val settledScroll = knownScroll
                 postRenderTask {
-                    CoreBridge.nativeEditorSetScroll(surfaceId, settledScroll, 0f)
+                    CoreBridge.nativeEditorSetScroll(surfaceId, settledScroll, knownScrollX)
                 }
                 checkBandRender(knownScroll)
                 mainHandler.post {
@@ -1247,7 +1272,7 @@ class NativeEditorView(
             dismissMagnifier()
             selecting = true
             selectingDrag = false
-            CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
+            CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, knownScrollX)
             CoreBridge.nativeEditorSelectWord(surfaceId, downX, downY)
             syncFromNative(notify = true)
             syncScrollFromNative()
@@ -1506,7 +1531,7 @@ class NativeEditorView(
             if (!isSurfaceAttached()) return@postRenderTask
             CoreBridge.nativeEditorSetBottomInset(surfaceId, next)
             if (idleTransition) {
-                CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
+                CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, knownScrollX)
             }
             val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
             val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
@@ -1947,6 +1972,7 @@ class NativeEditorView(
             saveViewport()
             invalidateBandGeneration()
             lastPath = path
+            knownScrollX = 0f
             scrollMaxY = 0f
             scrollbarOverlay.update(knownScroll, 0f)
         }
@@ -1964,6 +1990,7 @@ class NativeEditorView(
         val viewport = if (pathChanged) loadViewport(path) else null
         if (pathChanged) {
             knownScroll = viewport?.first ?: 0f
+            knownScrollX = viewport?.second ?: 0f
             bandOrigin = bandTargetOrigin(knownScroll, knownScroll)
             applyScrollTranslation()
         }
@@ -2559,9 +2586,16 @@ class NativeEditorView(
                 longPressWordEnd = -1
                 removeCallbacks(longPress)
                 dragStartScroll = knownScroll
+                downScrollX = runCatching {
+                    CoreBridge.nativeEditorTableScrollX(surfaceId, event.y)
+                }.getOrDefault(0f)
+                tableDragX = false
+                tableScrollMaxX = runCatching {
+                    CoreBridge.nativeEditorTableScrollMax(surfaceId, event.y)
+                }.getOrDefault(0f)
                 val scrollForRust = knownScroll
                 postRenderTask {
-                    CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, 0f)
+                    CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, knownScrollX)
                 }
                 insertionActionMode?.finish()
                 val handle = handleAt(event.x, event.y)
@@ -2656,27 +2690,42 @@ class NativeEditorView(
                     if (kotlin.math.abs(totalDy) > threshold || kotlin.math.abs(totalDx) > threshold) {
                         dragged = true
                         removeCallbacks(longPress)
-                        if (deltaY > 0f) {
-                            deltaY = (deltaY - threshold).coerceAtLeast(0f)
-                        } else {
-                            deltaY = (deltaY + threshold).coerceAtMost(0f)
+                        // A wide table pans sideways; a vertical gesture keeps
+                        // scrolling the document.
+                        tableDragX = tableScrollMaxX > 0f &&
+                            kotlin.math.abs(totalDx) > kotlin.math.abs(totalDy)
+                        if (!tableDragX) {
+                            if (deltaY > 0f) {
+                                deltaY = (deltaY - threshold).coerceAtLeast(0f)
+                            } else {
+                                deltaY = (deltaY + threshold).coerceAtMost(0f)
+                            }
                         }
                     }
                 }
                 if (dragged) {
                     lastMotionY = y
-                    val maxScroll = maxOf(scrollMaxY, knownScroll)
-                    val nextScroll = (knownScroll + deltaY).coerceIn(0f, maxScroll).roundToInt().toFloat()
-                    if (nextScroll != knownScroll) {
-                        // A queued caret-reveal band must not fight the user's
-                        // scroll; the regular band scheduling takes over.
-                        if (rebaseOrigin != null) invalidateBandGeneration()
-                        rebaseDisplayScroll = null
-                        knownScroll = nextScroll
-                        applyScrollTranslation()
-                        onScrollChanged?.invoke(knownScroll, scrollMaxY, true)
-                        scrollbarOverlay.update(knownScroll, scrollMaxY)
-                        checkBandRender(knownScroll)
+                    if (tableDragX) {
+                        val nextX = (downScrollX - (x - downX)).coerceIn(0f, tableScrollMaxX)
+                        if (nextX != knownScrollX) {
+                            knownScrollX = nextX
+                            CoreBridge.nativeEditorSetTableScroll(surfaceId, downY, nextX)
+                            requestRender()
+                        }
+                    } else {
+                        val maxScroll = maxOf(scrollMaxY, knownScroll)
+                        val nextScroll = (knownScroll + deltaY).coerceIn(0f, maxScroll).roundToInt().toFloat()
+                        if (nextScroll != knownScroll) {
+                            // A queued caret-reveal band must not fight the user's
+                            // scroll; the regular band scheduling takes over.
+                            if (rebaseOrigin != null) invalidateBandGeneration()
+                            rebaseDisplayScroll = null
+                            knownScroll = nextScroll
+                            applyScrollTranslation()
+                            onScrollChanged?.invoke(knownScroll, scrollMaxY, true)
+                            scrollbarOverlay.update(knownScroll, scrollMaxY)
+                            checkBandRender(knownScroll)
+                        }
                     }
                 }
             }
@@ -2702,6 +2751,13 @@ class NativeEditorView(
                 removeCallbacks(longPress)
                 velocityTracker?.addMovement(event)
                 activePointerId = android.view.MotionEvent.INVALID_POINTER_ID
+                if (tableDragX) {
+                    tableDragX = false
+                    recycleVelocity()
+                    saveViewport()
+                    requestRender()
+                    return true
+                }
                 if (draggingHandle >= 0) {
                     val releasedHandle = draggingHandle
                     val wasDragged = dragged
@@ -2750,7 +2806,7 @@ class NativeEditorView(
                     return true
                 }
                 if (!dragged) {
-                    CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
+                    CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, knownScrollX)
                     val now = SystemClock.uptimeMillis()
                     val doubleTap = now - lastTapTime < 320L &&
                         kotlin.math.abs(event.x - lastTapX) < slop &&
@@ -2812,7 +2868,7 @@ class NativeEditorView(
                         resumeCaretBlink()
                         val scrollForRust = knownScroll
                         postRenderTask {
-                            CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, 0f)
+                            CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, knownScrollX)
                         }
                         checkBandRender(knownScroll)
                         saveViewport()
@@ -2834,7 +2890,7 @@ class NativeEditorView(
                     resumeCaretBlink()
                     val scrollForRust = knownScroll
                     postRenderTask {
-                        CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, 0f)
+                        CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, knownScrollX)
                     }
                     checkBandRender(knownScroll)
                     saveViewport()

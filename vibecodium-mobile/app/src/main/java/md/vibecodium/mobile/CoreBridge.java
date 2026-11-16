@@ -176,6 +176,18 @@ public final class CoreBridge {
 
     public static native void nativeEditorSetScroll(int id, float y, float x);
 
+    /** Horizontal overflow of the table under `y`, in device pixels. */
+    public static native float nativeEditorTableScrollMax(int id, float y);
+
+    /** Current horizontal pan of the table under `y`, in device pixels. */
+    public static native float nativeEditorTableScrollX(int id, float y);
+
+    /** Pans the table under `y`; the offset is stored per table. */
+    public static native void nativeEditorSetTableScroll(int id, float y, float x);
+
+    /** Toggles the table under the caret between grid and raw source. */
+    public static native boolean nativeEditorToggleTableSource(int id);
+
     public static int[] rasterizeEmoji(String text, float px) {
         if (text == null || text.isEmpty()) return null;
         android.text.TextPaint paint = new android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG);
