@@ -62,6 +62,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -134,6 +135,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -1435,21 +1437,8 @@ private fun EditorScreen(
             onViewReady,
             onCaretPlaced,
         )
-        Box(
-            Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .padding(top = ViewHeaderTopPadding)
-                .graphicsLayer {
-                    alpha = chromeProgress.value
-                    translationY = -(ViewHeaderHeight + ViewHeaderTopPadding).toPx() * (1f - chromeProgress.value)
-                }
-                .semantics {
-                    if (chromeProgress.value < 0.05f) invisibleToUser()
-                },
-        ) {
-            ViewHeader(state, tab, controller, onHideKeyboard = { editorView?.hideKeyboard() })
-        }
+        // Drawn before the header so the popup page cover, which the header
+        // paints, also hides this button while a menu is open.
         if (!preview && keyboardPrompt && !imeVisible) {
             val bottomPadding = if (navbarEnabled) NavbarHeight + 16.dp else 16.dp
             Surface(
@@ -1472,10 +1461,25 @@ private fun EditorScreen(
                         KeyboardIcon,
                         contentDescription = "Show keyboard",
                         modifier = Modifier.size(24.dp),
-                        tint = Color.White,
+                        tint = MaterialTheme.colorScheme.onSurface,
                     )
                 }
             }
+        }
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .padding(top = ViewHeaderTopPadding)
+                .graphicsLayer {
+                    alpha = chromeProgress.value
+                    translationY = -(ViewHeaderHeight + ViewHeaderTopPadding).toPx() * (1f - chromeProgress.value)
+                }
+                .semantics {
+                    if (chromeProgress.value < 0.05f) invisibleToUser()
+                },
+        ) {
+            ViewHeader(state, tab, controller, onHideKeyboard = { editorView?.hideKeyboard() })
         }
     }
 }
@@ -1563,16 +1567,9 @@ private fun TabsDropdown(
         ),
     ) {
         Box(Modifier.fillMaxSize().clickable(onClick = onDismiss)) {
-            // Opaque below the toolbar: the note disappears behind the menu,
-            // the same way it does behind the explorer drawer.
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(top = with(density) {
-                        (anchorBottomPx - statusBarTopPx).coerceAtLeast(0).toDp()
-                    })
-                    .background(Color.Black),
-            )
+            // The header paints the page cover in the main window, in the same
+            // frame the toolbar strip fills, so this window only carries the
+            // list and stays transparent everywhere else.
             // New note sits in the header gutter, left of the menu and under
             // the explorer toggle, so it only shows while this menu is open.
             FloatingIconButton(
@@ -1688,10 +1685,28 @@ private fun ViewHeader(
     var menuOpen by remember { mutableStateOf(false) }
     var tabsMenuOpen by remember { mutableStateOf(false) }
     var titleBottomPx by remember { mutableStateOf(0) }
+    val palette = LocalVibecodiumPalette.current
+    val density = LocalDensity.current
+    // The popups are separate windows, so the page is covered here in the main
+    // window: the toolbar strip and the rest of the page fill in the same
+    // frame, and only the menu card itself arrives on the next one.
+    val coverHeightPx = with(density) {
+        LocalConfiguration.current.screenHeightDp.dp.toPx()
+    }
+    val popupBackdrop = if (menuOpen || tabsMenuOpen) {
+        val cover = palette.overlay.compositeOver(palette.background)
+        Modifier.drawBehind {
+            // Taller than the window; the excess is clipped.
+            drawRect(color = cover, size = Size(size.width, coverHeightPx))
+        }
+    } else {
+        Modifier
+    }
     Row(
         Modifier
             .fillMaxWidth()
             .height(ViewHeaderHeight)
+            .then(popupBackdrop)
             .padding(start = 60.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1865,15 +1880,8 @@ private fun HeaderNoteMenu(
         ),
     ) {
         Box(Modifier.fillMaxSize().clickable(onClick = onDismiss)) {
-            // Dim only the note area; the toolbar above stays bright.
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(top = with(density) {
-                        (anchorBottomPx - statusBarTopPx).coerceAtLeast(0).toDp()
-                    })
-                    .background(Color.Black.copy(alpha = 0.7f)),
-            )
+            // The page cover is painted by the header in the main window, so
+            // this window holds only the menu card and is transparent around it.
             Surface(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
