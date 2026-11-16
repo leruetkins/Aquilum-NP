@@ -1171,6 +1171,8 @@ class NativeEditorView(
     /** Type size the core holds; `MIN_VALUE` forces the first send. */
     private var editorFontDp = Int.MIN_VALUE
     private var editorLineDp = Float.MIN_VALUE
+    /** Fenced-code size the core holds; `MIN_VALUE` forces the first send. */
+    private var codeFontDp = Int.MIN_VALUE
     private var fontRequestInFlight = false
     /** Faces the core holds; `null` forces the first send. */
     private var textFace: EditorFontFace? = null
@@ -1607,6 +1609,36 @@ class NativeEditorView(
     }
 
     /**
+     * Fenced-code size, independent from the body text. Code rows re-wrap, so
+     * the scroll extent is refreshed like a body font change.
+     */
+    fun setEditorCodeFont(fontDp: Int) {
+        if (fontDp == codeFontDp) return
+        codeFontDp = fontDp
+        postRenderTask {
+            if (!isSurfaceAttached()) {
+                // Applied from onSurfaceReady before the first frame.
+                return@postRenderTask
+            }
+            CoreBridge.nativeEditorSetCodeFontSize(surfaceId, fontDp.toFloat())
+            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: 0f
+            mainHandler.post {
+                scrollMaxY = maxOf(newMaxY, 0f)
+                val target = bandTargetOrigin(knownScroll, maxOf(scrollMaxY, knownScroll))
+                invalidateBandGeneration()
+                rebaseDisplayScroll = knownScroll
+                rebaseOrigin = target
+                scheduleBandRender(target, force = true)
+                scrollbarOverlay.update(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
+                refreshLayoutInfo()
+                syncHandles()
+            }
+        }
+    }
+
+    /**
      * Pushes the text/code face choice. Like [setEditorFont] it can change the
      * wrap and the scroll extent, so the band is rebased after the core applies
      * it.
@@ -1848,6 +1880,9 @@ class NativeEditorView(
         // editor paints with the default size and visibly reflows afterwards.
         if (editorFontDp != Int.MIN_VALUE) {
             CoreBridge.nativeEditorSetFontSize(surfaceId, editorFontDp.toFloat(), editorLineDp)
+        }
+        if (codeFontDp != Int.MIN_VALUE) {
+            CoreBridge.nativeEditorSetCodeFontSize(surfaceId, codeFontDp.toFloat())
         }
         val cachedTextFace = textFace
         val cachedCodeFace = codeFace

@@ -159,6 +159,9 @@ public final class CoreBridge {
 
     public static native void nativeEditorSetFontSize(int id, float fontDp, float lineDp);
 
+    /** Fenced-code size, independent from the body text size. */
+    public static native void nativeEditorSetCodeFontSize(int id, float fontDp);
+
     public static native void nativeEditorSetFonts(int id, int textFace, int codeFace);
 
     public static native void nativeEditorSetHeadings(int id, String json);

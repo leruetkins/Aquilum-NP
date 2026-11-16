@@ -1068,6 +1068,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 editor.value,
                 controller,
                 state.settings.editorFontDp,
+                state.settings.codeFontDp,
                 state.settings.textFontFace,
                 state.settings.codeFontFace,
                 state.settings.headings,
@@ -1257,6 +1258,7 @@ private fun EditorArea(
     editor: EditorSlice,
     controller: VibecodiumController,
     editorFontDp: Int,
+    codeFontDp: Int,
     textFontFace: EditorFontFace,
     codeFontFace: EditorFontFace,
     headings: HeadingsSettings,
@@ -1293,6 +1295,7 @@ private fun EditorArea(
             tab,
             controller,
             editorFontDp,
+            codeFontDp,
             textFontFace,
             codeFontFace,
             headings,
@@ -1340,6 +1343,7 @@ private fun EditorScreen(
     tab: Tab,
     controller: VibecodiumController,
     editorFontDp: Int,
+    codeFontDp: Int,
     textFontFace: EditorFontFace,
     codeFontFace: EditorFontFace,
     headings: HeadingsSettings,
@@ -1427,6 +1431,7 @@ private fun EditorScreen(
             controller,
             tab,
             editorFontDp,
+            codeFontDp,
             textFontFace,
             codeFontFace,
             headings,
@@ -2062,6 +2067,7 @@ private fun SourceEditor(
     controller: VibecodiumController,
     tab: Tab,
     editorFontDp: Int,
+    codeFontDp: Int,
     textFontFace: EditorFontFace,
     codeFontFace: EditorFontFace,
     headings: HeadingsSettings,
@@ -2098,6 +2104,7 @@ private fun SourceEditor(
             view.setOnCaretPlaced(onCaretPlaced)
             view.setEditorPreview(preview)
             view.setEditorFont(editorFontDp, AppSettingsJson.editorLineDp(editorFontDp))
+            view.setEditorCodeFont(codeFontDp)
             view.setEditorFonts(textFontFace, codeFontFace)
             view.setEditorHeadings(headings)
             view.setEditor(tab.text, tab.selection, tab.language, tab.path)
@@ -4954,6 +4961,15 @@ private fun SettingsSectionContent(
                         range = AppSettingsJson.MIN_EDITOR_FONT_DP..AppSettingsJson.MAX_EDITOR_FONT_DP,
                         format = { "$it dp" },
                         onChange = controller::setEditorFontSize,
+                        showDivider = true,
+                    )
+                    SettingsStepperRow(
+                        title = "Code block font size",
+                        description = "Fenced code blocks. Can be smaller than body text.",
+                        value = settings.codeFontDp,
+                        range = AppSettingsJson.MIN_CODE_FONT_DP..AppSettingsJson.MAX_CODE_FONT_DP,
+                        format = { "$it dp" },
+                        onChange = controller::setCodeFontSize,
                         showDivider = true,
                     )
                     SettingsChoiceRow(

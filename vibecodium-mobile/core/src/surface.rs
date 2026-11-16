@@ -1612,6 +1612,9 @@ struct SurfaceState {
     editor_font_dp: f32,
     /// Editor line pitch in dp; derived from the font size when it changes.
     editor_line_dp: f32,
+    /// Size of fenced code in dp. Independent from the body size, so code can
+    /// be set smaller than prose.
+    code_font_dp: f32,
     /// Face used for Markdown prose (and other non-code text).
     text_face: Face,
     /// Face used for fenced/inline code and for code files.
@@ -1772,6 +1775,10 @@ const EDITOR_FONT_DP: f32 = 15.0;
 
 /// Line pitch that goes with [`EDITOR_FONT_DP`].
 const EDITOR_LINE_DP: f32 = 22.0;
+
+/// Default size of fenced code, one step under the body text so a block reads
+/// as a quotation of code rather than as prose.
+const CODE_FONT_DP: f32 = 13.0;
 
 /// Empty space on each side of the line-number column, in dp.
 const GUTTER_PAD_DP: f32 = 8.0;
@@ -2286,13 +2293,28 @@ fn row_height_for(
     model: &[crate::markdown::MarkdownLine],
     line: usize,
     font_px: f32,
+    header_font_px: f32,
     base_line_px: f32,
     density: f32,
 ) -> f32 {
     if is_opening_fence(model, line) {
-        code_header_height(font_px, base_line_px, density)
+        // The header carries the language label, which is sized from the body
+        // font, so the row cannot follow the smaller code size.
+        code_header_height(header_font_px, base_line_px, density)
     } else {
-        visual_line_height(font_px, base_line_px, density)
+        // A code row keeps the body's text/line proportion at its own size, so
+        // code set smaller than prose also takes less vertical space. The
+        // closing fence is an empty row of the same block and follows it.
+        let is_code = model
+            .get(line)
+            .map(|row| is_code_kind(&row.kind))
+            .unwrap_or(false);
+        let line_base = if is_code && header_font_px > 0.0 {
+            (base_line_px * font_px / header_font_px).max(6.0)
+        } else {
+            base_line_px
+        };
+        visual_line_height(font_px, line_base, density)
     }
 }
 
@@ -2316,8 +2338,13 @@ fn code_copy_pill(
     (x, width, height)
 }
 
-/// Rounded rectangle with anti-aliased corners; `rect` only draws squares and
+/// Rounded rectangle with anti-aliased edges; `rect` only draws squares and
 /// the block needs a real box.
+///
+/// The interior is filled one contiguous row slice at a time: a code block can
+/// cover the whole viewport, and evaluating the corner distance field for
+/// every pixel of it cost tens of milliseconds per frame. Only the rounded
+/// bands and their two boundary pixels need the exact coverage.
 #[allow(clippy::too_many_arguments)]
 fn rounded_box(
     pixels: &mut [u32],
@@ -2330,35 +2357,60 @@ fn rounded_box(
     radius: f32,
     rgb: u32,
 ) {
-    if width <= 0.0 || height <= 0.0 {
+    if width <= 0.0 || height <= 0.0 || surface_width == 0 {
         return;
     }
     let color = logical(rgb);
     let r = radius.min(width * 0.5).min(height * 0.5).max(0.0);
-    let x0 = x.floor().max(0.0) as usize;
     let y0 = y.floor().max(0.0) as usize;
-    let x1 = ((x + width).ceil().min(surface_width as f32)).max(0.0) as usize;
     let y1 = ((y + height).ceil().min(surface_height as f32)).max(0.0) as usize;
-    if x0 >= x1 || y0 >= y1 {
+    if y0 >= y1 {
         return;
     }
-    let half_w = width * 0.5;
-    let half_h = height * 0.5;
+    let right_edge = (x + width).min(surface_width as f32);
     for row in y0..y1 {
-        for column in x0..x1 {
-            let px = column as f32 + 0.5 - x;
-            let py = row as f32 + 0.5 - y;
-            let qx = (px - half_w).abs() - (half_w - r);
-            let qy = (py - half_h).abs() - (half_h - r);
-            let outside = (qx.max(0.0) * qx.max(0.0) + qy.max(0.0) * qy.max(0.0)).sqrt()
-                + qx.max(qy).min(0.0)
-                - r;
-            let alpha = ((-outside + 0.5).clamp(0.0, 1.0) * 255.0) as u8;
-            if alpha > 0 {
-                let index = row * surface_width + column;
-                if index < pixels.len() {
-                    pixels[index] = blend(pixels[index], color, alpha);
-                }
+        let py = row as f32 + 0.5 - y;
+        let (left, right) = if py < r {
+            let dy = r - py;
+            let dx = (r * r - dy * dy).max(0.0).sqrt();
+            (x + r - dx, x + width - r + dx)
+        } else if py > height - r {
+            let dy = py - (height - r);
+            let dx = (r * r - dy * dy).max(0.0).sqrt();
+            (x + r - dx, x + width - r + dx)
+        } else {
+            (x, x + width)
+        };
+        let left = left.max(0.0);
+        let right = right.min(right_edge);
+        if right <= left {
+            continue;
+        }
+        let row_start = row * surface_width;
+        let solid_start = left.ceil() as usize;
+        let solid_end = (right.floor() as usize).min(surface_width);
+        // Partial pixels on both edges keep the corner arc smooth.
+        if left > 0.0 && left < surface_width as f32 {
+            let column = left.floor() as usize;
+            let alpha = ((column as f32 + 1.0 - left).clamp(0.0, 1.0) * 255.0) as u8;
+            let index = row_start + column;
+            if alpha > 0 && index < pixels.len() {
+                pixels[index] = blend(pixels[index], color, alpha);
+            }
+        }
+        if right < surface_width as f32 {
+            let column = right.floor() as usize;
+            let alpha = ((right - column as f32).clamp(0.0, 1.0) * 255.0) as u8;
+            let index = row_start + column;
+            if alpha > 0 && index < pixels.len() {
+                pixels[index] = blend(pixels[index], color, alpha);
+            }
+        }
+        if solid_end > solid_start {
+            let start = row_start + solid_start;
+            let end = (row_start + solid_end).min(pixels.len());
+            if start < end {
+                pixels[start..end].fill(color);
             }
         }
     }
@@ -3072,12 +3124,19 @@ fn wrap_layout(
             Some(_) => visual_line_height(font, base_line_px, density) + (10.0 * density).round(),
             None if folded => {
                 if is_opening_fence(model, line_index) {
-                    code_header_height(font, base_line_px, density)
+                    code_header_height(fallback_font_px, base_line_px, density)
                 } else {
                     0.0
                 }
             }
-            None => row_height_for(model, line_index, font, base_line_px, density),
+            None => row_height_for(
+                model,
+                line_index,
+                font,
+                fallback_font_px,
+                base_line_px,
+                density,
+            ),
         };
         for (start, end) in wrap_line_chunks(
             painter,
@@ -3324,6 +3383,7 @@ impl SurfaceState {
             density: if density > 0.0 { density } else { 1.0 },
             editor_font_dp: EDITOR_FONT_DP,
             editor_line_dp: EDITOR_LINE_DP,
+            code_font_dp: CODE_FONT_DP,
             text_face: Face::Mono,
             code_face: Face::Mono,
             headings: DEFAULT_HEADINGS,
@@ -3357,6 +3417,26 @@ impl SurfaceState {
     /// metric derives from this one number.
     fn font_px(&self) -> f32 {
         (self.editor_font_dp * self.density).round().max(6.0)
+    }
+
+    /// Pixel size of fenced code rows and their fences.
+    fn code_font_px(&self) -> f32 {
+        (self.code_font_dp * self.density).round().max(6.0)
+    }
+
+    /// Size a logical editor line is painted at: headings keep their own scale,
+    /// fenced code follows the code size, prose follows the body size.
+    fn font_for_line(&self, line: usize) -> f32 {
+        match self.editor.model.get(line).map(|row| row.kind.as_str()) {
+            Some("code") | Some("code_fence") => self.code_font_px(),
+            _ => heading_font(
+                self.editor.model.get(line),
+                self.font_px(),
+                &self.headings,
+                self.editor_font_dp,
+                self.density,
+            ),
+        }
     }
 
     /// Line pitch in device pixels.
@@ -3935,16 +4015,7 @@ impl SurfaceState {
         let base = self.font_px();
         let base_line = self.line_px();
         let line_fonts: Vec<(f32, Face)> = (0..self.editor.starts.len())
-            .map(|line| {
-                let font = heading_font(
-                    self.editor.model.get(line),
-                    base,
-                    &self.headings,
-                    self.editor_font_dp,
-                    self.density,
-                );
-                (font, self.line_face(line))
-            })
+            .map(|line| (self.font_for_line(line), self.line_face(line)))
             .collect();
         let wrap = wrap_layout(
             &self.editor.text,
@@ -4058,13 +4129,7 @@ impl SurfaceState {
                     (sel_start, sel_end),
                     false,
                 );
-                let font = heading_font(
-                    self.editor.model.get(line),
-                    base,
-                    &self.headings,
-                    self.editor_font_dp,
-                    self.density,
-                );
+                let font = self.font_for_line(line);
                 let line_face = self.line_face(line);
                 let code_face = self.code_face;
                 for (start, end) in wrap_line_chunks(
@@ -4087,6 +4152,7 @@ impl SurfaceState {
                             &self.editor.model,
                             line,
                             font,
+                            base,
                             base_line,
                             self.density,
                         ),
@@ -5685,6 +5751,30 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetFontS
     });
 }
 
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetCodeFontSize(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    font_dp: jfloat,
+) {
+    let _ = with_surface(id, |state| {
+        let font = font_dp.clamp(7.0, 28.0);
+        if (state.code_font_dp - font).abs() < 0.01 {
+            return;
+        }
+        state.code_font_dp = font;
+        // Only fenced rows change height, but the whole wrap has to be rebuilt
+        // because the bands and the scroll range follow it.
+        state.editor.wrap_dirty = true;
+        let content = state.editor_metrics().2;
+        state.ensure_wrap(content);
+        let (_, _, max_y, _) = state.editor_scroll_metrics();
+        state.editor.scroll = state.editor.scroll.min(max_y);
+        state.invalidate();
+    });
+}
+
 fn face_from_jni(value: i32) -> Face {
     match value {
         1 => Face::Mono,
@@ -6823,6 +6913,27 @@ mod tests {
             (layout.indent + layout.total - 300.0).abs() < 0.01,
             "indented table still fills the remaining width: {layout:?}"
         );
+    }
+
+    #[test]
+    fn rounded_box_fills_the_interior_and_honours_the_corners() {
+        let (width, height) = (40usize, 30usize);
+        let mut pixels = vec![0u32; width * height];
+        rounded_box(
+            &mut pixels,
+            width,
+            height,
+            0.0,
+            0.0,
+            40.0,
+            30.0,
+            10.0,
+            0xffffff,
+        );
+        assert_ne!(pixels[15 * width + 20], 0, "interior is filled");
+        assert_ne!(pixels[15 * width + 2], 0, "left edge is filled");
+        assert_eq!(pixels[0], 0, "corner stays empty");
+        assert_eq!(pixels[(height - 1) * width], 0, "bottom corner stays empty");
     }
 
     #[test]

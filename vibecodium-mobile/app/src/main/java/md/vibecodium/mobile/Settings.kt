@@ -129,6 +129,8 @@ data class AppSettings(
     val textScale: Float = 1f,
     /** Editor body text size in dp; its line pitch is derived from it. */
     val editorFontDp: Int = AppSettingsJson.DEFAULT_EDITOR_FONT_DP,
+    /** Fenced code size in dp, independent from the body text. */
+    val codeFontDp: Int = AppSettingsJson.DEFAULT_CODE_FONT_DP,
     /** Font for Markdown prose and other non-code text. */
     val textFontFace: EditorFontFace = EditorFontFace.Mono,
     /** Font for fenced/inline code and for code files. */
@@ -162,6 +164,11 @@ object AppSettingsJson {
     const val MAX_EDITOR_FONT_DP = 24
     const val DEFAULT_EDITOR_FONT_DP = 15
 
+    /** Fenced code size range. Code is allowed to be smaller than prose. */
+    const val MIN_CODE_FONT_DP = 9
+    const val MAX_CODE_FONT_DP = 24
+    const val DEFAULT_CODE_FONT_DP = 13
+
     /** Line pitch the editor uses at [DEFAULT_EDITOR_FONT_DP]. */
     private const val DEFAULT_EDITOR_LINE_DP = 22f
 
@@ -190,6 +197,7 @@ object AppSettingsJson {
         return JSONObject()
             .put("textScale", settings.textScale.toDouble())
             .put("editorFontDp", settings.editorFontDp)
+            .put("codeFontDp", settings.codeFontDp)
             .put("textFontFace", settings.textFontFace.name)
             .put("codeFontFace", settings.codeFontFace.name)
             .put("autoHideChrome", settings.autoHideChrome)
@@ -217,6 +225,8 @@ object AppSettingsJson {
                     ?: 1f,
                 editorFontDp = value.optInt("editorFontDp", DEFAULT_EDITOR_FONT_DP)
                     .coerceIn(MIN_EDITOR_FONT_DP, MAX_EDITOR_FONT_DP),
+                codeFontDp = value.optInt("codeFontDp", DEFAULT_CODE_FONT_DP)
+                    .coerceIn(MIN_CODE_FONT_DP, MAX_CODE_FONT_DP),
                 textFontFace = runCatching {
                     EditorFontFace.valueOf(
                         value.optString("textFontFace", EditorFontFace.Mono.name),
