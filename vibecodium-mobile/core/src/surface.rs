@@ -1635,6 +1635,10 @@ struct EditorState {
     /// One entry per source line: the callout block that covers it, if any.
     /// Built with the model so a frame never re-derives it.
     callout_blocks: Vec<Option<crate::markdown::CalloutBlock>>,
+    /// Header line of the table that holds the caret. That one table renders
+    /// its raw markdown while it is being edited; every other table keeps its
+    /// grid, the way the desktop switches a table to raw mode.
+    table_mode_key: Option<usize>,
     history: History,
 }
 
@@ -1905,6 +1909,11 @@ fn table_bounds(model: &[crate::markdown::MarkdownLine], line: usize) -> Option<
         end += 1;
     }
     Some((start, end))
+}
+
+/// Header line of the table containing `line`, if any.
+fn table_header_at(model: &[crate::markdown::MarkdownLine], line: usize) -> Option<usize> {
+    table_bounds(model, line).map(|(start, _)| start)
 }
 
 fn table_align(cell: &str) -> TableAlign {
@@ -3343,6 +3352,7 @@ fn wrap_layout(
     density: f32,
     preview: bool,
     folded_code: &HashSet<usize>,
+    raw_table: Option<usize>,
 ) -> Vec<WrapLine> {
     let all: Vec<char> = text.chars().collect();
     let mut rows = Vec::with_capacity(starts.len());
@@ -3357,16 +3367,17 @@ fn wrap_layout(
             all.len()
         };
         let chars = &all[line_start.min(all.len())..line_end.min(all.len())];
-        // A reading-mode table is painted as a grid by `paint_table_row`, so
-        // its source line must occupy exactly one visual row and none of its
-        // raw pipes may take part in wrapping.
-        let table_kind = if preview {
-            model.get(line_index).map(|line| line.kind.as_str())
-        } else {
-            None
-        };
+        // A table painted as a grid takes exactly one visual row per source
+        // line, and none of its raw pipes may take part in wrapping.
+        let table_kind =
+            model.get(line_index).map(|line| line.kind.as_str());
         let table = table_kind.filter(|kind| is_table_kind(kind));
-        let hidden = if table.is_some() {
+        // The table holding the caret keeps its raw source lines so it can be
+        // edited; every other table is painted as a grid.
+        let raw_table_here = table.is_some()
+            && !preview
+            && table_header_at(model, line_index) == raw_table;
+        let hidden = if table.is_some() && !raw_table_here {
             vec![true; chars.len()]
         } else {
             canonical_hidden(model, line_index, chars.len())
@@ -3384,6 +3395,8 @@ fn wrap_layout(
             false
         };
         let height = match table {
+            // The raw table keeps ordinary source rows.
+            Some(_) if raw_table_here => visual_line_height(font, base_line_px, density),
             // The header's own bottom border is the separator, so the source
             // separator line needs no vertical space of its own.
             Some("table_separator") => 0.0,
@@ -4280,6 +4293,19 @@ impl SurfaceState {
     fn ensure_wrap(&mut self, content_width: f32) {
         self.ensure_starts();
         self.ensure_model();
+        // The table under the caret renders raw; every other table is a grid.
+        // Entering or leaving it changes the wrap, so it forces a rebuild.
+        let table_mode = if self.editor.preview {
+            None
+        } else {
+            let line = line_of(&self.editor.starts, self.editor.selection)
+                .min(self.editor.starts.len().saturating_sub(1));
+            table_header_at(&self.editor.model, line)
+        };
+        if self.editor.table_mode_key != table_mode {
+            self.editor.table_mode_key = table_mode;
+            self.editor.wrap_dirty = true;
+        }
         let content_changed = self.editor.wrap_dirty
             || (self.editor.wrap_width - content_width).abs() >= 0.5
             || self.editor.wrap_canonical.is_empty();
@@ -4310,6 +4336,7 @@ impl SurfaceState {
             self.density,
             self.editor.preview,
             &self.editor.code_collapsed,
+            self.editor.table_mode_key,
         );
         let mut first = vec![0; self.editor.starts.len()];
         let mut count = vec![0; self.editor.starts.len()];
@@ -4735,15 +4762,21 @@ impl SurfaceState {
                     }
                 }
             }
-            // Reading mode paints tables as a grid from the measured layout
-            // instead of their raw source lines.
-            if self.editor.preview && has_model {
+            // Tables are painted as a grid from the measured layout. The table
+            // holding the caret falls through to its raw source lines so it can
+            // be edited, exactly like the desktop editor.
+            if has_model {
                 let header = model
                     .get(chunk.line)
                     .filter(|line| is_table_kind(&line.kind))
                     .and_then(|_| table_bounds(&model, chunk.line))
                     .map(|(start, _)| start);
-                if let Some(start) = header {
+                let raw_table = if self.editor.preview {
+                    None
+                } else {
+                    self.editor.table_mode_key
+                };
+                if let Some(start) = header.filter(|start| raw_table != Some(*start)) {
                     if (self.editor.table_layout_width - content_width).abs() >= 0.5
                         || (self.editor.table_layout_font - font_px).abs() >= 0.5
                     {
@@ -7238,6 +7271,7 @@ mod tests {
             1.0,
             false,
             &HashSet::new(),
+            None,
         );
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].start, 0);
@@ -7387,6 +7421,58 @@ mod tests {
     }
 
     #[test]
+    fn table_header_maps_every_row_to_its_header() {
+        let model = crate::markdown::model("| A | B |\n| --- | --- |\n| 1 | 2 |\n\ntail\n");
+        assert_eq!(table_header_at(&model, 0), Some(0));
+        assert_eq!(table_header_at(&model, 2), Some(0));
+        assert_eq!(table_header_at(&model, 3), None);
+    }
+
+    #[test]
+    fn editing_a_table_switches_it_to_raw_rows() {
+        let text = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+        let starts = line_starts(text).0;
+        let model = crate::markdown::model(text);
+        let mut painter = Painter::new();
+        let line_fonts: Vec<(f32, Face)> = starts.iter().map(|_| (15.0, Face::Mono)).collect();
+        let grid = wrap_layout(
+            text,
+            &starts,
+            300.0,
+            &mut painter,
+            &line_fonts,
+            &model,
+            Face::Mono,
+            15.0,
+            22.0,
+            1.0,
+            false,
+            &HashSet::new(),
+            None,
+        );
+        let raw = wrap_layout(
+            text,
+            &starts,
+            300.0,
+            &mut painter,
+            &line_fonts,
+            &model,
+            Face::Mono,
+            15.0,
+            22.0,
+            1.0,
+            false,
+            &HashSet::new(),
+            Some(0),
+        );
+        assert_eq!(grid[1].height, 0.0, "the separator collapses in grid mode");
+        assert!(
+            raw.iter().all(|row| row.height > 0.0),
+            "the edited table keeps every source row: {raw:?}"
+        );
+    }
+
+    #[test]
     fn quote_wrap_reserves_the_marker_column_and_gap() {
         let chars: Vec<char> = "x ".repeat(80).chars().collect();
         let hidden = vec![false; chars.len()];
@@ -7519,6 +7605,7 @@ mod tests {
             1.0,
             true,
             &folded,
+            None,
         );
         assert!(rows[0].height > 22.0, "the header keeps its height");
         assert!(
@@ -7550,6 +7637,7 @@ mod tests {
             1.0,
             true,
             &HashSet::new(),
+            None,
         );
         assert_eq!(rows.len(), 3, "one visual row per source line: {rows:?}");
         assert_eq!(rows[1].height, 0.0, "the separator line has no height");
