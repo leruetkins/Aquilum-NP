@@ -252,6 +252,7 @@ class VibecodiumController(context: Context) {
             explorerRenamePath = null,
             explorerRenameValue = "",
             explorerRenameFolder = false,
+            openAfterRenamePath = null,
         )
         if (restoreTabs(repository)) persistTabs()
         // Saved tabs are now in memory. Only at this point may the shell show
@@ -902,6 +903,7 @@ class VibecodiumController(context: Context) {
             explorerRenamePath = path,
             explorerRenameValue = path.substringAfterLast('/'),
             explorerRenameFolder = isFolder,
+            openAfterRenamePath = null,
             // The row must be visible for the editor to sit on it.
             fileQuery = "",
         )
@@ -912,6 +914,7 @@ class VibecodiumController(context: Context) {
             explorerRenamePath = null,
             explorerRenameValue = "",
             explorerRenameFolder = false,
+            openAfterRenamePath = null,
         )
     }
 
@@ -921,6 +924,7 @@ class VibecodiumController(context: Context) {
             explorerRenamePath = null,
             explorerRenameValue = "",
             explorerRenameFolder = false,
+            openAfterRenamePath = null,
             explorerMenuPath = null,
             movePath = null,
         )
@@ -936,6 +940,8 @@ class VibecodiumController(context: Context) {
         val oldPath = state.explorerRenamePath ?: return
         val repository = repository ?: return
         val isFolder = state.explorerRenameFolder
+        // Captured before dismissing the editor, which clears it.
+        val openAfter = state.openAfterRenamePath
         val typed = (value ?: state.explorerRenameValue).trim()
         if (typed.isEmpty()) {
             dismissExplorerRename()
@@ -960,11 +966,27 @@ class VibecodiumController(context: Context) {
         val newPath = if (parent.isEmpty()) fileName else "$parent/$fileName"
         if (newPath == oldPath) {
             dismissExplorerRename()
+            // The default name was accepted as is: go straight to the note.
+            if (openAfter != null) openRenamedNote(openAfter)
+            return
+        }
+        // Check the target against the tree before touching the disk: the
+        // rename would otherwise fail only after the editor is gone, and the
+        // SAF file path has no existence check of its own. Keeping the editor
+        // open lets the user pick another name.
+        if (state.entries.any { it.path == newPath } || newPath in state.folders) {
+            state = state.copy(
+                message = "Already exists: ${newPath.substringAfterLast('/')}",
+            )
             return
         }
         // Close the editor before the IO round trip; otherwise IME "done" and
         // a tap outside could submit the same rename twice.
         dismissExplorerRename()
+        // Paint the new name right away. Waiting for the disk round trip let
+        // the row fall back to its old name for a moment and then re-sort,
+        // which read as the whole tree rebuilding itself.
+        applyExplorerRenameLocally(oldPath, newPath)
         scope.launch {
             try {
                 if (isFolder) {
@@ -973,11 +995,64 @@ class VibecodiumController(context: Context) {
                     repository.renameNote(oldPath, newPath)
                 }
                 applyPathChange(oldPath, newPath)
+                if (openAfter != null) openRenamedNote(renamePathUnder(openAfter, oldPath, newPath))
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
-                state = state.copy(message = error.message ?: "Rename failed")
+                // Roll the optimistic rows back to what is actually on disk.
+                val restored = runCatching { loadFileLists(repository, refresh = true) }.getOrNull()
+                state = state.copy(
+                    message = error.message ?: "Rename failed",
+                    entries = restored?.entries ?: state.entries,
+                    folders = restored?.folders ?: state.folders,
+                    explorerTree = restored?.tree ?: state.explorerTree,
+                    collapsedFolders = restored?.let { live ->
+                        state.collapsedFolders.filterTo(mutableSetOf()) { it in live.folders }
+                    } ?: state.collapsedFolders,
+                )
             }
         }
+    }
+
+    /**
+     * Rewrites the explorer rows before the rename reaches the disk. The tree
+     * built here matches the one [applyPathChange] loads afterwards, so the
+     * native list is repainted once instead of twice.
+     */
+    private fun applyExplorerRenameLocally(oldPath: String, newPath: String) {
+        val entries = state.entries.map { entry ->
+            val path = renamePathUnder(entry.path, oldPath, newPath)
+            if (path == entry.path) {
+                entry
+            } else {
+                entry.copy(
+                    path = path,
+                    name = path.substringAfterLast('/'),
+                    isNote = isMarkdownName(path),
+                    extension = path.substringAfterLast('.', "").lowercase(),
+                    isCode = codeLanguageFor(path) != null,
+                )
+            }
+        }
+        val folders = state.folders.map { renamePathUnder(it, oldPath, newPath) }
+        // Collapsed rows must follow the rename too, or a renamed folder
+        // flashes open until the disk reload arrives.
+        val collapsed = state.collapsedFolders.mapTo(mutableSetOf()) {
+            renamePathUnder(it, oldPath, newPath)
+        }
+        state = state.copy(
+            entries = entries,
+            folders = folders,
+            explorerTree = buildExplorerTree(entries, folders),
+            collapsedFolders = collapsed,
+        )
+    }
+
+    /**
+     * Opens a note that was created from the explorer row menu once its inline
+     * rename is done, so naming it is the last step before writing.
+     */
+    private fun openRenamedNote(path: String) {
+        openNote(path, modeOverride = EditorMode.Source, focusEditor = true)
     }
 
     /** Rewrites every path-bearing piece of UI state after a rename or move. */
@@ -1039,9 +1114,19 @@ class VibecodiumController(context: Context) {
         state = state.copy(explorerMenuPath = null)
     }
 
-    fun menuNewNote(path: String) = createNoteUnder(parentFolderOf(path), open = true)
+    fun menuNewNote(path: String) {
+        // The sheet must go first: creating a note or a folder is async, and
+        // the folder flow then opens the inline rename editor underneath it.
+        state = state.copy(explorerMenuPath = null)
+        // Rename before editing: the note stays closed until the user has
+        // named it in the tree.
+        createNoteUnder(parentFolderOf(path), open = false, renameInline = true)
+    }
 
-    fun menuNewFolder(path: String) = createFolderUnder(parentFolderOf(path))
+    fun menuNewFolder(path: String) {
+        state = state.copy(explorerMenuPath = null)
+        createFolderUnder(parentFolderOf(path))
+    }
 
     fun menuRename(path: String) {
         state = state.copy(explorerMenuPath = null)
@@ -1173,8 +1258,16 @@ class VibecodiumController(context: Context) {
         persistCollapsedFolders(collapsed)
     }
 
-    /** Creates "Untitled.md" inside [parent] and opens it. */
-    private fun createNoteUnder(parent: String, open: Boolean) {
+    /**
+     * Creates "Untitled.md" inside [parent]. With [renameInline] the note is
+     * not opened: the tree lands on its new row and starts the same inline
+     * rename the new-folder flow uses, so the user can name it first.
+     */
+    private fun createNoteUnder(
+        parent: String,
+        open: Boolean,
+        renameInline: Boolean = false,
+    ) {
         val repository = repository ?: return
         scope.launch {
             try {
@@ -1182,15 +1275,35 @@ class VibecodiumController(context: Context) {
                 val path = if (parent.isEmpty()) name else "$parent/$name"
                 repository.createNote(path, "")
                 val lists = loadFileLists(repository)
-                state = state.copy(
-                    notes = lists.notes,
-                    entries = lists.entries,
-                    folders = lists.folders,
-                    explorerTree = lists.tree,
-                )
-                if (open) {
-                    openNote(path, modeOverride = EditorMode.Source, focusEditor = true)
-                    closeOverlays()
+                if (renameInline) {
+                    val collapsed = expandedForNewEntry(parent)
+                    state = state.copy(
+                        notes = lists.notes,
+                        entries = lists.entries,
+                        folders = lists.folders,
+                        explorerTree = lists.tree,
+                        collapsedFolders = collapsed,
+                        drawer = Drawer.Left,
+                        drawerMode = DrawerMode.Files,
+                        fileQuery = "",
+                        explorerRenamePath = path,
+                        explorerRenameValue = name,
+                        explorerRenameFolder = false,
+                        // Open it as soon as the name is confirmed.
+                        openAfterRenamePath = path,
+                    )
+                    persistCollapsedFolders(collapsed)
+                } else {
+                    state = state.copy(
+                        notes = lists.notes,
+                        entries = lists.entries,
+                        folders = lists.folders,
+                        explorerTree = lists.tree,
+                    )
+                    if (open) {
+                        openNote(path, modeOverride = EditorMode.Source, focusEditor = true)
+                        closeOverlays()
+                    }
                 }
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
@@ -1198,6 +1311,16 @@ class VibecodiumController(context: Context) {
             }
         }
     }
+
+    /** Collapsed set with [parent] and its ancestors opened for a new row. */
+    private fun expandedForNewEntry(parent: String): MutableSet<String> =
+        state.collapsedFolders.toMutableSet().also { set ->
+            var current = parent
+            while (current.isNotEmpty()) {
+                set.remove(current)
+                current = current.substringBeforeLast('/', "")
+            }
+        }
 
     // ------------------------------------------------------------- new folder
 
@@ -1216,13 +1339,7 @@ class VibecodiumController(context: Context) {
                 val path = if (parent.isEmpty()) name else "$parent/$name"
                 repository.createFolder(path)
                 val lists = loadFileLists(repository)
-                val collapsed = state.collapsedFolders.toMutableSet().also { set ->
-                    var current = parent
-                    while (current.isNotEmpty()) {
-                        set.remove(current)
-                        current = current.substringBeforeLast('/', "")
-                    }
-                }
+                val collapsed = expandedForNewEntry(parent)
                 state = state.copy(
                     notes = lists.notes,
                     entries = lists.entries,
@@ -1235,6 +1352,7 @@ class VibecodiumController(context: Context) {
                     explorerRenamePath = path,
                     explorerRenameValue = name,
                     explorerRenameFolder = true,
+                    openAfterRenamePath = null,
                 )
                 persistCollapsedFolders(collapsed)
             } catch (error: Throwable) {

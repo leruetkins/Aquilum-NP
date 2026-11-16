@@ -1703,6 +1703,45 @@ fn row_height(density: f32) -> f32 {
     (36.0 * density).round().max(1.0)
 }
 
+/// Characters of a row name that fit [max_width] while leaving room for the
+/// trailing ellipsis. Returns the number of characters to draw before it.
+fn fit_name_chars(painter: &mut Painter, chars: &[char], font: f32, max_width: f32) -> usize {
+    let ellipsis_width = painter.width("…", font, Face::Ui);
+    if max_width <= ellipsis_width {
+        return 0;
+    }
+    let budget = max_width - ellipsis_width;
+    let mut used = 0.0;
+    let mut count = 0;
+    let mut glyph = String::new();
+    for ch in chars {
+        glyph.clear();
+        glyph.push(*ch);
+        let advance = painter.width(&glyph, font, Face::Ui);
+        if used + advance > budget {
+            break;
+        }
+        used += advance;
+        count += 1;
+    }
+    // Never leave a space dangling in front of the ellipsis.
+    while count > 0 && chars[count - 1] == ' ' {
+        count -= 1;
+    }
+    count
+}
+
+/// Width of the file-type pill painted on the right of a row, or 0 when the
+/// row shows none. Bitmaps (anything but a folder or markdown) get one.
+fn tree_tag_width(painter: &mut Painter, row: &TreeRow, density: f32) -> f32 {
+    let extension = row.extension.to_ascii_uppercase();
+    if row.folder || extension.is_empty() || extension == "MD" {
+        0.0
+    } else {
+        painter.width(&extension, 9.0 * density, Face::Ui) + 10.0 * density
+    }
+}
+
 /// Body text size the editor layout was tuned at; settings scale from this.
 const EDITOR_FONT_DP: f32 = 15.0;
 
@@ -2830,11 +2869,14 @@ impl SurfaceState {
 
     /// Widest visible row content beyond the viewport. Rows off-screen are
     /// ignored so a long name elsewhere in the tree cannot shift the whole
-    /// list out of view.
+    /// list out of view. The tail of a row is measured before the type pill
+    /// and the scrollbar, so scrolling all the way right reveals the whole
+    /// name instead of stopping behind them.
     fn tree_max_x(&mut self) -> f32 {
         let density = self.density;
         let name_font = 17.0 * density;
         let row_h = row_height(density);
+        let width = self.width as f32;
         let rows_len = self.tree.doc.rows.len();
         let first = ((self.tree.scroll / row_h).floor().max(0.0) as usize).min(rows_len);
         let last = (((self.tree.scroll + self.height as f32) / row_h).ceil() as usize)
@@ -2844,8 +2886,15 @@ impl SurfaceState {
         for row in &self.tree.doc.rows[first..last] {
             let indent = 10.0 * density + row.depth as f32 * 16.0 * density;
             let text_x = indent + 35.0 * density;
+            let mut name_right = width - 8.0 * density;
+            let tag_width = tree_tag_width(&mut painter, row, density);
+            if tag_width > 0.0 {
+                name_right = name_right.min(width - tag_width - 13.0 * density);
+            }
             let name_width = painter.width(&row.name, name_font, Face::Ui);
-            max_x = max_x.max(text_x + name_width + 8.0 * density - self.width as f32);
+            // The half-pixel slack keeps a name that exactly fills the row
+            // from ending in an ellipsis at full scroll.
+            max_x = max_x.max(text_x + name_width - name_right + 0.5 * density);
         }
         self.painter = painter;
         max_x.max(0.0)
@@ -2905,23 +2954,34 @@ impl SurfaceState {
                 if row.folder { palette.tree_folder } else { palette.tree_muted },
             );
             let extension = row.extension.to_ascii_uppercase();
-            let show_tag = !row.folder && !extension.is_empty() && extension != "MD";
-            let tag_width = if show_tag {
-                painter.width(&extension, 9.0 * density, Face::Ui) + 10.0 * density
-            } else {
-                0.0
-            };
+            let tag_width = tree_tag_width(&mut painter, row, density);
+            let show_tag = tag_width > 0.0;
+            let tag_x = self.width as f32 - tag_width - 8.0 * density;
             let name = row.name.clone();
             let name_color = if row.folder || row.note { palette.tree_text } else { palette.tree_muted };
             let name_y = y + (row_h - name_font) / 2.0;
             let chars: Vec<char> = name.chars().collect();
-            let start = row.match_start.min(chars.len());
-            let end = (start + row.match_len).min(chars.len());
+            // Names stop before the type tag and the scrollbar strip; anything
+            // that does not fit ends with an ellipsis instead of running under
+            // them.
+            let mut name_right = self.width as f32 - 8.0 * density;
+            if show_tag {
+                name_right = name_right.min(tag_x - 5.0 * density);
+            }
+            let name_budget = (name_right - text_x).max(0.0);
+            let visible = if painter.width(&name, name_font, Face::Ui) <= name_budget {
+                chars.len()
+            } else {
+                fit_name_chars(&mut painter, &chars, name_font, name_budget)
+            };
+            let ellipsis = visible < chars.len();
+            let start = row.match_start.min(visible);
+            let end = (row.match_start + row.match_len).min(visible);
+            let mut x = text_x;
             if row.match_len > 0 && start < end {
                 let prefix: String = chars[..start].iter().collect();
                 let matched: String = chars[start..end].iter().collect();
-                let suffix: String = chars[end..].iter().collect();
-                let mut x = text_x;
+                let suffix: String = chars[end..visible].iter().collect();
                 if !prefix.is_empty() {
                     painter.draw(pixels, self.width, self.height, x, name_y, &prefix, name_font, name_color, Face::Ui, false);
                     x += painter.width(&prefix, name_font, Face::Ui);
@@ -2952,15 +3012,34 @@ impl SurfaceState {
                 x += matched_width;
                 if !suffix.is_empty() {
                     painter.draw(pixels, self.width, self.height, x, name_y, &suffix, name_font, name_color, Face::Ui, false);
+                    x += painter.width(&suffix, name_font, Face::Ui);
                 }
             } else {
+                let visible_name: String = chars[..visible].iter().collect();
+                if !visible_name.is_empty() {
+                    painter.draw(
+                        pixels,
+                        self.width,
+                        self.height,
+                        x,
+                        name_y,
+                        &visible_name,
+                        name_font,
+                        name_color,
+                        Face::Ui,
+                        false,
+                    );
+                    x += painter.width(&visible_name, name_font, Face::Ui);
+                }
+            }
+            if ellipsis {
                 painter.draw(
                     pixels,
                     self.width,
                     self.height,
-                    text_x,
+                    x,
                     name_y,
-                    &name,
+                    "…",
                     name_font,
                     name_color,
                     Face::Ui,
@@ -2968,7 +3047,6 @@ impl SurfaceState {
                 );
             }
             if show_tag {
-                let tag_x = self.width as f32 - tag_width - 8.0 * density;
                 rect(
                     pixels,
                     self.width,
@@ -5599,5 +5677,25 @@ mod tests {
         // Without system fonts every non-emoji glyph falls back to 0.6 * px;
         // the emoji keeps its square advance in proportional mode.
         assert_eq!(offsets, vec![0.0, 9.0, 24.0, 33.0]);
+    }
+
+    #[test]
+    fn test_fit_name_chars_reserves_room_for_ellipsis() {
+        let mut painter = Painter::new();
+        let px = 10.0;
+        let chars: Vec<char> = "abcdefghijklmnop".chars().collect();
+        // Each fallback glyph is 0.6 * px = 6, and so is the ellipsis.
+        assert_eq!(fit_name_chars(&mut painter, &chars, px, 6.0 + 10.0 * 6.0), 10);
+        // A row too narrow for any name still reserves only the ellipsis.
+        assert_eq!(fit_name_chars(&mut painter, &chars, px, 6.0), 0);
+        assert_eq!(fit_name_chars(&mut painter, &chars, px, 5.0), 0);
+    }
+
+    #[test]
+    fn test_fit_name_chars_drops_space_before_ellipsis() {
+        let mut painter = Painter::new();
+        let px = 10.0;
+        let chars: Vec<char> = "abc def ".chars().collect();
+        assert_eq!(fit_name_chars(&mut painter, &chars, px, 6.0 + 8.0 * 6.0), 7);
     }
 }

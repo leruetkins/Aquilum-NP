@@ -188,6 +188,8 @@ data class UiState(
     val explorerRenamePath: String? = null,
     val explorerRenameValue: String = "",
     val explorerRenameFolder: Boolean = false,
+    /** Note to open once its inline rename commits; created from the row menu. */
+    val openAfterRenamePath: String? = null,
     /** Explorer row whose action menu is open. */
     val explorerMenuPath: String? = null,
     /** Explorer row waiting for a destination folder for the move action. */

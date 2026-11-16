@@ -676,26 +676,37 @@ class NativeTreeView(
         return dx * dx + dy * dy > touchSlopPx * touchSlopPx
     }
 
-    /** Scrolls the tree so row [index] is fully visible; used by inline rename. */
+    /**
+     * Scrolls the tree so row [index] is fully visible; used by inline rename.
+     *
+     * Runs on the render thread: when the keyboard settles the drawer shrinks
+     * and the surface is resized in the same layout pass, and the reveal must
+     * see the new viewport instead of clamping to the old, taller one.
+     */
     fun revealRow(index: Int) {
-        if (index !in rows.indices) return
+        val rowCount = rows.size
+        if (index !in 0 until rowCount) return
         val rowHeight = treeRowHeightPx()
-        val viewport = runCatching { JSONObject(CoreBridge.nativeTreeViewport(surfaceId)) }.getOrNull()
-            ?: return
-        val scroll = viewport.optDouble("scroll", 0.0).toFloat()
-        val maxScroll = viewport.optDouble("max_y", 0.0).toFloat()
-        val heightF = height.toFloat()
-        if (heightF <= 0f) return
-        val top = index * rowHeight
-        val bottom = top + rowHeight
-        val target = when {
-            top < scroll -> top
-            bottom > scroll + heightF -> bottom - heightF
-            else -> return
-        }.coerceIn(0f, maxScroll)
-        if (target != scroll) {
-            CoreBridge.nativeTreeSetScroll(surfaceId, target)
-            requestRender()
+        val viewportHeight = height.toFloat()
+        val contentHeight = rowCount * rowHeight
+        postRenderTask {
+            if (viewportHeight <= 0f) return@postRenderTask
+            val scroll = CoreBridge.nativeTreeScroll(surfaceId)
+            val top = index * rowHeight
+            val bottom = top + rowHeight
+            val target = when {
+                top < scroll -> top
+                bottom > scroll + viewportHeight -> bottom - viewportHeight
+                else -> return@postRenderTask
+            }
+            // Own the content height so a resize still queued behind this task
+            // cannot leave the row just below the keyboard.
+            val maxScroll = (contentHeight - viewportHeight).coerceAtLeast(0f)
+            val clamped = target.coerceIn(0f, maxScroll)
+            if (clamped != scroll) {
+                CoreBridge.nativeTreeSetScroll(surfaceId, clamped)
+                requestRender()
+            }
         }
     }
 

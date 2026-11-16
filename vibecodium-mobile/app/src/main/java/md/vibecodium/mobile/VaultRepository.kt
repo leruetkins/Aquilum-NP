@@ -560,6 +560,10 @@ private class SafVaultRepository(
         val newParent = newPath.substringBeforeLast('/', "")
         if (oldParent != newParent) error("Rename across folders is not supported")
         val file = fileFor(oldPath) ?: error("Not found: $oldPath")
+        val current = ensureIndex()
+        if (current.files.containsKey(newPath) || current.folders.contains(newPath)) {
+            error("Already exists: $newPath")
+        }
         val newName = newPath.substringAfterLast('/')
         val renamed = DocumentsContract.renameDocument(resolver, file.uri(oldPath), newName)
             ?: error("Cannot rename: $oldPath")

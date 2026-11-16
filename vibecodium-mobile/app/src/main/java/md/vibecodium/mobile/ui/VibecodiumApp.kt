@@ -1141,7 +1141,6 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 state,
                 controller,
                 renameActive = state.explorerRenamePath != null,
-                navigationBottomPx = stableNavBarBottomPx,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
                     .width(leftDrawerWidth)
@@ -2797,31 +2796,66 @@ private fun VaultChooserRow(
     }
 }
 
+/**
+ * Keyboard height the drawer reserves while the inline rename field is open,
+ * measured above the navigation bar the shell already keeps clear.
+ *
+ * The IME inset is animated over many frames. Padding the drawer with the
+ * animated value resized (and re-rendered) the native tree surface on every
+ * one of them, which read as the list squeezing and stretching while the
+ * keyboard slid in or out. Only the settled height is published, once the
+ * show animation stops moving; it is dropped as soon as the keyboard starts
+ * to hide. Both changes then land underneath the keyboard, where they cannot
+ * be seen, and the tree resizes once instead of once per animation frame.
+ */
+@Composable
+private fun renameImeBottomPx(active: Boolean): Int {
+    val density = LocalDensity.current
+    val navigationBottomPx = WindowInsets.navigationBars.getBottom(density)
+    // The IME insets object lives in the composition; sampling its animated
+    // value from the loop below keeps the drawer from recomposing per frame.
+    val ime = WindowInsets.ime
+    var settled by remember { mutableStateOf(0) }
+    LaunchedEffect(active, navigationBottomPx) {
+        if (!active) {
+            settled = 0
+            return@LaunchedEffect
+        }
+        var previous = 0
+        var stableFrames = 0
+        while (true) {
+            val bottom = ime.getBottom(density)
+            stableFrames = if (bottom == previous) stableFrames + 1 else 0
+            when {
+                // Gone or already sliding away: release the space now, while
+                // the keyboard still covers the bottom of the tree.
+                bottom == 0 || bottom < previous -> if (settled != 0) settled = 0
+                // Shrink only after the show animation settles.
+                stableFrames >= 2 -> if (settled != bottom) settled = bottom
+            }
+            previous = bottom
+            withFrameNanos { }
+        }
+    }
+    return (settled - navigationBottomPx).coerceAtLeast(0)
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LeftDrawer(
     state: UiState,
     controller: VibecodiumController,
     renameActive: Boolean,
-    navigationBottomPx: Int,
     modifier: Modifier,
 ) {
     val focusManager = LocalFocusManager.current
     val density = LocalDensity.current
     val palette = LocalVibecodiumPalette.current
-    // The shell already keeps the drawer above the navigation bar. While the
-    // inline rename field is open, shrink the content by the keyboard height
-    // minus that navigation inset; imePadding() alone would leave a strip the
-    // height of the navigation bar between the section bar and the keyboard.
-    val contentBottom = with(density) {
-        if (renameActive) {
-            (WindowInsets.ime.getBottom(density) - navigationBottomPx)
-                .coerceAtLeast(0)
-                .toDp()
-        } else {
-            0.dp
-        }
-    }
+    // While the inline rename field is open its row is lifted above the
+    // keyboard by shrinking the tree area. The shell already keeps the drawer
+    // above the navigation bar, so only the space above it is reserved.
+    val imeBottomPx = renameImeBottomPx(renameActive)
+    val contentBottom = with(density) { imeBottomPx.toDp() }
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(topEnd = PanelCornerRadius, bottomEnd = PanelCornerRadius),
