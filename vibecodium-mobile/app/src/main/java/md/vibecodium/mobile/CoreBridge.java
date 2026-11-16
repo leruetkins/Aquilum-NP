@@ -59,6 +59,8 @@ public final class CoreBridge {
 
     public static native String nativeSearchLocate(String query, String text);
 
+    public static native String nativeSearchLocateAll(String query, String text);
+
     public static native String nativeOutline(String text);
 
     public static native String nativeStats(String text);
@@ -148,6 +150,8 @@ public final class CoreBridge {
     public static native void nativeEditorSetBottomInset(int id, float inset);
 
     public static native void nativeEditorScrollToCursor(int id);
+
+    public static native void nativeEditorScrollToCursorCentered(int id);
 
     public static native void nativeEditorSetTopInset(int id, float inset);
 

@@ -2953,6 +2953,24 @@ class NativeEditorView(
         return null
     }
 
+    /**
+     * Selects a search hit and centers its line in the viewport. Called after
+     * the target tab's first frame, so the native layout already belongs to
+     * the new note.
+     */
+    fun revealOffset(offset: Int, length: Int) {
+        mainHandler.post {
+            if (!isSurfaceAttached()) return@post
+            val max = mirrorText.length
+            val start = offset.coerceIn(0, max)
+            val end = (offset + length).coerceIn(start, max)
+            focusEditor()
+            selectNative(start, end)
+            CoreBridge.nativeEditorScrollToCursorCentered(surfaceId)
+            mainHandler.post { syncScrollFromNative() }
+        }
+    }
+
     fun focusEditor() {
         if (inPreview) return
         requestFocus()

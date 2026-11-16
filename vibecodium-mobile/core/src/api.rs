@@ -424,6 +424,28 @@ pub fn search_locate(query: &str, text: &str) -> String {
     ok(json!({ "line": line, "snippet": snippet }))
 }
 
+/// Every matching line in one candidate body, for the grouped search list.
+pub fn search_locate_all(query: &str, text: &str) -> String {
+    let matches: Vec<Value> = crate::search_session::locate_all(query, text)
+        .into_iter()
+        .map(|found| {
+            let ranges: Vec<Value> = found
+                .ranges
+                .iter()
+                .map(|(start, end)| json!([start, end]))
+                .collect();
+            json!({
+                "line": found.line,
+                "column": found.column,
+                "length": found.length,
+                "snippet": found.snippet,
+                "ranges": ranges,
+            })
+        })
+        .collect();
+    ok(json!({ "matches": matches }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

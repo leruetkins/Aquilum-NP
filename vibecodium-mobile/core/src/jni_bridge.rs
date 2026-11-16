@@ -384,3 +384,19 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchLocate(
     };
     to_java(&mut env, response)
 }
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchLocateAll(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    query: JString<'_>,
+    text: JString<'_>,
+) -> jstring {
+    let response = match (from_java(&mut env, &query), from_java(&mut env, &text)) {
+        (Ok(query), Ok(text)) => crate::api::search_locate_all(&query, &text),
+        (Err(error), _) | (_, Err(error)) => {
+            crate::api::err(format!("Could not read the search payload: {error}"))
+        }
+    };
+    to_java(&mut env, response)
+}

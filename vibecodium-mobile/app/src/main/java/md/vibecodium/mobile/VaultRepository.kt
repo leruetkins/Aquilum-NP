@@ -56,7 +56,7 @@ interface VaultRepository {
     suspend fun copyEntry(oldPath: String, newPath: String, isFolder: Boolean)
     /** Deletes a file or a whole folder subtree; notes go to the vault trash where available. */
     suspend fun deleteEntry(path: String, isFolder: Boolean)
-    suspend fun search(query: String, limit: Int): List<SearchHit>
+    suspend fun search(query: String, limit: Int): List<SearchFileResult>
 
     /**
      * Builds or refreshes the full-text index. Runs in the background after a
@@ -351,7 +351,7 @@ private class FileVaultRepository(
         Unit
     }
 
-    override suspend fun search(query: String, limit: Int): List<SearchHit> = withContext(Dispatchers.IO) {
+    override suspend fun search(query: String, limit: Int): List<SearchFileResult> = withContext(Dispatchers.IO) {
         searchIndex().search(query, limit)
     }
 
@@ -671,7 +671,7 @@ private class SafVaultRepository(
         }
     }
 
-    override suspend fun search(query: String, limit: Int): List<SearchHit> = withContext(Dispatchers.IO) {
+    override suspend fun search(query: String, limit: Int): List<SearchFileResult> = withContext(Dispatchers.IO) {
         searchIndex().search(query, limit)
     }
 

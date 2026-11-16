@@ -252,7 +252,8 @@ class VibecodiumController(context: Context) {
             history = emptyList(),
             historyIndex = -1,
             searchQuery = "",
-            searchHits = emptyList(),
+            searchResults = emptyList(),
+            searchCollapsedPaths = emptySet(),
             deletePath = null,
             viewerPath = null,
             renamePath = null,
@@ -382,14 +383,23 @@ class VibecodiumController(context: Context) {
         pushHistory: Boolean = true,
         modeOverride: EditorMode? = null,
         focusEditor: Boolean = false,
+        /** Char offset to select after the tab's first frame, for search hits. */
+        revealOffset: Int? = null,
+        revealLength: Int = 0,
     ) {
         val existing = state.tabs.indexOfFirst { it.path == path }
         if (existing >= 0) {
+            val targetOffset = revealOffset
             selectTab(
                 index = existing,
-                modeOverride = modeOverride,
+                modeOverride = modeOverride ?: if (targetOffset != null) EditorMode.Source else null,
                 focusEditor = focusEditor,
                 pushHistory = pushHistory,
+                onReady = if (targetOffset != null) {
+                    { activeEditorView?.revealOffset(targetOffset, revealLength) }
+                } else {
+                    null
+                },
             )
             return
         }
@@ -397,7 +407,9 @@ class VibecodiumController(context: Context) {
         scope.launch {
             try {
                 val text = repository.readNote(path)
-                val mode = modeOverride ?: state.settings.defaultEditorMode
+                val mode = modeOverride
+                    ?: if (revealOffset != null) EditorMode.Source
+                    else state.settings.defaultEditorMode
                 val tab = Tab(
                     path = path,
                     title = titleOf(path),
@@ -416,7 +428,9 @@ class VibecodiumController(context: Context) {
                     recentFiles = RecentStore.remember(appContext, locatorKey(), path),
                     focusRequestId = if (focusEditor) state.focusRequestId + 1 else state.focusRequestId,
                 )
-                awaitTabFrame(path, null)
+                awaitTabFrame(path) {
+                    revealOffset?.let { activeEditorView?.revealOffset(it, revealLength) }
+                }
                 if (pushHistory) pushHistory(path)
                 refreshDerived(text, force = mode == EditorMode.Preview)
                 persistTabs()
@@ -1496,21 +1510,48 @@ class VibecodiumController(context: Context) {
         searchJob?.cancel()
         val repository = repository
         if (query.isBlank() || repository == null) {
-            state = state.copy(searchHits = emptyList())
+            state = state.copy(searchResults = emptyList())
             return
         }
         searchJob = scope.launch {
             delay(200)
             try {
-                val hits = repository.search(query, 50)
+                val results = repository.search(query, SEARCH_FILE_LIMIT)
                 if (state.searchQuery == query) {
-                    state = state.copy(searchHits = hits)
+                    state = state.copy(searchResults = results)
                 }
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
                 state = state.copy(message = error.message ?: "Search failed")
             }
         }
+    }
+
+    fun toggleSearchCollapsed(path: String) {
+        val collapsed = state.searchCollapsedPaths
+        state = state.copy(
+            searchCollapsedPaths = if (path in collapsed) collapsed - path else collapsed + path,
+        )
+    }
+
+    fun setAllSearchCollapsed(collapsed: Boolean) {
+        state = state.copy(
+            searchCollapsedPaths = if (collapsed) {
+                state.searchResults.mapTo(HashSet()) { it.path }
+            } else {
+                emptySet()
+            },
+        )
+    }
+
+    /** Opens a search result and reveals its first match when it has one. */
+    fun openSearchResult(result: SearchFileResult, match: SearchMatch?) {
+        openNote(
+            path = result.path,
+            modeOverride = EditorMode.Source,
+            revealOffset = match?.offset,
+            revealLength = match?.length ?: 0,
+        )
     }
 
     // ------------------------------------------------------------------- mode

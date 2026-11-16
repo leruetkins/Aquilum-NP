@@ -37,7 +37,7 @@ class SyncEngineTest {
         override suspend fun copyEntry(oldPath: String, newPath: String, isFolder: Boolean) = Unit
         override suspend fun deleteEntry(path: String, isFolder: Boolean) = Unit
 
-        override suspend fun search(query: String, limit: Int): List<SearchHit> = emptyList()
+        override suspend fun search(query: String, limit: Int): List<SearchFileResult> = emptyList()
 
         override suspend fun readAttachment(target: String, notePath: String): ByteArray? = files[target]
 

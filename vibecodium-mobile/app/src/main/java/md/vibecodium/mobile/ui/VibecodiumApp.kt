@@ -88,7 +88,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
@@ -233,6 +233,8 @@ import md.vibecodium.mobile.ThemeMode
 import md.vibecodium.mobile.ThemeSlot
 import md.vibecodium.mobile.UiState
 import md.vibecodium.mobile.VibecodiumController
+import md.vibecodium.mobile.SearchFileResult
+import md.vibecodium.mobile.SearchMatch
 import md.vibecodium.mobile.ExplorerRow
 import md.vibecodium.mobile.expandDailyNoteFormat
 import md.vibecodium.mobile.explorerDisplayName
@@ -3967,6 +3969,12 @@ private fun SearchPanel(state: UiState, controller: VibecodiumController) {
     var queryFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val palette = LocalVibecodiumPalette.current
+    val results = state.searchResults
+    val collapsed = state.searchCollapsedPaths
+    val collapsible = results.filter { it.matches.isNotEmpty() }
+    val allCollapsed = collapsible.isNotEmpty() && collapsible.all { it.path in collapsed }
+    val totalMatches = results.sumOf { it.matchCount }
+    val listState = rememberLazyListState()
     Column(Modifier.fillMaxSize()) {
         // Same field as the explorer's quick filter (`TreeList`): 36 dp tall,
         // 8 dp corners, #222222 on #383838, primary accent while focused.
@@ -4053,7 +4061,40 @@ private fun SearchPanel(state: UiState, controller: VibecodiumController) {
                 }
             }
         }
+        if (results.isNotEmpty()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "${results.size} files · $totalMatches matches",
+                    modifier = Modifier.weight(1f),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                CompactToolbarButton(
+                    CollapseAllIcon,
+                    if (allCollapsed) "Expand all" else "Collapse all",
+                    enabled = collapsible.isNotEmpty(),
+                    modifier = Modifier.size(32.dp),
+                ) { controller.setAllSearchCollapsed(!allCollapsed) }
+            }
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+        val rows = remember(results, collapsed) {
+            buildList {
+                results.forEach { result ->
+                    add(SearchHeaderRow(result))
+                    if (result.path !in collapsed) {
+                        result.matches.forEach { match -> add(SearchMatchRow(result, match)) }
+                    }
+                }
+            }
+        }
         when {
             state.searchQuery.isBlank() -> Text(
                 "Type to search file names and note content.",
@@ -4062,45 +4103,186 @@ private fun SearchPanel(state: UiState, controller: VibecodiumController) {
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             )
 
-            state.searchHits.isEmpty() -> Text(
+            results.isEmpty() -> Text(
                 "No matches.",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             )
 
-            else -> LazyColumn(Modifier.fillMaxSize()) {
-                items(state.searchHits, key = { "${it.path}:${it.line}" }) { hit ->
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                controller.openNote(hit.path)
-                            }
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+            else -> {
+                Box(Modifier.fillMaxWidth().weight(1f)) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
                     ) {
-                        Text(
-                            hit.name,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (hit.snippet.isNotBlank()) {
-                            Text(
-                                "${hit.line}: ${hit.snippet}",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                        items(rows, key = { it.key }) { row ->
+                            when (row) {
+                                is SearchHeaderRow -> SearchFileHeader(row.file, collapsed, controller)
+                                is SearchMatchRow -> SearchMatchLine(row.file, row.match, controller)
+                            }
                         }
                     }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                    ThinScrollbar(
+                        listState,
+                        Modifier
+                            .align(Alignment.CenterEnd)
+                            .fillMaxHeight()
+                            .padding(end = 2.dp)
+                            .width(3.dp),
+                    )
                 }
             }
         }
     }
+}
+
+private sealed interface SearchRow {
+    val key: String
+}
+
+private data class SearchHeaderRow(val file: SearchFileResult) : SearchRow {
+    override val key: String get() = "file:${file.path}"
+}
+
+private data class SearchMatchRow(val file: SearchFileResult, val match: SearchMatch) : SearchRow {
+    override val key: String get() = "match:${file.path}:${match.offset}:${match.line}"
+}
+
+@Composable
+private fun SearchFileHeader(
+    file: SearchFileResult,
+    collapsed: Set<String>,
+    controller: VibecodiumController,
+) {
+    val palette = LocalVibecodiumPalette.current
+    val isCollapsed = file.path in collapsed
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(palette.surfaceAlt.copy(alpha = 0.55f))
+            .padding(start = 4.dp, end = 12.dp, top = 1.dp, bottom = 1.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (file.matches.isNotEmpty()) {
+            IconButton(
+                onClick = { controller.toggleSearchCollapsed(file.path) },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    if (isCollapsed) Icons.Default.KeyboardArrowRight else Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (isCollapsed) "Expand file" else "Collapse file",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            Spacer(Modifier.size(32.dp))
+        }
+        Row(
+            Modifier
+                .weight(1f)
+                .clickable {
+                    controller.openSearchResult(file, file.matches.firstOrNull())
+                }
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                file.name.removeSuffix(".md"),
+                modifier = Modifier.weight(1f),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.error,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (file.matchCount > 0) {
+                Box(
+                    Modifier
+                        .padding(start = 8.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(palette.surface)
+                        .border(1.dp, palette.outline, RoundedCornerShape(6.dp))
+                        .padding(horizontal = 6.dp, vertical = 1.dp),
+                ) {
+                    Text(
+                        file.matchCount.toString(),
+                        fontSize = 10.sp,
+                        color = palette.textMuted,
+                    )
+                }
+            }
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+}
+
+@Composable
+private fun SearchMatchLine(
+    file: SearchFileResult,
+    match: SearchMatch,
+    controller: VibecodiumController,
+) {
+    val highlight = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+    val matchedColor = MaterialTheme.colorScheme.onSurface
+    val textColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val lineColor = textColor.copy(alpha = 0.62f)
+    val highlighted = remember(
+        match.snippet,
+        match.ranges,
+        highlight,
+        matchedColor,
+    ) {
+        buildAnnotatedString {
+            append(match.snippet)
+            match.ranges.forEach { range ->
+                val start = range.start.coerceIn(0, length)
+                val end = range.end.coerceIn(start, length)
+                if (end > start) {
+                    addStyle(
+                        SpanStyle(
+                            background = highlight,
+                            color = matchedColor,
+                        ),
+                        start,
+                        end,
+                    )
+                }
+            }
+        }
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable { controller.openSearchResult(file, match) }
+            .padding(start = 4.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+    ) {
+        Text(
+            "${match.line}:",
+            modifier = Modifier
+                .width(40.dp)
+                .alignByBaseline(),
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Default,
+            letterSpacing = (-0.2).sp,
+            color = lineColor,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+        )
+        Text(
+            highlighted,
+            modifier = Modifier
+                .weight(1f)
+                .alignByBaseline(),
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+            color = textColor,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 }
 
 @Composable

@@ -6445,6 +6445,34 @@ impl SurfaceState {
         self.editor.scroll_x = 0.0;
     }
 
+    /// Scrolls so the selected line is vertically centered in the usable
+    /// viewport. Used by search results; the regular reveal keeps a caret
+    /// merely visible, which reads as "jumped to the top of the screen".
+    fn scroll_to_cursor_centered(&mut self) {
+        let line_h = self.line_px();
+        let (_, _, content) = self.editor_metrics();
+        self.ensure_wrap(content);
+        let (visual, _) = self.visual_for_position(&self.editor.starts, self.editor.selection);
+        let top = self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0);
+        let row_h = self
+            .editor
+            .wrap
+            .get(visual)
+            .map(|chunk| chunk.height)
+            .unwrap_or(line_h);
+        let visible = (self.viewport_height as f32
+            - self.editor.top_inset
+            - self.editor.bottom_inset)
+            .max(line_h);
+        let target = top + row_h * 0.5 - visible * 0.5;
+        let max_y = (self.editor.top_inset + self.editor.wrap_height
+            + self.editor.bottom_inset
+            - self.viewport_height as f32)
+            .max(0.0);
+        self.editor.scroll = target.clamp(0.0, max_y);
+        self.editor.scroll_x = 0.0;
+    }
+
     fn editor_select_word_at(&mut self, x: f32, y: f32) -> bool {
         self.invalidate();
         let position = self.editor_position_at(x, y);
@@ -6849,6 +6877,20 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorScrollTo
     let _ = with_surface(id, |state| {
         state.invalidate();
         state.scroll_to_cursor();
+    });
+}
+
+/// Centers the caret's line in the visible editor area. Search results use
+/// this instead of the edge-reveal above.
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorScrollToCursorCentered(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+) {
+    let _ = with_surface(id, |state| {
+        state.invalidate();
+        state.scroll_to_cursor_centered();
     });
 }
 

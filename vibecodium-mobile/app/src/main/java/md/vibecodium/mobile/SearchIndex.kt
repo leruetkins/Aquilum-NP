@@ -11,6 +11,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** Upper bound on file groups returned for one query. */
+internal const val SEARCH_FILE_LIMIT = 200
+
 /**
  * Indexed full-text search over one vault.
  *
@@ -136,7 +139,7 @@ internal class SearchIndex(
         CoreBridge.nativeSearchIndexRemove(path)
     }
 
-    suspend fun search(query: String, limit: Int): List<SearchHit> {
+    suspend fun search(query: String, limit: Int): List<SearchFileResult> {
         val needle = query.trim()
         if (needle.isEmpty() || limit <= 0) return emptyList()
         val files = ignoringFailure { repository.snapshot().files } ?: emptyList()
@@ -170,70 +173,139 @@ internal class SearchIndex(
         files: List<VaultFile>,
         needle: String,
         limit: Int,
-    ): List<SearchHit> {
-        val hits = ArrayList<SearchHit>(limit)
-        val seen = HashSet<String>()
-        // Name hits first, like the desktop; they cost no file reads.
+    ): List<SearchFileResult> {
+        // One entry per file. Name hits are cheap and go first, then ranked
+        // candidates get their whole body scanned for all matching lines.
+        val results = LinkedHashMap<String, SearchFileResult>()
         for (hit in nameHits(files, needle, limit)) {
-            if (seen.add(hit.path)) hits.add(hit)
+            results[hit.path] = hit
         }
-        if (hits.size >= limit) return hits
+        if (results.size >= limit) return results.values.toList()
+
         val candidates = CoreJson.searchCandidates(
             CoreBridge.nativeSearchIndexQuery(needle, limit),
         )
         for (candidate in candidates) {
-            if (hits.size >= limit) break
-            if (!seen.add(candidate.path)) continue
+            val existing = results[candidate.path]
+            if (existing == null && results.size >= limit) break
             val text = ignoringFailure { repository.readNote(candidate.path) } ?: continue
-            val located = CoreJson.searchLocated(CoreBridge.nativeSearchLocate(needle, text))
-            if (located.line <= 0 && located.snippet.isEmpty()) continue
-            hits.add(SearchHit(candidate.path, candidate.name, located.line, located.snippet))
+            val matches = locatedMatches(needle, text)
+            if (matches.isEmpty() && existing == null) continue
+            results[candidate.path] = SearchFileResult(
+                path = candidate.path,
+                name = candidate.name,
+                score = candidate.score,
+                nameMatch = existing?.nameMatch == true,
+                matches = matches,
+            )
         }
-        return hits
+        return results.values.toList()
     }
 
-    private fun nameHits(files: List<VaultFile>, needle: String, limit: Int): List<SearchHit> {
+    private fun nameHits(
+        files: List<VaultFile>,
+        needle: String,
+        limit: Int,
+    ): List<SearchFileResult> {
         val lower = needle.lowercase()
-        val hits = ArrayList<SearchHit>()
+        val hits = ArrayList<SearchFileResult>()
         for (file in files) {
             if (hits.size >= limit) break
             if (!isMarkdownName(file.path)) continue
             val name = file.path.substringAfterLast('/')
             if (name.lowercase().contains(lower)) {
-                hits.add(SearchHit(file.path, name, 0, ""))
+                hits.add(
+                    SearchFileResult(
+                        path = file.path,
+                        name = name,
+                        nameMatch = true,
+                    ),
+                )
             }
         }
         return hits
     }
 
-    /** The pre-index behaviour: read every note and keep the first hit. */
+    /** Fallback for a vault whose index is still building: read every note. */
     private suspend fun scan(
         files: List<VaultFile>,
         needle: String,
         limit: Int,
-    ): List<SearchHit> {
+    ): List<SearchFileResult> {
         val lower = needle.lowercase()
-        val hits = ArrayList<SearchHit>()
+        val results = LinkedHashMap<String, SearchFileResult>()
         for (file in files) {
-            if (hits.size >= limit) break
+            if (results.size >= limit) break
             if (!isMarkdownName(file.path)) continue
             val name = file.path.substringAfterLast('/')
             val nameHit = name.lowercase().contains(lower)
             val text = ignoringFailure { repository.readNote(file.path) } ?: continue
-            var lineHit: Pair<Int, String>? = null
-            for ((lineIndex, line) in text.lineSequence().withIndex()) {
-                if (line.lowercase().contains(lower)) {
-                    lineHit = (lineIndex + 1) to line.trim().take(160)
-                    break
-                }
+            val matches = locatedMatches(needle, text)
+            if (!nameHit && matches.isEmpty()) {
+                yield()
+                continue
             }
-            when {
-                lineHit != null -> hits.add(SearchHit(file.path, name, lineHit.first, lineHit.second))
-                nameHit -> hits.add(SearchHit(file.path, name, 0, ""))
-            }
+            results[file.path] = SearchFileResult(
+                path = file.path,
+                name = name,
+                nameMatch = nameHit,
+                matches = matches,
+            )
             yield()
         }
-        return hits
+        return results.values.toList()
+    }
+
+    private fun locatedMatches(query: String, text: String): List<SearchMatch> {
+        val located = CoreJson.searchLocatedAll(
+            CoreBridge.nativeSearchLocateAll(query, text),
+        )
+        return located.mapNotNull { toSearchMatch(text, it) }
+    }
+
+    private fun toSearchMatch(text: String, located: LocatedMatch): SearchMatch? {
+        if (located.line <= 0) return null
+        val start = lineColumnOffset(text, located.line, located.column) ?: return null
+        val end = lineColumnOffset(text, located.line, located.column + located.length)
+            ?: start
+        val ranges = located.ranges.mapNotNull { range ->
+            val rangeStart = utf16Offset(located.snippet, range.start)
+            val rangeEnd = utf16Offset(located.snippet, range.end)
+            if (rangeEnd > rangeStart) MatchRange(rangeStart, rangeEnd) else null
+        }
+        return SearchMatch(
+            line = located.line,
+            offset = start,
+            length = (end - start).coerceAtLeast(0),
+            snippet = located.snippet,
+            ranges = ranges,
+        )
+    }
+
+    /** UTF-16 offset of a 1-based line and a char column inside that line. */
+    private fun lineColumnOffset(text: String, lineNumber: Int, column: Int): Int? {
+        var lineStart = 0
+        repeat(lineNumber - 1) {
+            val newline = text.indexOf('\n', lineStart)
+            if (newline < 0) return null
+            lineStart = newline + 1
+        }
+        if (lineStart > text.length) return null
+        val lineEnd = text.indexOf('\n', lineStart).let { if (it < 0) text.length else it }
+        val line = text.substring(lineStart, lineEnd)
+        val codePoints = line.codePointCount(0, line.length)
+        return lineStart + utf16Offset(line, column.coerceIn(0, codePoints))
+    }
+
+    /** Convert a count of Unicode scalar values into UTF-16 units. */
+    private fun utf16Offset(text: String, codePoints: Int): Int {
+        var index = 0
+        var count = 0
+        while (index < text.length && count < codePoints) {
+            index += Character.charCount(text.codePointAt(index))
+            count++
+        }
+        return index
     }
 
     private companion object {

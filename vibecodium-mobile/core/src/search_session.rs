@@ -17,7 +17,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use crate::search::bm25::Bm25;
-use crate::search::fold::{self, Fold, Mode};
+use crate::search::fold::{self, Fold};
 use crate::search::index::Index;
 
 /// Same cap as the desktop query path, so a long query cannot sweep the
@@ -28,6 +28,26 @@ const MAX_TERMS: usize = 8;
 const POOL_FACTOR: usize = 4;
 /// Snippet length in characters, matching the scan the app used before.
 const SNIPPET_CHARS: usize = 160;
+/// One note can produce a lot of matches; the UI groups them by file but never
+/// needs an unbounded list for one huge note.
+const MAX_MATCHES_PER_FILE: usize = 200;
+/// Characters of context kept on each side of the first match.
+const SNIPPET_CONTEXT_CHARS: usize = 100;
+
+/// One matching line with the context shown in the search list.
+#[derive(Debug)]
+pub struct LocatedMatch {
+    /// 1-based line number.
+    pub line: usize,
+    /// Char offset of the first match inside the raw line.
+    pub column: usize,
+    /// Length of the first match in chars.
+    pub length: usize,
+    /// Context around the first match, with `…` at clipped edges.
+    pub snippet: String,
+    /// Match ranges in char offsets relative to [`Self::snippet`].
+    pub ranges: Vec<(usize, usize)>,
+}
 
 struct Session {
     index: Index,
@@ -216,38 +236,155 @@ pub fn query(query: &str, limit: usize) -> Vec<Hit> {
         .collect()
 }
 
-/// First line carrying every query term (falling back to the whole query),
-/// plus its snippet. Runs on the candidate's body, which the caller reads
-/// only for the handful of paths the index ranked.
-pub fn locate(query: &str, text: &str) -> (i32, String) {
+/// All lines carrying the query, with context ranges for the grouped UI.
+///
+/// Matching keeps the old mobile rule: when the query has several terms, a
+/// line qualifies only if every term is present; if no such line exists, lines
+/// with the exact phrase are used instead. Highlight ranges cover each term
+/// occurrence (or the exact phrase), merged so one visual span is not painted
+/// twice.
+pub fn locate_all(query: &str, text: &str) -> Vec<LocatedMatch> {
     let terms = terms_of(query);
-    if terms.is_empty() {
-        return (0, String::new());
-    }
     let needle = query.trim();
-    let mut fallback: Option<(i32, String)> = None;
+    if terms.is_empty() && needle.is_empty() {
+        return Vec::new();
+    }
+
+    let mut primary = Vec::new();
+    let mut fallback = Vec::new();
     for (index, line) in text.lines().enumerate() {
-        let number = (index + 1) as i32;
-        if terms
-            .iter()
-            .all(|term| fold::contains(line, term, Fold::Lower, Mode::Substring))
-        {
-            return (number, snippet(line));
+        let line_number = index + 1;
+        let mut ranges = Vec::new();
+        if terms.is_empty() {
+            ranges = find_ranges(line, needle);
+        } else {
+            let mut all_terms = true;
+            for term in &terms {
+                let term_ranges = find_ranges(line, term);
+                if term_ranges.is_empty() {
+                    all_terms = false;
+                    break;
+                }
+                ranges.extend(term_ranges);
+            }
+            if all_terms {
+                ranges = merge_ranges(ranges);
+            } else {
+                ranges.clear();
+            }
         }
-        if fallback.is_none() && fold::contains(line, needle, Fold::Lower, Mode::Substring) {
-            fallback = Some((number, snippet(line)));
+
+        if !ranges.is_empty() {
+            if primary.len() < MAX_MATCHES_PER_FILE {
+                primary.push(located_match(line_number, line, &ranges));
+            }
+            if primary.len() >= MAX_MATCHES_PER_FILE {
+                break;
+            }
+            continue;
+        }
+
+        if !needle.is_empty() && fallback.len() < MAX_MATCHES_PER_FILE {
+            let exact = find_ranges(line, needle);
+            if !exact.is_empty() {
+                fallback.push(located_match(line_number, line, &exact));
+            }
         }
     }
-    fallback.unwrap_or((0, String::new()))
+
+    if primary.is_empty() {
+        fallback
+    } else {
+        primary
+    }
 }
 
-fn snippet(line: &str) -> String {
-    let trimmed = line.trim();
-    if trimmed.chars().count() <= SNIPPET_CHARS {
-        trimmed.to_string()
-    } else {
-        trimmed.chars().take(SNIPPET_CHARS).collect()
+/// First match only, kept for callers that still need the old single-hit API.
+pub fn locate(query: &str, text: &str) -> (i32, String) {
+    locate_all(query, text)
+        .into_iter()
+        .next()
+        .map(|found| (found.line as i32, found.snippet))
+        .unwrap_or((0, String::new()))
+}
+
+fn located_match(line_number: usize, line: &str, ranges: &[(usize, usize)]) -> LocatedMatch {
+    let first = ranges[0];
+    let (snippet, snippet_ranges) = snippet_for(line, ranges);
+    LocatedMatch {
+        line: line_number,
+        column: first.0,
+        length: first.1 - first.0,
+        snippet,
+        ranges: snippet_ranges,
     }
+}
+
+/// Context window around the first match, with ranges remapped into it.
+fn snippet_for(line: &str, ranges: &[(usize, usize)]) -> (String, Vec<(usize, usize)>) {
+    let chars: Vec<char> = line.chars().collect();
+    let first = ranges[0];
+    let (start, end, clipped_start, clipped_end) = if chars.len() <= SNIPPET_CHARS {
+        (0, chars.len(), false, false)
+    } else {
+        let start = first.0.saturating_sub(SNIPPET_CONTEXT_CHARS);
+        let end = (first.1 + SNIPPET_CONTEXT_CHARS).min(chars.len());
+        (start, end, start > 0, end < chars.len())
+    };
+    let mut snippet: String = chars[start..end].iter().collect();
+    let shift = if clipped_start {
+        snippet.insert(0, '…');
+        1
+    } else {
+        0
+    };
+    if clipped_end {
+        snippet.push('…');
+    }
+    let mapped = ranges
+        .iter()
+        .filter_map(|&(range_start, range_end)| {
+            let range_start = range_start.max(start);
+            let range_end = range_end.min(end);
+            if range_end <= range_start {
+                None
+            } else {
+                Some((range_start - start + shift, range_end - start + shift))
+            }
+        })
+        .collect();
+    (snippet, mapped)
+}
+
+/// Case-folded char offsets of every `needle` occurrence in `line`.
+///
+/// The shared engine returns byte ranges in the original string and already
+/// handles lowercase expansions without shifting later offsets. Convert those
+/// ranges to chars because the UI and the Kotlin selection use char columns.
+fn find_ranges(line: &str, needle: &str) -> Vec<(usize, usize)> {
+    fold::ranges(line, &[needle], Fold::Lower, MAX_MATCHES_PER_FILE)
+        .into_iter()
+        .map(|range| (chars_before(line, range.start), chars_before(line, range.end)))
+        .collect()
+}
+
+fn chars_before(text: &str, byte: usize) -> usize {
+    text[..byte].chars().count()
+}
+
+fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+    merged
 }
 
 #[cfg(test)]
@@ -289,6 +426,29 @@ mod tests {
         let (line, snippet) = locate("needle", "# Beta\nthe needle hides here\n");
         assert_eq!(line, 2);
         assert!(snippet.contains("needle"), "snippet: {snippet}");
+    }
+
+    #[test]
+    fn locate_all_returns_every_line_and_every_range() {
+        let _guard = lock();
+        let text = "needle one\nnothing\ntwo needle needle\n";
+        let found = locate_all("needle", text);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].line, 1);
+        assert_eq!(found[0].column, 0);
+        assert_eq!(found[0].length, 6);
+        assert_eq!(found[1].line, 3);
+        assert_eq!(found[1].ranges.len(), 2);
+        assert!(found[1].snippet.contains("needle"));
+    }
+
+    #[test]
+    fn locate_all_requires_every_term_and_highlights_each() {
+        let _guard = lock();
+        let found = locate_all("rust runtime", "rust async runtime\nrust only\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].line, 1);
+        assert_eq!(found[0].ranges.len(), 2);
     }
 
     #[test]
