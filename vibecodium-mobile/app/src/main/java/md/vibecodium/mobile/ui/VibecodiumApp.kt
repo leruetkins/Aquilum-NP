@@ -1647,8 +1647,10 @@ private fun TabsDropdown(
                                     bookmarked = item.path in state.bookmarks,
                                     shape = shape,
                                     onSelect = {
-                                        onDismiss()
-                                        controller.selectTab(index)
+                                        // Keep the list up until the tab's text
+                                        // is ready, so the previous note never
+                                        // flashes behind it.
+                                        controller.selectTab(index, onReady = onDismiss)
                                     },
                                     onClose = { controller.closeTab(index) },
                                 )
@@ -2080,6 +2082,7 @@ private fun SourceEditor(
                 idleBottomInsetPx = bottomInsetPx,
             ).also { view ->
                 controller.attachEditorView(view)
+                view.setOnTabFrameShown { shownPath -> controller.onTabFrameShown(shownPath) }
                 view.setOnHistoryChanged { canUndo, canRedo ->
                     controller.setEditorHistoryState(canUndo, canRedo)
                 }
@@ -3663,8 +3666,8 @@ private fun handleTreeAction(
     when (kind) {
         "toggle" -> onToggle(path)
         "open_note" -> {
+            // The drawer closes from openNote() once the note is loaded.
             controller.openNote(path)
-            controller.closeOverlays()
         }
         "open_file" -> controller.openAttachment(path)
         "rename" -> controller.beginExplorerRename(path, controller.state.folders.contains(path))
@@ -3789,7 +3792,6 @@ private fun BookmarkedList(state: UiState, controller: VibecodiumController) {
                     detail = note.path,
                 ) {
                     controller.openNote(note.path)
-                    controller.closeOverlays()
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
             }
@@ -3846,7 +3848,6 @@ private fun RecentList(state: UiState, controller: VibecodiumController) {
                         detail = if (openedAt > 0) dateTimeLabel(openedAt) else "—",
                     ) {
                         controller.openNote(note.path)
-                        controller.closeOverlays()
                     }
                 }
             }
@@ -4064,7 +4065,6 @@ private fun SearchPanel(state: UiState, controller: VibecodiumController) {
                             .fillMaxWidth()
                             .clickable {
                                 controller.openNote(hit.path)
-                                controller.closeOverlays()
                             }
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                     ) {

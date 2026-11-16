@@ -1176,6 +1176,12 @@ class NativeEditorView(
     private var dragStartScroll = 0f
     private var onScrollChanged: ((Float, Float, Boolean) -> Unit)? = null
     private var onCaretPlaced: (() -> Unit)? = null
+    /**
+     * Runs once a newly switched tab's first frame is on screen. Callers keep
+     * their drawer or popup over the editor until then; otherwise the previous
+     * note shows for the frames between the switch and the new render.
+     */
+    private var onTabFrameShown: ((String) -> Unit)? = null
     @Volatile private var knownScroll = 0f
     private var wasHidden = false
     private val flingRunnable = object : Choreographer.FrameCallback {
@@ -1452,6 +1458,10 @@ class NativeEditorView(
         if (listener != null) {
             listener.invoke(knownScroll, scrollMaxY, false)
         }
+    }
+
+    fun setOnTabFrameShown(listener: ((String) -> Unit)?) {
+        onTabFrameShown = listener
     }
 
     fun setBottomInset(inset: Float) {
@@ -1944,6 +1954,19 @@ class NativeEditorView(
                     startCaretBlink()
                 }
                 syncHandles()
+            }
+            // Queued after the state render above, so this runs once the new
+            // text has been drawn; two animation frames later that frame is on
+            // screen and an open overlay can safely slide away.
+            postRenderTask {
+                if (!isSurfaceAttached()) return@postRenderTask
+                mainHandler.post {
+                    textureView.postOnAnimation {
+                        textureView.postOnAnimation {
+                            onTabFrameShown?.invoke(path)
+                        }
+                    }
+                }
             }
         }
     }

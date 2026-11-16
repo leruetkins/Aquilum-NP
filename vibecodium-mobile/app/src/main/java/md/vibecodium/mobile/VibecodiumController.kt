@@ -58,6 +58,14 @@ class VibecodiumController(context: Context) {
     private var syncProgressAt = 0L
 
     /**
+     * Tab path whose first rendered frame closes the open drawer or tab list.
+     * Until it arrives the editor surface still holds the previous note's
+     * pixels, so closing earlier would flash that note for a couple of frames.
+     */
+    private var pendingFramePath: String? = null
+    private var pendingFrameReady: (() -> Unit)? = null
+
+    /**
      * Cancellation is not a failure. A superseded search or a vault switch
      * cancels the running job; that must unwind through the coroutine
      * machinery instead of being reported as an error, otherwise the UI shows
@@ -402,13 +410,13 @@ class VibecodiumController(context: Context) {
                 state = state.copy(
                     tabs = tabs,
                     activeTab = tabs.lastIndex,
-                    drawer = null,
-                    tabSwitcher = false,
+                    // The drawer closes once the editor has drawn this note.
                     viewerPath = null,
                     editorMode = mode,
                     recentFiles = RecentStore.remember(appContext, locatorKey(), path),
                     focusRequestId = if (focusEditor) state.focusRequestId + 1 else state.focusRequestId,
                 )
+                awaitTabFrame(path, null)
                 if (pushHistory) pushHistory(path)
                 refreshDerived(text, force = mode == EditorMode.Preview)
                 persistTabs()
@@ -629,9 +637,16 @@ class VibecodiumController(context: Context) {
         modeOverride: EditorMode? = null,
         focusEditor: Boolean = false,
         pushHistory: Boolean = false,
+        /**
+         * Runs once the switched tab's first frame is on screen. The tab list
+         * keeps its popup open until then, so neither the previous note nor a
+         * blank editor flashes between the switch and the new render.
+         */
+        onReady: (() -> Unit)? = null,
     ) {
         if (index !in state.tabs.indices) {
             state = state.copy(drawer = null, tabSwitcher = false)
+            onReady?.invoke()
             return
         }
         saveActiveNow()
@@ -640,10 +655,11 @@ class VibecodiumController(context: Context) {
         val focusReq = if (focusEditor) state.focusRequestId + 1 else state.focusRequestId
 
         if (!target.isLoaded) {
-            loadTabContent(index, modeOverride, focusEditor, pushHistory)
+            loadTabContent(index, modeOverride, focusEditor, pushHistory, onReady)
             return
         }
 
+        val sameTab = index == state.activeTab
         val tabs = if (mode != target.mode) {
             val list = state.tabs.toMutableList()
             list[index] = target.copy(mode = mode)
@@ -656,11 +672,13 @@ class VibecodiumController(context: Context) {
             activeTab = index,
             editorMode = mode,
             recentFiles = RecentStore.remember(appContext, locatorKey(), target.path),
-            drawer = null,
-            tabSwitcher = false,
+            // Kept open until the editor has drawn the new tab.
+            drawer = if (sameTab) null else state.drawer,
+            tabSwitcher = if (sameTab) false else state.tabSwitcher,
             viewerPath = null,
             focusRequestId = focusReq,
         )
+        if (sameTab) onReady?.invoke() else awaitTabFrame(target.path, onReady)
         if (pushHistory) pushHistory(target.path)
         scope.launch {
             refreshDerived(
@@ -677,6 +695,7 @@ class VibecodiumController(context: Context) {
         modeOverride: EditorMode? = null,
         focusEditor: Boolean = false,
         pushHistory: Boolean = false,
+        onReady: (() -> Unit)? = null,
     ) {
         val repository = repository ?: return
         val target = state.tabs.getOrNull(index) ?: return
@@ -702,12 +721,12 @@ class VibecodiumController(context: Context) {
                         activeTab = cur,
                         editorMode = mode,
                         recentFiles = RecentStore.remember(appContext, locatorKey(), loaded.path),
-                        drawer = null,
-                        tabSwitcher = false,
+                        // Kept open until the editor has drawn the new tab.
                         viewerPath = null,
                         focusRequestId = focusReq,
                     )
                     if (pushHistory) pushHistory(loaded.path)
+                    awaitTabFrame(loaded.path, onReady)
                     refreshDerived(
                         loaded.text,
                         force = mode == EditorMode.Preview,
@@ -721,8 +740,34 @@ class VibecodiumController(context: Context) {
                     drawer = null,
                     tabSwitcher = false,
                 )
+                onReady?.invoke()
             }
         }
+    }
+
+    /** Called by the editor view once [path]'s first frame is on screen. */
+    fun onTabFrameShown(path: String) {
+        if (pendingFramePath != path) return
+        finishPendingFrame()
+    }
+
+    private fun awaitTabFrame(path: String, onReady: (() -> Unit)?) {
+        pendingFramePath = path
+        pendingFrameReady = onReady
+        // Fallback for surfaces that never draw (not attached yet): never
+        // leave the drawer or the tab list hanging on a missing callback.
+        scope.launch {
+            delay(600)
+            if (pendingFramePath == path) finishPendingFrame()
+        }
+    }
+
+    private fun finishPendingFrame() {
+        val ready = pendingFrameReady
+        pendingFramePath = null
+        pendingFrameReady = null
+        state = state.copy(drawer = null, tabSwitcher = false)
+        ready?.invoke()
     }
 
     fun closeTab(index: Int) {
@@ -1301,8 +1346,8 @@ class VibecodiumController(context: Context) {
                         explorerTree = lists.tree,
                     )
                     if (open) {
+                        // The drawer closes from openNote() once the note is loaded.
                         openNote(path, modeOverride = EditorMode.Source, focusEditor = true)
-                        closeOverlays()
                     }
                 }
             } catch (error: Throwable) {
@@ -2336,6 +2381,8 @@ class VibecodiumController(context: Context) {
 
     fun closeOverlays() {
         closeExplorerActions()
+        pendingFramePath = null
+        pendingFrameReady = null
         state = state.copy(drawer = null, tabSwitcher = false)
     }
 
