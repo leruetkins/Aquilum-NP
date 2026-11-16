@@ -285,6 +285,14 @@ const FOLDER_SVG: &str = "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.
 const FOLDER_OPEN_SVG: &str = "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2";
 const FILE_TEXT_SVG: &str = "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z M14 2v5a1 1 0 0 0 1 1h5 M10 9H8 M16 13H8 M16 17H8";
 
+// Callout glyphs, mirrored from the desktop `icons.rs` set (24x24 stroke).
+const CALLOUT_NOTE_SVG: &str = "M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z";
+const CALLOUT_INFO_SVG: &str = "M12 2a10 10 0 1 0 0 20a10 10 0 1 0 0 -20 M12 16v-4 M12 8h0.1";
+const CALLOUT_TIP_SVG: &str = "M13 2L3 14L12 14L11 22L21 10L12 10L13 2Z";
+const CALLOUT_WARNING_SVG: &str = "M21.73 18l-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3 M12 9v4 M12 17h0.1";
+const CALLOUT_DANGER_SVG: &str = "M12 2a10 10 0 1 0 0 20a10 10 0 1 0 0 -20 M12 8v4 M12 16h0.1";
+const CALLOUT_QUOTE_SVG: &str = "M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z";
+
 type IconPoints = Vec<Vec<(f32, f32)>>;
 
 fn svg_number(bytes: &[u8], index: &mut usize) -> Option<f32> {
@@ -630,6 +638,33 @@ fn icon_paths(folder: bool, expanded: bool) -> &'static [Vec<(f32, f32)>] {
         }
     } else {
         FILE_TEXT.get_or_init(|| flatten_path(FILE_TEXT_SVG)).as_slice()
+    }
+}
+
+/// The glyph a callout header shows for its family, matching the desktop set.
+fn callout_icon_paths(
+    kind: crate::markdown::CalloutKind,
+) -> &'static [Vec<(f32, f32)>] {
+    use crate::markdown::CalloutKind;
+    static NOTE: OnceLock<IconPoints> = OnceLock::new();
+    static INFO: OnceLock<IconPoints> = OnceLock::new();
+    static TIP: OnceLock<IconPoints> = OnceLock::new();
+    static WARNING: OnceLock<IconPoints> = OnceLock::new();
+    static DANGER: OnceLock<IconPoints> = OnceLock::new();
+    static QUOTE: OnceLock<IconPoints> = OnceLock::new();
+    match kind {
+        CalloutKind::Note => NOTE.get_or_init(|| flatten_path(CALLOUT_NOTE_SVG)).as_slice(),
+        CalloutKind::Info => INFO.get_or_init(|| flatten_path(CALLOUT_INFO_SVG)).as_slice(),
+        CalloutKind::Tip => TIP.get_or_init(|| flatten_path(CALLOUT_TIP_SVG)).as_slice(),
+        CalloutKind::Warning => WARNING
+            .get_or_init(|| flatten_path(CALLOUT_WARNING_SVG))
+            .as_slice(),
+        CalloutKind::Danger => DANGER
+            .get_or_init(|| flatten_path(CALLOUT_DANGER_SVG))
+            .as_slice(),
+        CalloutKind::Quote => QUOTE
+            .get_or_init(|| flatten_path(CALLOUT_QUOTE_SVG))
+            .as_slice(),
     }
 }
 
@@ -1597,6 +1632,9 @@ struct EditorState {
     /// Code blocks the reader folded in reading mode, keyed by the fence
     /// block id. Long blocks start folded; a tap on their header unfolds them.
     code_collapsed: HashSet<usize>,
+    /// One entry per source line: the callout block that covers it, if any.
+    /// Built with the model so a frame never re-derives it.
+    callout_blocks: Vec<Option<crate::markdown::CalloutBlock>>,
     history: History,
 }
 
@@ -2146,26 +2184,201 @@ fn callout_rgb(kind: crate::markdown::CalloutKind, palette: &SurfacePalette) -> 
     crate::markdown::callout_hex(kind, palette_is_dark(palette))
 }
 
-/// The callout whose block contains this quote line: a header opens a block
-/// that runs over the block quote under it, the extent Obsidian draws. The
-/// model only marks the header itself, so the body rows look back for it.
-fn quote_block_callout(
+/// Callout extents for the whole document, computed once with the model.
+fn callout_block_map(
     model: &[crate::markdown::MarkdownLine],
+) -> Vec<Option<crate::markdown::CalloutBlock>> {
+    let lines: Vec<String> = model.iter().map(|row| row.raw.clone()).collect();
+    let states: Vec<Option<crate::markdown::CodeBlockState>> = model
+        .iter()
+        .map(|row| {
+            if is_code_kind(&row.kind) {
+                Some(crate::markdown::CodeBlockState {
+                    kind: crate::markdown::CodeBlockKind::InsideCode,
+                    lang: row.language.clone(),
+                    block_id: row.block_id.unwrap_or(0),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    crate::markdown::callout_blocks(&lines, &states)
+}
+
+/// First and last source line of the callout block covering `line`.
+fn callout_block_extent(
+    blocks: &[Option<crate::markdown::CalloutBlock>],
     line: usize,
-) -> Option<crate::markdown::CalloutKind> {
-    let mut index = line;
-    loop {
-        let row = model.get(index)?;
-        if row.kind != "quote" {
-            return None;
-        }
-        if let Some(callout) = crate::markdown::callout_prefix(&row.raw) {
-            return Some(callout.kind);
-        }
-        if index == 0 {
-            return None;
-        }
-        index -= 1;
+) -> Option<(usize, usize)> {
+    blocks.get(line).copied().flatten()?;
+    let is_first = |index: usize| {
+        blocks
+            .get(index)
+            .copied()
+            .flatten()
+            .map(|block| block.first)
+            .unwrap_or(true)
+    };
+    let is_last = |index: usize| {
+        blocks
+            .get(index)
+            .copied()
+            .flatten()
+            .map(|block| block.last)
+            .unwrap_or(true)
+    };
+    let mut start = line;
+    while start > 0 && !is_first(start) && blocks.get(start - 1).copied().flatten().is_some() {
+        start -= 1;
+    }
+    let mut end = line;
+    while end + 1 < blocks.len()
+        && !is_last(end)
+        && blocks.get(end + 1).copied().flatten().is_some()
+    {
+        end += 1;
+    }
+    Some((start, end))
+}
+
+/// Opaque mix of a colour over the editor background, used for the callout
+/// wash: the desktop paints its translucent family colour over the same
+/// surface, so pre-mixing keeps the frame cheap.
+fn mixed_rgb(base: u32, over: u32, alpha: u8) -> u32 {
+    let a = u32::from(alpha);
+    let inv = 255 - a;
+    let channel =
+        |shift: u32| (((over >> shift) & 0xff) * a + ((base >> shift) & 0xff) * inv) / 255;
+    (channel(16) << 16) | (channel(8) << 8) | channel(0)
+}
+
+fn callout_wash_rgb(kind: crate::markdown::CalloutKind, palette: &SurfacePalette) -> u32 {
+    let alpha = if palette_is_dark(palette) { 0x24 } else { 0x1a };
+    mixed_rgb(
+        palette.editor_background,
+        callout_rgb(kind, palette),
+        alpha,
+    )
+}
+
+/// The whole callout block: a family-tinted wash with rounded ends and a
+/// family-coloured bar down its left edge, the way the desktop draws it.
+#[allow(clippy::too_many_arguments)]
+fn paint_callout_block(
+    pixels: &mut [u32],
+    surface_width: usize,
+    surface_height: usize,
+    x: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+    kind: crate::markdown::CalloutKind,
+    palette: &SurfacePalette,
+    density: f32,
+) {
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let radius = (6.0 * density).round();
+    rounded_box(
+        pixels,
+        surface_width,
+        surface_height,
+        x,
+        top,
+        width,
+        height,
+        radius,
+        callout_wash_rgb(kind, palette),
+    );
+    let bar_width = (crate::markdown::CALLOUT_BAR_WIDTH * density)
+        .round()
+        .max(2.0);
+    let bar_radius = (bar_width * 0.5).min(radius);
+    rounded_box_radii(
+        pixels,
+        surface_width,
+        surface_height,
+        x,
+        top,
+        bar_width,
+        height,
+        // Only the outer (left) edge is rounded; the right edge stays flush
+        // with the block text.
+        [bar_radius, 0.0, 0.0, bar_radius],
+        callout_rgb(kind, palette),
+    );
+}
+
+/// Header glyph and, for an untitled callout, its type label. The raw marker
+/// cells stay reserved as blanks so the title keeps its column.
+#[allow(clippy::too_many_arguments)]
+fn paint_callout_header(
+    pixels: &mut [u32],
+    surface_width: usize,
+    surface_height: usize,
+    painter: &mut Painter,
+    raw: &str,
+    callout: &crate::markdown::CalloutPrefix<'_>,
+    kind: crate::markdown::CalloutKind,
+    x: f32,
+    y: f32,
+    row_h: f32,
+    font_px: f32,
+    density: f32,
+    palette: &SurfacePalette,
+    titled: bool,
+    face: Face,
+) {
+    let color = callout_rgb(kind, palette);
+    let prefix_bytes = crate::markdown::quote_prefix(raw).map_or(0, |prefix| prefix.bytes);
+    let prefix = &raw[..prefix_bytes.min(raw.len())];
+    let prefix_width = painter.width(prefix, font_px, face);
+    let icon_size = (font_px * 0.95).round().max(10.0 * density);
+    let icon_x = x + prefix_width;
+    let icon_y = y + ((row_h - icon_size) * 0.5).max(0.0);
+    let thickness = (2.0 / 24.0 * icon_size).max(1.0 * density);
+    painter.draw_stroke_icon(
+        pixels,
+        surface_width,
+        surface_height,
+        icon_x,
+        icon_y,
+        icon_size,
+        thickness,
+        callout_icon_paths(kind),
+        color,
+    );
+    if !titled {
+        let label = crate::markdown::callout_label(callout, "en");
+        let label_px = (font_px * 0.82).max(9.0 * density);
+        let label_x = icon_x + icon_size + (6.0 * density).round();
+        let label_y = y + ((row_h - label_px) * 0.5).max(0.0);
+        painter.draw(
+            pixels,
+            surface_width,
+            surface_height,
+            label_x,
+            label_y,
+            &label,
+            label_px,
+            color,
+            face,
+            false,
+        );
+        painter.draw(
+            pixels,
+            surface_width,
+            surface_height,
+            label_x + (0.6 * density).round(),
+            label_y,
+            &label,
+            label_px,
+            color,
+            face,
+            false,
+        );
     }
 }
 
@@ -2357,32 +2570,78 @@ fn rounded_box(
     radius: f32,
     rgb: u32,
 ) {
+    let r = radius.min(width * 0.5).min(height * 0.5).max(0.0);
+    rounded_box_radii(
+        pixels,
+        surface_width,
+        surface_height,
+        x,
+        y,
+        width,
+        height,
+        [r, r, r, r],
+        rgb,
+    );
+}
+
+/// Rounded rectangle with a radius per corner: top-left, top-right,
+/// bottom-right, bottom-left. A callout bar rounds only its left side, so its
+/// right edge stays flush with the block text.
+#[allow(clippy::too_many_arguments)]
+fn rounded_box_radii(
+    pixels: &mut [u32],
+    surface_width: usize,
+    surface_height: usize,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radii: [f32; 4],
+    rgb: u32,
+) {
     if width <= 0.0 || height <= 0.0 || surface_width == 0 {
         return;
     }
     let color = logical(rgb);
-    let r = radius.min(width * 0.5).min(height * 0.5).max(0.0);
+    let limit = (width * 0.5).min(height * 0.5).max(0.0);
+    let [top_left, top_right, bottom_right, bottom_left] =
+        radii.map(|radius| radius.min(limit).max(0.0));
     let y0 = y.floor().max(0.0) as usize;
     let y1 = ((y + height).ceil().min(surface_height as f32)).max(0.0) as usize;
     if y0 >= y1 {
         return;
     }
     let right_edge = (x + width).min(surface_width as f32);
+    let edge_inset = |radius: f32, distance: f32| {
+        if radius <= 0.0 || distance >= radius {
+            0.0
+        } else {
+            radius - (radius * radius - distance * distance).max(0.0).sqrt()
+        }
+    };
     for row in y0..y1 {
         let py = row as f32 + 0.5 - y;
-        let (left, right) = if py < r {
-            let dy = r - py;
-            let dx = (r * r - dy * dy).max(0.0).sqrt();
-            (x + r - dx, x + width - r + dx)
-        } else if py > height - r {
-            let dy = py - (height - r);
-            let dx = (r * r - dy * dy).max(0.0).sqrt();
-            (x + r - dx, x + width - r + dx)
+        // `y1` is rounded up; the last candidate row can lie entirely below
+        // the box and would paint a one-pixel line past its bottom edge.
+        if py < 0.0 || py >= height {
+            continue;
+        }
+        let left_inset = if py < top_left {
+            edge_inset(top_left, top_left - py)
+        } else if py > height - bottom_left {
+            edge_inset(bottom_left, py - (height - bottom_left))
         } else {
-            (x, x + width)
+            0.0
         };
-        let left = left.max(0.0);
-        let right = right.min(right_edge);
+        let right_inset = if py < top_right {
+            edge_inset(top_right, top_right - py)
+        } else if py > height - bottom_right {
+            edge_inset(bottom_right, py - (height - bottom_right))
+        } else {
+            0.0
+        };
+        let left = (x + left_inset).max(0.0);
+        let right = (x + width - right_inset).min(right_edge);
         if right <= left {
             continue;
         }
@@ -3022,6 +3281,8 @@ fn wrap_line_chunks(
     chars: &[char],
     hidden: &[bool],
     content_width: f32,
+    first_indent: f32,
+    continuation_indent: f32,
     font: f32,
     line_face: Face,
     model: &[crate::markdown::MarkdownLine],
@@ -3034,6 +3295,11 @@ fn wrap_line_chunks(
     let mut chunks = Vec::new();
     let mut start = 0usize;
     while start < chars.len() {
+        // A quote's text starts after its marker column, and its continuation
+        // rows hang under that text with a little extra gap, so the callout
+        // bar never runs into the wrapped prose.
+        let indent = if start == 0 { first_indent } else { continuation_indent };
+        let limit = (content_width - indent).max(1.0);
         let mut end = start;
         let mut width = 0.0f32;
         while end < chars.len() {
@@ -3042,7 +3308,7 @@ fn wrap_line_chunks(
             if hidden.get(end).copied().unwrap_or(false) {
                 step = 0.0;
             }
-            if width + step > content_width && end > start {
+            if width + step > limit && end > start {
                 break;
             }
             width += step;
@@ -3138,11 +3404,24 @@ fn wrap_layout(
                 density,
             ),
         };
+        let (first_indent, continuation_indent) = if model
+            .get(line_index)
+            .map(|row| row.kind == "quote")
+            .unwrap_or(false)
+        {
+            let prefix = model[line_index].prefix_chars.min(64);
+            let width = painter.width(&" ".repeat(prefix), font, line_face);
+            (width, width)
+        } else {
+            (0.0, 0.0)
+        };
         for (start, end) in wrap_line_chunks(
             painter,
             chars,
             &hidden,
             content_width,
+            first_indent,
+            continuation_indent,
             font,
             line_face,
             model,
@@ -3919,6 +4198,7 @@ impl SurfaceState {
             };
             self.editor.table_layouts.clear();
             self.editor.code_collapsed = default_folded_code(&self.editor.model);
+            self.editor.callout_blocks = callout_block_map(&self.editor.model);
             self.editor.model_dirty = false;
         }
     }
@@ -4132,11 +4412,26 @@ impl SurfaceState {
                 let font = self.font_for_line(line);
                 let line_face = self.line_face(line);
                 let code_face = self.code_face;
+                let (first_indent, continuation_indent) = if self
+                    .editor
+                    .model
+                    .get(line)
+                    .map(|row| row.kind == "quote")
+                    .unwrap_or(false)
+                {
+                    let prefix = self.editor.model[line].prefix_chars.min(64);
+                    let width = self.painter.width(&" ".repeat(prefix), font, line_face);
+                    (width, width)
+                } else {
+                    (0.0, 0.0)
+                };
                 for (start, end) in wrap_line_chunks(
                     &mut self.painter,
                     &chars,
                     &hidden,
                     content_width,
+                    first_indent,
+                    continuation_indent,
                     font,
                     line_face,
                     &self.editor.model,
@@ -4205,6 +4500,7 @@ impl SurfaceState {
             };
             self.editor.table_layouts.clear();
             self.editor.code_collapsed = default_folded_code(&self.editor.model);
+            self.editor.callout_blocks = callout_block_map(&self.editor.model);
             self.editor.model_dirty = false;
         }
         let advance = self.painter.advance(font_px, Face::Mono);
@@ -4267,6 +4563,7 @@ impl SurfaceState {
         let mut faces: Vec<Face> = Vec::new();
         let mut x_offsets: Vec<f32> = Vec::new();
         let mut overlays: Vec<(usize, usize, u32)> = Vec::new();
+        let mut continuation_indent = 0.0f32;
         let (start_visual, start_offset) =
             self.visual_for_position(&starts, selection_start);
         let (end_visual, end_offset) = self.visual_for_position(&starts, selection_end);
@@ -4274,6 +4571,7 @@ impl SurfaceState {
         let mut end_handle: Option<(f32, f32)> = None;
         let mut insertion_handle: Option<(f32, f32)> = None;
         let mut painted_code_block: Option<usize> = None;
+        let mut painted_callout: Option<usize> = None;
         let text_pad_y = (3.0 * density).round();
         for visual in first..last {
             let chunk = self.editor.wrap[visual];
@@ -4283,6 +4581,93 @@ impl SurfaceState {
             // Folded code rows and table separators own no vertical space.
             if row_h <= 0.0 {
                 continue;
+            }
+            // One wash and one family-coloured bar behind the whole callout
+            // block, painted when its first visible row is reached.
+            if has_model {
+                if let Some((start, end)) =
+                    callout_block_extent(&self.editor.callout_blocks, chunk.line)
+                {
+                    if painted_callout != Some(start) {
+                        painted_callout = Some(start);
+                        let kind = self.editor.callout_blocks[start]
+                            .map(|block| block.kind)
+                            .unwrap_or(crate::markdown::CalloutKind::Note);
+                        let first_visual = self
+                            .editor
+                            .wrap_first
+                            .get(start)
+                            .copied()
+                            .unwrap_or(visual);
+                        let last_visual = self
+                            .editor
+                            .wrap_first
+                            .get(end)
+                            .copied()
+                            .unwrap_or(visual)
+                            + self
+                                .editor
+                                .wrap_count
+                                .get(end)
+                                .copied()
+                                .unwrap_or(1)
+                                .saturating_sub(1);
+                        let top = top_inset
+                            + self
+                                .editor
+                                .wrap_tops
+                                .get(first_visual)
+                                .copied()
+                                .unwrap_or(0.0)
+                            - scroll;
+                        let bottom = top_inset
+                            + self
+                                .editor
+                                .wrap_tops
+                                .get(last_visual)
+                                .copied()
+                                .unwrap_or(0.0)
+                            + self
+                                .editor
+                                .wrap
+                                .get(last_visual)
+                                .map(|row| row.height)
+                                .unwrap_or(0.0)
+                            - scroll;
+                        paint_callout_block(
+                            pixels,
+                            self.width,
+                            self.height,
+                            text_x,
+                            top,
+                            content_width,
+                            (bottom - top).max(0.0),
+                            kind,
+                            &palette,
+                            density,
+                        );
+                    }
+                }
+            }
+            // Editing a callout reveals its raw markers. The family bar is
+            // decorative then, so the caret row paints the wash over it.
+            if !self.editor.preview && chunk.line == cursor_line {
+                if let Some(block) = self.editor.callout_blocks.get(chunk.line).copied().flatten()
+                {
+                    let bar_width = (crate::markdown::CALLOUT_BAR_WIDTH * density)
+                        .round()
+                        .max(2.0);
+                    rect(
+                        pixels,
+                        self.width,
+                        self.height,
+                        text_x,
+                        y,
+                        bar_width,
+                        row_h,
+                        callout_wash_rgb(block.kind, &palette),
+                    );
+                }
             }
             // One rounded box behind the whole fenced block, painted when its
             // first visible row is reached.
@@ -4504,48 +4889,32 @@ impl SurfaceState {
                                 }
                                 "quote" => {
                                     let length = line.prefix_chars.min(chars.len());
-                                    // Every quote level keeps its own bar in the
-                                    // marker cells, exactly like the desktop
-                                    // renderer, and the rest of the prefix stays
-                                    // hidden. A callout block colours all of its
-                                    // bars, the header one included.
-                                    let header = if chunk.line != cursor_line {
-                                        crate::markdown::callout_prefix(raw)
-                                    } else {
-                                        None
-                                    };
-                                    let block_color = if chunk.line != cursor_line {
-                                        quote_block_callout(&model, chunk.line)
-                                            .map(|kind| callout_rgb(kind, &palette))
-                                    } else {
-                                        None
-                                    };
-                                    let color = header
-                                        .map(|callout| callout_rgb(callout.kind, &palette))
-                                        .or(block_color);
+                                    let callout_block = self
+                                        .editor
+                                        .callout_blocks
+                                        .get(chunk.line)
+                                        .copied()
+                                        .flatten();
                                     for value in hidden.iter_mut().take(length) {
                                         *value = true;
                                     }
-                                    for index in 0..length {
-                                        if chars[index] == '>' {
-                                            chars[index] = '│';
+                                    if callout_block.is_some() {
+                                        // A callout draws its wash and family
+                                        // bar for the whole block; the marker
+                                        // cells stay as blanks so the title
+                                        // keeps its column.
+                                        for index in 0..length {
+                                            chars[index] = ' ';
                                             hidden[index] = false;
-                                            colors[index] = color.unwrap_or(palette.marker);
                                         }
-                                    }
-                                    if let Some(callout) = header {
-                                        let quote_cells = crate::markdown::quote_prefix(raw)
-                                            .map_or(0, |prefix| prefix.chars);
-                                        let label = crate::markdown::callout_label_padded(
-                                            &callout,
-                                            quote_cells,
-                                        );
-                                        for (offset, character) in label.chars().enumerate() {
-                                            let index = quote_cells + offset;
-                                            if index < length {
-                                                chars[index] = character;
+                                    } else {
+                                        // Every plain quote level keeps its own
+                                        // bar in the marker cells.
+                                        for index in 0..length {
+                                            if chars[index] == '>' {
+                                                chars[index] = '│';
                                                 hidden[index] = false;
-                                                colors[index] = color.unwrap_or(palette.marker);
+                                                colors[index] = palette.marker;
                                             }
                                         }
                                     }
@@ -4613,6 +4982,17 @@ impl SurfaceState {
                     }
                 }
                 let line_face = line_faces.get(chunk.line).copied().unwrap_or(Face::Mono);
+                continuation_indent = if has_model
+                    && model
+                        .get(chunk.line)
+                        .map(|row| row.kind == "quote")
+                        .unwrap_or(false)
+                {
+                    let prefix = model[chunk.line].prefix_chars.min(64);
+                    painter.width(&" ".repeat(prefix), chunk.font, line_face)
+                } else {
+                    0.0
+                };
                 faces.clear();
                 faces.resize(chars.len(), line_face);
                 if let Some(line) = model.get(chunk.line) {
@@ -4636,6 +5016,9 @@ impl SurfaceState {
             let chunk_end = chunk.end.min(chars.len());
             let base_x = x_offsets.get(chunk_start).copied().unwrap_or(0.0);
             let local_x = |index: usize| x_offsets.get(index).copied().unwrap_or(base_x) - base_x;
+            // A quote's continuation rows hang under its text, past the marker
+            // column, so the callout bar cannot overlap the wrapped prose.
+            let row_shift = if chunk.start > 0 { continuation_indent } else { 0.0 };
             let absolute_start = line_start + chunk.start;
             let absolute_end = line_start + chunk.end;
             if painted_rule {
@@ -4661,7 +5044,7 @@ impl SurfaceState {
                         pixels,
                         self.width,
                         self.height,
-                        text_x + offset_start,
+                        text_x + row_shift + offset_start,
                         y + 2.0 * density,
                         offset_end - offset_start,
                         row_h - 4.0 * density,
@@ -4679,8 +5062,8 @@ impl SurfaceState {
                     let offset_end = local_x(raw_end);
                     if offset_end > offset_start {
                         let pad = 1.5 * density;
-                        let left = (text_x + offset_start - pad).max(gutter);
-                        let right = text_x + offset_end + pad;
+                        let left = (text_x + row_shift + offset_start - pad).max(gutter);
+                        let right = text_x + row_shift + offset_end + pad;
                         rect(
                             pixels,
                             self.width,
@@ -4714,7 +5097,7 @@ impl SurfaceState {
                     segment.push(chars[index]);
                     index += 1;
                 }
-                let segment_x = text_x + local_x(start_idx);
+                let segment_x = text_x + row_shift + local_x(start_idx);
                 let italic = prepared_heading.is_some_and(|style| style.italic);
                 painter.draw(
                     pixels,
@@ -4789,9 +5172,41 @@ impl SurfaceState {
                     }
                 }
             }
+            // Callout header: the family glyph, plus the type label for an
+            // untitled callout. The body rows keep just the wash and the bar.
+            if has_model && chunk.line != cursor_line && chunk.start == 0 {
+                if let Some(block) = self.editor.callout_blocks.get(chunk.line).copied().flatten() {
+                    if block.first {
+                        let raw = logical_line(&self.editor.text, &byte_starts, chunk.line);
+                        if let Some(callout) = crate::markdown::callout_prefix(raw) {
+                            // An untitled callout shows its type after the
+                            // glyph; a titled one already carries its own
+                            // heading text on the row.
+                            let titled = !callout.title.trim().is_empty();
+                            paint_callout_header(
+                                pixels,
+                                self.width,
+                                self.height,
+                                &mut painter,
+                                raw,
+                                &callout,
+                                block.kind,
+                                text_x,
+                                y,
+                                row_h,
+                                font_px,
+                                density,
+                                &palette,
+                                titled,
+                                self.text_face,
+                            );
+                        }
+                    }
+                }
+            }
             if visual == cursor_visual && selection_end == selection_start {
                 let cursor_col = chunk_start + cursor_offset;
-                let x = text_x + local_x(cursor_col);
+                let x = text_x + row_shift + local_x(cursor_col);
                 if self.editor.caret_visible {
                     rect(
                         pixels,
@@ -4811,11 +5226,11 @@ impl SurfaceState {
             if selection_end > selection_start {
                 if visual == start_visual {
                     let col = chunk_start + start_offset;
-                    start_handle = Some((text_x + local_x(col), y + row_h));
+                    start_handle = Some((text_x + row_shift + local_x(col), y + row_h));
                 }
                 if visual == end_visual {
                     let col = chunk_start + end_offset;
-                    end_handle = Some((text_x + local_x(col), y + row_h));
+                    end_handle = Some((text_x + row_shift + local_x(col), y + row_h));
                 }
             }
         }
@@ -5399,6 +5814,16 @@ impl SurfaceState {
         let line_face = self.line_face(chunk.line);
         let code_face = self.code_face;
         let model = &self.editor.model;
+        let continuation_indent = if model
+            .get(chunk.line)
+            .map(|row| row.kind == "quote")
+            .unwrap_or(false)
+        {
+            let prefix = model[chunk.line].prefix_chars.min(64);
+            self.painter.width(&" ".repeat(prefix), chunk.font, line_face)
+        } else {
+            0.0
+        };
         let mut x_offsets = Vec::new();
         line_x_offsets(&mut x_offsets, &mut self.painter, &chars, &hidden, chunk.font, |index| {
             char_face(model, chunk.line, index, line_face, code_face)
@@ -5406,7 +5831,12 @@ impl SurfaceState {
         let chunk_start = chunk.start.min(chars.len());
         let chunk_end = chunk.end.min(chars.len());
         let base_x = x_offsets.get(chunk_start).copied().unwrap_or(0.0);
-        let target_x = (x + self.editor.scroll_x - gutter).max(0.0);
+        let row_shift = if chunk.start > 0 {
+            continuation_indent
+        } else {
+            0.0
+        };
+        let target_x = (x + self.editor.scroll_x - gutter - row_shift).max(0.0);
 
         let mut best_col = chunk_start;
         let mut best_dist = f32::MAX;
@@ -6913,6 +7343,112 @@ mod tests {
             (layout.indent + layout.total - 300.0).abs() < 0.01,
             "indented table still fills the remaining width: {layout:?}"
         );
+    }
+
+    #[test]
+    fn callout_blocks_cover_header_and_body_rows() {
+        use crate::markdown::CalloutKind;
+        let model = crate::markdown::model(
+            "> [!warning] Careful\n> body one\n> body two\n\nplain\n",
+        );
+        let blocks = callout_block_map(&model);
+        assert_eq!(
+            blocks[0].map(|block| (block.kind, block.first, block.last)),
+            Some((CalloutKind::Warning, true, false))
+        );
+        assert_eq!(
+            blocks[1].map(|block| (block.kind, block.first, block.last)),
+            Some((CalloutKind::Warning, false, false))
+        );
+        assert_eq!(
+            blocks[2].map(|block| (block.kind, block.first, block.last)),
+            Some((CalloutKind::Warning, false, true))
+        );
+        assert!(blocks[3].is_none());
+        assert_eq!(callout_block_extent(&blocks, 1), Some((0, 2)));
+    }
+
+    #[test]
+    fn every_callout_family_has_an_icon() {
+        use crate::markdown::CalloutKind;
+        for kind in [
+            CalloutKind::Note,
+            CalloutKind::Info,
+            CalloutKind::Tip,
+            CalloutKind::Warning,
+            CalloutKind::Danger,
+            CalloutKind::Quote,
+        ] {
+            assert!(
+                !callout_icon_paths(kind).is_empty(),
+                "no glyph for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn quote_wrap_reserves_the_marker_column_and_gap() {
+        let chars: Vec<char> = "x ".repeat(80).chars().collect();
+        let hidden = vec![false; chars.len()];
+        let mut painter = Painter::new();
+        let plain = wrap_line_chunks(
+            &mut painter,
+            &chars,
+            &hidden,
+            200.0,
+            0.0,
+            0.0,
+            15.0,
+            Face::Mono,
+            &[],
+            0,
+            Face::Mono,
+        );
+        let quoted = wrap_line_chunks(
+            &mut painter,
+            &chars,
+            &hidden,
+            200.0,
+            18.0,
+            34.0,
+            15.0,
+            Face::Mono,
+            &[],
+            0,
+            Face::Mono,
+        );
+        assert!(quoted[0].1 < plain[0].1, "quote keeps clear of its marker column");
+        if quoted.len() > 1 {
+            let first = quoted[0].1 - quoted[0].0;
+            let second = quoted[1].1 - quoted[1].0;
+            assert!(second <= first, "continuation rows are narrower");
+        }
+    }
+
+    #[test]
+    fn callout_bar_rounds_only_its_left_corners() {
+        let (width, height) = (20usize, 20usize);
+        let mut pixels = vec![0u32; width * height];
+        rounded_box_radii(
+            &mut pixels,
+            width,
+            height,
+            0.0,
+            0.0,
+            20.0,
+            20.0,
+            [10.0, 0.0, 0.0, 10.0],
+            0xffffff,
+        );
+        assert_eq!(pixels[0], 0, "top-left corner is rounded away");
+        assert_ne!(pixels[width - 1], 0, "top-right stays square");
+        assert_eq!(pixels[(height - 1) * width], 0, "bottom-left is rounded");
+        assert_ne!(
+            pixels[(height - 1) * width + width - 1],
+            0,
+            "bottom-right stays square"
+        );
+        assert_ne!(pixels[10 * width + 10], 0, "interior is filled");
     }
 
     #[test]
