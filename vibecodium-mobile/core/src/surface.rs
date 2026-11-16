@@ -1638,6 +1638,9 @@ struct EditorState {
     /// Tables the user switched to raw source with the header button. Every
     /// other table is a grid and edits its cells in place.
     raw_tables: HashSet<usize>,
+    /// Tables touched by a non-empty selection; they show their source until
+    /// the selection collapses, like an active block on the desktop.
+    selection_tables: HashSet<usize>,
     /// Horizontal pan of each wide table, keyed by its header line. One
     /// table sliding must not move the others.
     table_scroll: HashMap<usize, f32>,
@@ -1927,51 +1930,242 @@ fn table_align(cell: &str) -> TableAlign {
     }
 }
 
-/// Char ranges of the cells of one raw table row, mirroring `split_cells`.
+/// Outer char ranges of the cells between the row's pipes, following GFM:
+/// escaped `\|` does not split, and leading/trailing pipes are optional.
+fn table_cell_bounds(line: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let mut pipes = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        match chars[i] {
+            '\\' => i += 2,
+            '|' => {
+                pipes.push(i);
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    let first_ns = chars.iter().position(|c| !c.is_whitespace()).unwrap_or(n);
+    let last_ns = chars.iter().rposition(|c| !c.is_whitespace());
+    let lead = pipes.first() == Some(&first_ns);
+    let trail =
+        last_ns.is_some() && pipes.last().copied() == last_ns && (pipes.len() > 1 || !lead);
+    let mut bounds = Vec::new();
+    let mut seg_start = if lead { first_ns + 1 } else { 0 };
+    for &p in pipes.iter().skip(lead as usize) {
+        bounds.push((seg_start, p));
+        seg_start = p + 1;
+    }
+    if !trail {
+        bounds.push((seg_start.min(n), n));
+    }
+    bounds
+}
+
+/// Text typed into a grid cell never breaks the row: a pipe is escaped and a
+/// newline becomes a space (desktop turns it into `<br>` for its renderer).
+fn sanitize_table_cell_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev_backslash = false;
+    for ch in text.replace("\r\n", "\n").chars() {
+        match ch {
+            '|' if !prev_backslash => out.push_str("\\|"),
+            '\n' | '\r' => out.push(' '),
+            other => out.push(other),
+        }
+        prev_backslash = ch == '\\' && !prev_backslash;
+    }
+    out
+}
+
+/// Content ranges of the cells, trimmed of the padding spaces. An empty cell
+/// gets a point one char inside its outer range, exactly like the desktop
+/// `split_row` model.
 fn table_cell_ranges(line: &str) -> Vec<(usize, usize)> {
     let chars: Vec<char> = line.chars().collect();
-    let trim = |mut start: usize, mut end: usize| {
-        while start < end && chars[start].is_whitespace() {
-            start += 1;
+    table_cell_bounds(line)
+        .into_iter()
+        .map(|(s, e)| {
+            let mut cs = s;
+            let mut ce = e;
+            while cs < ce && chars[cs].is_whitespace() {
+                cs += 1;
+            }
+            while ce > cs && chars[ce - 1].is_whitespace() {
+                ce -= 1;
+            }
+            if cs == ce {
+                let point = (s + 1).min(e);
+                (point, point)
+            } else {
+                (cs, ce)
+            }
+        })
+        .collect()
+}
+
+/// Outer ranges, padding included. The caret uses them so a trailing space
+/// typed into a cell still belongs to that cell.
+fn table_cell_wide_ranges(line: &str) -> Vec<(usize, usize)> {
+    table_cell_bounds(line)
+}
+
+/// Column of a tap inside a table row and its left box offset. A row can have
+/// fewer cells than the table has columns; a tap in those phantom columns
+/// belongs to the row's last real cell, never to the start of the line.
+fn table_column_at(local: f32, widths: &[f32], actual_cols: usize) -> (usize, f32) {
+    let cols = actual_cols.min(widths.len()).max(1);
+    let mut cell_x = 0.0f32;
+    for col in 0..cols {
+        let width = widths.get(col).copied().unwrap_or(0.0);
+        if local < cell_x + width || col + 1 == cols {
+            return (col, cell_x);
         }
-        while end > start && chars[end - 1].is_whitespace() {
-            end -= 1;
+        cell_x += width;
+    }
+    (cols - 1, cell_x)
+}
+
+/// Painted x of the caret inside a table row, including the padding spaces of
+/// the cell. Returns `None` only when the layout has no cell at all.
+#[allow(clippy::too_many_arguments)]
+fn table_caret_x(
+    painter: &mut Painter,
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+    layout: &TableLayout,
+    cursor: usize,
+    text_x: f32,
+    pad: f32,
+    font: f32,
+    face: Face,
+) -> f32 {
+    let bounds = table_cell_bounds(&model[line].raw);
+    let contents = table_cell_ranges(&model[line].raw);
+    let chars: Vec<char> = model[line].raw.chars().collect();
+    let mut cell_x = text_x;
+    let mut last_text_end = text_x + pad * 0.5;
+    for col in 0..layout.cols {
+        let width = layout.widths.get(col).copied().unwrap_or(0.0);
+        let (outer_start, outer_end) = bounds.get(col).copied().unwrap_or((0, 0));
+        let (content_start, _content_end) = contents
+            .get(col)
+            .copied()
+            .unwrap_or((outer_start, outer_start));
+        let full = cell_visible_text(
+            model[line]
+                .cells
+                .get(col)
+                .map(String::as_str)
+                .unwrap_or(""),
+        );
+        let inner = (width - pad).max(0.0);
+        let text_width = painter.width(&full, font, face);
+        let align_offset = match layout.aligns.get(col).copied().unwrap_or(TableAlign::Left) {
+            TableAlign::Left => 0.0,
+            TableAlign::Center => ((inner - text_width) * 0.5).max(0.0),
+            TableAlign::Right => (inner - text_width).max(0.0),
+        };
+        let text_origin = cell_x + pad * 0.5 + align_offset;
+        last_text_end = text_origin + text_width;
+        if cursor >= outer_start && cursor <= outer_end {
+            // An empty cell's caret sits at the cell's text start; padding
+            // spaces never pull it towards the right border.
+            if full.is_empty() || cursor <= content_start {
+                return text_origin;
+            }
+            let end = cursor.min(outer_end);
+            let from = content_start.min(end);
+            let prefix: String = chars[from..end].iter().collect();
+            return text_origin + painter.width(&cell_visible_text(&prefix), font, face);
         }
-        (start, end)
+        cell_x += width;
+    }
+    // The caret is at a pipe or the row end: stay at the last cell's text end
+    // instead of jumping to the table border.
+    last_text_end
+}
+
+/// Maps a tap inside one table cell to a source char offset in its raw line.
+///
+/// The mapping follows the painted text, not the raw characters: alignment
+/// moves where the text starts, and inline markers take no painted width.
+/// Tapping left of the text snaps to the cell start, right of it to the cell
+/// end (or to the end of the row for the last column).
+#[allow(clippy::too_many_arguments)]
+fn cell_tap_offset(
+    painter: &mut Painter,
+    cell_raw: &str,
+    range: (usize, usize),
+    width: f32,
+    pad: f32,
+    align: TableAlign,
+    target_x: f32,
+    font: f32,
+    face: Face,
+) -> usize {
+    use crate::markdown::SyntaxSpan;
+    let visible = cell_visible_text(cell_raw);
+    let full_width = painter.width(&visible, font, face);
+    let inner = (width - pad).max(0.0);
+    let align_offset = match align {
+        TableAlign::Left => 0.0,
+        TableAlign::Center => ((inner - full_width) * 0.5).max(0.0),
+        TableAlign::Right => (inner - full_width).max(0.0),
     };
-    let mut start = 0usize;
-    let mut end = chars.len();
-    while start < end && chars[start].is_whitespace() {
-        start += 1;
+    let text_start = pad * 0.5 + align_offset;
+    if target_x <= text_start {
+        return range.0;
     }
-    while end > start && chars[end - 1].is_whitespace() {
-        end -= 1;
+    if target_x >= text_start + full_width {
+        // A tap right of the painted text stays at the end of the cell's
+        // content; it never moves past the trailing pipe.
+        return range.1;
     }
-    if start < end && chars[start] == '|' {
-        start += 1;
+    // Painted char under the target, by cumulative advances.
+    let mut advance_sum = 0.0f32;
+    let mut visible_index = 0usize;
+    for character in visible.chars() {
+        let advance = painter.advance_of_char(character, font, face);
+        if target_x < text_start + advance_sum + advance * 0.5 {
+            break;
+        }
+        advance_sum += advance;
+        visible_index += 1;
     }
-    if end > start && chars[end - 1] == '|' {
-        end -= 1;
-    }
-    let mut ranges = Vec::new();
-    let mut cell_start = start;
-    let mut escaped = false;
-    for index in start..end {
-        if escaped {
-            escaped = false;
+    // Map the painted index back through the inline markers.
+    let mut raw_consumed = 0usize;
+    let mut painted = 0usize;
+    for span in crate::markdown::parse_inline_syntax_spans(cell_raw) {
+        let text = match &span {
+            SyntaxSpan::Marker(text)
+            | SyntaxSpan::Text(text)
+            | SyntaxSpan::Bold(text)
+            | SyntaxSpan::Italic(text)
+            | SyntaxSpan::BoldItalic(text)
+            | SyntaxSpan::InlineCode(text)
+            | SyntaxSpan::Strikethrough(text)
+            | SyntaxSpan::Underline(text)
+            | SyntaxSpan::Highlight(text)
+            | SyntaxSpan::Tag(text) => text.as_str(),
+            SyntaxSpan::Link { text, .. } => text.as_str(),
+            SyntaxSpan::Grammar { text, .. } => text.as_str(),
+        };
+        let count = text.chars().count();
+        if matches!(span, SyntaxSpan::Marker(_)) {
+            raw_consumed += count;
             continue;
         }
-        if chars[index] == '\\' {
-            escaped = true;
-            continue;
+        if painted + count >= visible_index {
+            raw_consumed += visible_index - painted;
+            break;
         }
-        if chars[index] == '|' {
-            ranges.push(trim(cell_start, index));
-            cell_start = index + 1;
-        }
+        painted += count;
+        raw_consumed += count;
     }
-    ranges.push(trim(cell_start, end));
-    ranges
+    range.0 + raw_consumed.min(range.1.saturating_sub(range.0))
 }
 
 /// A cell as the reader sees it: inline markup stripped, link text kept.
@@ -2229,66 +2423,27 @@ fn paint_table_row(
     }
     // The cell being edited shows a caret; the grid otherwise has no cursor.
     if let Some(cursor) = cursor_char {
-        let ranges = table_cell_ranges(&model[line].raw);
-        let mut cell_x = text_x;
-        let mut placed = false;
-        for col in 0..layout.cols {
-            let width = layout.widths.get(col).copied().unwrap_or(0.0);
-            if let Some((start, end)) = ranges.get(col).copied() {
-                if cursor >= start && cursor <= end {
-                    let raw_cell: String = model[line]
-                        .raw
-                        .chars()
-                        .skip(start)
-                        .take(cursor.saturating_sub(start))
-                        .collect();
-                    let prefix = cell_visible_text(&raw_cell);
-                    let cell = model[line]
-                        .cells
-                        .get(col)
-                        .map(String::as_str)
-                        .unwrap_or("");
-                    let full = cell_visible_text(cell);
-                    let inner = (width - pad).max(0.0);
-                    let text_width = painter.width(&full, font, face);
-                    let align_offset =
-                        match layout.aligns.get(col).copied().unwrap_or(TableAlign::Left) {
-                            TableAlign::Left => 0.0,
-                            TableAlign::Center => ((inner - text_width) * 0.5).max(0.0),
-                            TableAlign::Right => (inner - text_width).max(0.0),
-                        };
-                    let prefix_width = painter.width(&prefix, font, face);
-                    let caret_x = cell_x + pad * 0.5 + align_offset + prefix_width;
-                    rect(
-                        pixels,
-                        surface_width,
-                        surface_height,
-                        caret_x,
-                        y + 2.0 * density,
-                        2.0 * density,
-                        (row_h - 4.0 * density).max(2.0),
-                        palette.accent,
-                    );
-                    placed = true;
-                    break;
-                }
-            }
-            cell_x += width;
-        }
-        if !placed {
-            // The caret sits past the last cell's text (end of the source
-            // row), so it goes to the table's right edge.
-            rect(
-                pixels,
-                surface_width,
-                surface_height,
-                text_x + layout.total - pad * 0.5,
-                y + 2.0 * density,
-                2.0 * density,
-                (row_h - 4.0 * density).max(2.0),
-                palette.accent,
-            );
-        }
+        let caret_x = table_caret_x(
+            painter,
+            model,
+            line,
+            layout,
+            cursor,
+            text_x,
+            pad,
+            font,
+            face,
+        );
+        rect(
+            pixels,
+            surface_width,
+            surface_height,
+            caret_x,
+            y + 2.0 * density,
+            2.0 * density,
+            (row_h - 4.0 * density).max(2.0),
+            palette.accent,
+        );
     }
 }
 
@@ -2670,6 +2825,66 @@ fn code_copy_pill(
     let height = label_px + (8.0 * density).round();
     let x = text_x + content_width - (10.0 * density).round() - width;
     (x, width, height)
+}
+
+/// Source toggle geometry on a table header row: `</>` at the right edge.
+fn table_source_button(
+    painter: &mut Painter,
+    text_x: f32,
+    content_width: f32,
+    label_px: f32,
+    density: f32,
+) -> (f32, f32, f32) {
+    let text_width = painter.width("</>", label_px, Face::Ui);
+    let pad_x = (6.0 * density).round();
+    let width = text_width + 2.0 * pad_x;
+    let height = label_px + (8.0 * density).round();
+    let x = text_x + content_width - (4.0 * density).round() - width;
+    (x, width, height)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_table_source_button(
+    pixels: &mut [u32],
+    surface_width: usize,
+    surface_height: usize,
+    painter: &mut Painter,
+    text_x: f32,
+    content_width: f32,
+    y: f32,
+    row_h: f32,
+    code_font: f32,
+    density: f32,
+    palette: &SurfacePalette,
+) {
+    let label_px = code_label_px(code_font, density);
+    let (x, width, height) =
+        table_source_button(painter, text_x, content_width, label_px, density);
+    let by = y + ((row_h - height) * 0.5).max(0.0);
+    rounded_box(
+        pixels,
+        surface_width,
+        surface_height,
+        x,
+        by,
+        width,
+        height,
+        height * 0.5,
+        palette.border,
+    );
+    let text_width = painter.width("</>", label_px, Face::Ui);
+    painter.draw(
+        pixels,
+        surface_width,
+        surface_height,
+        x + (width - text_width) * 0.5,
+        by + ((height - label_px) * 0.5).max(0.0),
+        "</>",
+        label_px,
+        palette.text,
+        Face::Ui,
+        false,
+    );
 }
 
 /// Rounded rectangle with anti-aliased edges; `rect` only draws squares and
@@ -3465,6 +3680,7 @@ fn wrap_layout(
     preview: bool,
     folded_code: &HashSet<usize>,
     raw_tables: &HashSet<usize>,
+    selection_tables: &HashSet<usize>,
 ) -> Vec<WrapLine> {
     let all: Vec<char> = text.chars().collect();
     let mut rows = Vec::with_capacity(starts.len());
@@ -3488,7 +3704,9 @@ fn wrap_layout(
         // edited; every other table is painted as a grid.
         let raw_table_here = table.is_some()
             && table_header_at(model, line_index)
-                .map(|header| raw_tables.contains(&header))
+                .map(|header| {
+                    raw_tables.contains(&header) || selection_tables.contains(&header)
+                })
                 .unwrap_or(false);
         let hidden = if table.is_some() && !raw_table_here {
             vec![true; chars.len()]
@@ -4406,6 +4624,21 @@ impl SurfaceState {
     fn ensure_wrap(&mut self, content_width: f32) {
         self.ensure_starts();
         self.ensure_model();
+        let (sel_start, sel_end) = self.selected_range();
+        let mut selection_tables = HashSet::new();
+        if sel_start < sel_end {
+            let first = line_of(&self.editor.starts, sel_start);
+            let last = line_of(&self.editor.starts, sel_end.saturating_sub(1));
+            for line in first..=last {
+                if let Some(header) = table_header_at(&self.editor.model, line) {
+                    selection_tables.insert(header);
+                }
+            }
+        }
+        if self.editor.selection_tables != selection_tables {
+            self.editor.selection_tables = selection_tables;
+            self.editor.wrap_dirty = true;
+        }
         let content_changed = self.editor.wrap_dirty
             || (self.editor.wrap_width - content_width).abs() >= 0.5
             || self.editor.wrap_canonical.is_empty();
@@ -4437,6 +4670,7 @@ impl SurfaceState {
             self.editor.preview,
             &self.editor.code_collapsed,
             &self.editor.raw_tables,
+            &self.editor.selection_tables,
         );
         let mut first = vec![0; self.editor.starts.len()];
         let mut count = vec![0; self.editor.starts.len()];
@@ -4526,7 +4760,7 @@ impl SurfaceState {
             // caret; rebuilding it from the visible raw pipes would wrap it
             // into several rows and stretch the whole table.
             let grid_table = table_header_at(&self.editor.model, line)
-                .map(|header| !self.editor.raw_tables.contains(&header))
+                .map(|header| !self.table_is_raw(header))
                 .unwrap_or(false);
             if exception[line] && !grid_table {
                 let raw = logical_line(&self.editor.text, &self.editor.byte_starts, line);
@@ -4876,9 +5110,7 @@ impl SurfaceState {
                     .filter(|line| is_table_kind(&line.kind))
                     .and_then(|_| table_bounds(&model, chunk.line))
                     .map(|(start, _)| start);
-                if let Some(start) = header
-                    .filter(|start| !self.editor.raw_tables.contains(start))
-                {
+                if let Some(start) = header.filter(|start| !self.table_is_raw(*start)) {
                     if chunk.start != 0 {
                         prepared_line = usize::MAX;
                         continue;
@@ -4938,6 +5170,21 @@ impl SurfaceState {
                             line_h,
                             self.code_font_px(),
                             self.code_face,
+                            density,
+                            &palette,
+                        );
+                    }
+                    if chunk.line == start {
+                        paint_table_source_button(
+                            pixels,
+                            self.width,
+                            self.height,
+                            &mut painter,
+                            text_x,
+                            content_width,
+                            y,
+                            row_h,
+                            self.code_font_px(),
                             density,
                             &palette,
                         );
@@ -5362,6 +5609,30 @@ impl SurfaceState {
                     }
                 }
             }
+            // The source toggle stays on the header row of a raw table too.
+            if has_model && chunk.start == 0 {
+                if let Some(header) = model
+                    .get(chunk.line)
+                    .filter(|row| is_table_kind(&row.kind))
+                    .and_then(|_| table_header_at(&model, chunk.line))
+                {
+                    if header == chunk.line && self.table_is_raw(header) {
+                        paint_table_source_button(
+                            pixels,
+                            self.width,
+                            self.height,
+                            &mut painter,
+                            text_x,
+                            content_width,
+                            y,
+                            row_h,
+                            self.code_font_px(),
+                            density,
+                            &palette,
+                        );
+                    }
+                }
+            }
             if visual == cursor_visual && selection_end == selection_start {
                 let cursor_col = chunk_start + cursor_offset;
                 let x = text_x + row_shift + local_x(cursor_col);
@@ -5550,7 +5821,39 @@ impl SurfaceState {
             .unwrap_or(false)
         {
             let header = table_header_at(&self.editor.model, chunk.line)?;
-            if self.editor.raw_tables.contains(&header) {
+            let label_px = code_label_px(self.code_font_px(), self.density);
+            let (bx, bw, bh) =
+                table_source_button(&mut self.painter, gutter, content, label_px, self.density);
+            let header_visual = self
+                .editor
+                .wrap_first
+                .get(header)
+                .copied()
+                .unwrap_or(visual);
+            let header_top = top_inset
+                + self
+                    .editor
+                    .wrap_tops
+                    .get(header_visual)
+                    .copied()
+                    .unwrap_or(0.0)
+                - scroll;
+            let header_h = self
+                .editor
+                .wrap
+                .get(header_visual)
+                .map(|row| row.height)
+                .unwrap_or(0.0);
+            let by = header_top + ((header_h - bh) * 0.5).max(0.0);
+            if x >= bx && x <= bx + bw && y >= by && y <= by + bh {
+                if !self.editor.raw_tables.insert(header) {
+                    self.editor.raw_tables.remove(&header);
+                }
+                self.editor.wrap_dirty = true;
+                self.invalidate();
+                return Some(json!({ "kind": "table_source" }).to_string());
+            }
+            if self.table_is_raw(header) {
                 return None;
             }
             let (start, end) = table_bounds(&self.editor.model, chunk.line)?;
@@ -5570,45 +5873,39 @@ impl SurfaceState {
             let raw = self.editor.model[chunk.line].raw.clone();
             let shift = self
                 .editor
-                .scroll_x
+                .table_scroll
+                .get(&header)
+                .copied()
+                .unwrap_or(0.0)
                 .min((layout.indent + layout.total - content).max(0.0));
             let pad = (12.0 * density).round();
             let local = x - gutter - layout.indent + shift;
-            let mut cell_x = 0.0f32;
-            let mut column = 0usize;
-            for col in 0..layout.cols {
-                let width = layout.widths.get(col).copied().unwrap_or(0.0);
-                if local < cell_x + width || col + 1 == layout.cols {
-                    column = col;
-                    break;
-                }
-                cell_x += width;
-            }
-            let width = layout.widths.get(column).copied().unwrap_or(0.0);
             let ranges = table_cell_ranges(&raw);
+            let (column, cell_x) = table_column_at(local, &layout.widths, ranges.len());
+            let width = layout.widths.get(column).copied().unwrap_or(0.0);
             let (range_start, range_end) = ranges
                 .get(column)
                 .copied()
                 .unwrap_or((0, raw.chars().count()));
-            let inner = (width - pad).max(1.0);
-            let target = local - cell_x - pad * 0.5;
-            let cell = self.editor.model[chunk.line]
-                .cells
-                .get(column)
-                .map(String::as_str)
-                .unwrap_or("");
-            let text_width = self
-                .painter
-                .width(&cell_visible_text(cell), code_font, code_face);
-            let raw_len = raw.chars().count();
-            // Tapping past the last header cell's text belongs to the end of
-            // the source line, not to the middle of the last cell.
-            let offset = if column + 1 == layout.cols && target >= text_width {
-                raw_len
-            } else {
-                let fraction = (target / inner).clamp(0.0, 1.0);
-                range_start + (((range_end - range_start) as f32) * fraction).round() as usize
-            };
+            // `target` is measured from the cell box; `cell_tap_offset` adds
+            // the half padding itself, so it must not be subtracted here.
+            let target = local - cell_x;
+            let cell_raw: String = raw
+                .chars()
+                .skip(range_start)
+                .take(range_end.saturating_sub(range_start))
+                .collect();
+            let offset = cell_tap_offset(
+                &mut self.painter,
+                &cell_raw,
+                (range_start, range_end),
+                width,
+                pad,
+                layout.aligns.get(column).copied().unwrap_or(TableAlign::Left),
+                target,
+                code_font,
+                code_face,
+            );
             let line_start = self
                 .editor
                 .starts
@@ -5724,10 +6021,18 @@ impl SurfaceState {
         (gutter, advance, max_y, 0.0)
     }
 
-    fn editor_set_scroll(&mut self, y: f32, x: f32) {
+    /// Whether a table renders its raw source right now.
+    fn table_is_raw(&self, header: usize) -> bool {
+        self.editor.raw_tables.contains(&header)
+            || self.editor.selection_tables.contains(&header)
+    }
+
+    fn editor_set_scroll(&mut self, y: f32, _x: f32) {
         let (_, _, max_y, _) = self.editor_scroll_metrics();
         self.editor.scroll = y.round().clamp(0.0, max_y);
-        self.editor.scroll_x = x.max(0.0);
+        // The editor has no global horizontal scroll; each wide table keeps
+        // its own pan in `table_scroll`.
+        self.editor.scroll_x = 0.0;
     }
 
     /// Switches the table under the caret between grid and raw source.
@@ -5783,7 +6088,7 @@ impl SurfaceState {
             return (0.0, 0.0);
         }
         if table_header_at(model, line)
-            .map(|header| self.editor.raw_tables.contains(&header))
+            .map(|header| self.table_is_raw(header))
             .unwrap_or(false)
         {
             return (0.0, 0.0);
@@ -5838,7 +6143,7 @@ impl SurfaceState {
         let (_, _, max_y, _) = self.editor_scroll_metrics();
         json!({
             "scroll": self.editor.scroll,
-            "scroll_x": self.editor.scroll_x,
+            "scroll_x": 0.0,
             "max_y": max_y,
             "max_x": 0.0,
         })
@@ -5848,6 +6153,16 @@ impl SurfaceState {
     fn insert(&mut self, text: &str) {
         self.invalidate();
         self.editor.insertion_handle_visible = false;
+        if text.is_empty() {
+            return;
+        }
+        let sanitized;
+        let text = if self.grid_table_cell_bounds().is_some() {
+            sanitized = sanitize_table_cell_text(text);
+            sanitized.as_str()
+        } else {
+            text
+        };
         if text.is_empty() {
             return;
         }
@@ -5871,6 +6186,43 @@ impl SurfaceState {
         self.scroll_to_cursor();
     }
 
+    /// Absolute content start and outer end (before the trailing pipe) of the
+    /// grid cell holding the caret. Deletions and typing stay inside it.
+    fn grid_table_cell_bounds(&self) -> Option<(usize, usize)> {
+        let line = line_of(&self.editor.starts, self.editor.selection);
+        let row = self.editor.model.get(line)?;
+        if !is_table_kind(&row.kind) {
+            return None;
+        }
+        let header = table_header_at(&self.editor.model, line)?;
+        if self.table_is_raw(header) {
+            return None;
+        }
+        let line_start = *self.editor.starts.get(line)?;
+        let pos = self.editor.selection.saturating_sub(line_start);
+        let contents = table_cell_ranges(&row.raw);
+        let bounds = table_cell_bounds(&row.raw);
+        let index = contents
+            .iter()
+            .position(|(start, end)| pos >= *start && pos <= *end)
+            .or_else(|| {
+                contents
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, (start, end))| {
+                        if pos < *start {
+                            start - pos
+                        } else {
+                            pos.saturating_sub(*end)
+                        }
+                    })
+                    .map(|(index, _)| index)
+            })?;
+        let (content_start, _) = contents.get(index).copied()?;
+        let (_, outer_end) = bounds.get(index).copied()?;
+        Some((line_start + content_start, line_start + outer_end))
+    }
+
     fn delete(&mut self, before: usize, after: usize) {
         self.invalidate();
         self.editor.insertion_handle_visible = false;
@@ -5891,6 +6243,17 @@ impl SurfaceState {
             self.mark_edited();
             self.scroll_to_cursor();
             return;
+        }
+        let (mut before, mut after) = (before, after);
+        if let Some((content_start, outer_end)) = self.grid_table_cell_bounds() {
+            let cursor = self.editor.selection;
+            let start = cursor.saturating_sub(before).max(content_start);
+            let end = (cursor + after).min(outer_end);
+            before = cursor.saturating_sub(start);
+            after = end.saturating_sub(cursor);
+            if before == 0 && after == 0 {
+                return;
+            }
         }
         let chars: Vec<char> = self.editor.text.chars().collect();
         let pos = self.editor.selection.min(chars.len());
@@ -6179,7 +6542,7 @@ impl SurfaceState {
         } else {
             0.0
         };
-        let target_x = (x + self.editor.scroll_x - gutter - row_shift).max(0.0);
+        let target_x = (x - gutter - row_shift).max(0.0);
 
         let mut best_col = chunk_start;
         let mut best_dist = f32::MAX;
@@ -7627,6 +7990,7 @@ mod tests {
             false,
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(),
         );
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].start, 0);
@@ -7735,6 +8099,495 @@ mod tests {
     }
 
     #[test]
+    fn selecting_a_table_shows_its_source() {
+        let text = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+        let starts = line_starts(text).0;
+        let model = crate::markdown::model(text);
+        let mut painter = Painter::new();
+        let line_fonts: Vec<(f32, Face)> = starts.iter().map(|_| (15.0, Face::Mono)).collect();
+        let mut selected = HashSet::new();
+        selected.insert(0usize);
+        let rows = wrap_layout(
+            text,
+            &starts,
+            300.0,
+            &mut painter,
+            &line_fonts,
+            &model,
+            Face::Mono,
+            15.0,
+            22.0,
+            1.0,
+            false,
+            &HashSet::new(),
+            &HashSet::new(),
+            &selected,
+        );
+        assert!(
+            rows.iter().all(|row| row.height > 0.0),
+            "a selected table keeps all source rows visible: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn short_rows_never_map_taps_to_the_line_start() {
+        let widths = [200.0f32, 200.0, 200.0];
+        assert_eq!(table_column_at(450.0, &widths, 1), (0, 0.0));
+        assert_eq!(table_column_at(450.0, &widths, 2), (1, 200.0));
+        assert_eq!(table_column_at(450.0, &widths, 3), (2, 400.0));
+        assert_eq!(table_column_at(-5.0, &widths, 3), (0, 0.0));
+
+        let text = "| A | B | C |\n| --- | --- | --- |\n| only |";
+        let model = crate::markdown::model(text);
+        let mut painter = Painter::new();
+        let layout = build_table_layout(&mut painter, &model, 0, 2, 600.0, 15.0, Face::Mono, 1.0);
+        let ranges = table_cell_ranges(&model[2].raw);
+        assert_eq!(ranges.len(), 1, "the row has one real cell");
+        let (column, _cell_x) =
+            table_column_at(layout.widths.iter().sum::<f32>() * 0.9, &layout.widths, ranges.len());
+        assert_eq!(column, 0, "a phantom column resolves to the real cell");
+        let (range_start, range_end) = ranges[0];
+        let cell_raw: String = model[2]
+            .raw
+            .chars()
+            .skip(range_start)
+            .take(range_end.saturating_sub(range_start))
+            .collect();
+        let offset = cell_tap_offset(
+            &mut painter,
+            &cell_raw,
+            (range_start, range_end),
+            layout.widths[0],
+            12.0,
+            layout.aligns[0],
+            900.0,
+            15.0,
+            Face::Mono,
+        );
+        assert!(offset >= range_start && offset <= range_end);
+        assert!(offset > 0, "the tap must not collapse to the line start");
+    }
+
+    #[test]
+    fn empty_cells_put_the_caret_at_their_text_start() {
+        let text = "| A | B | C |\n| :--- | :---: | ---: |\n|  |  |  |";
+        let model = crate::markdown::model(text);
+        let mut painter = Painter::new();
+        let layout = build_table_layout(&mut painter, &model, 0, 2, 600.0, 15.0, Face::Mono, 1.0);
+        let text_x = 100.0;
+        let pad = 12.0;
+        let bounds = table_cell_bounds(&model[2].raw);
+        let contents = table_cell_ranges(&model[2].raw);
+        let mut cell_x = text_x;
+        for col in 0..layout.cols {
+            let width = layout.widths.get(col).copied().unwrap_or(0.0);
+            let inner = (width - pad).max(0.0);
+            let align_offset = match layout.aligns.get(col).copied().unwrap_or(TableAlign::Left) {
+                TableAlign::Left => 0.0,
+                TableAlign::Center => inner * 0.5,
+                TableAlign::Right => inner,
+            };
+            let expected = cell_x + pad * 0.5 + align_offset;
+            let content_point = contents.get(col).copied().unwrap_or((0, 0)).0;
+            let outer_end = bounds.get(col).copied().unwrap_or((0, 0)).1;
+            for cursor in [content_point, outer_end.saturating_sub(1), outer_end] {
+                let x = table_caret_x(
+                    &mut painter,
+                    &model,
+                    2,
+                    &layout,
+                    cursor,
+                    text_x,
+                    pad,
+                    15.0,
+                    Face::Mono,
+                );
+                assert!(
+                    (x - expected).abs() < 0.01,
+                    "empty cell caret is not at its text start: col {col} cursor {cursor} x {x} expected {expected}"
+                );
+            }
+            cell_x += width;
+        }
+    }
+
+    #[test]
+    fn table_cell_input_cannot_break_the_row() {
+        assert_eq!(sanitize_table_cell_text("a|b"), r"a\|b");
+        assert_eq!(sanitize_table_cell_text("a\nb"), "a b");
+        assert_eq!(sanitize_table_cell_text("plain"), "plain");
+    }
+
+    #[test]
+    fn trailing_spaces_keep_the_caret_in_their_cell() {
+        let text = "| a  | b  | c  |\n| --- | --- | --- |\n| d  | e  | f  |";
+        let model = crate::markdown::model(text);
+        let mut painter = Painter::new();
+        let layout = build_table_layout(&mut painter, &model, 0, 2, 600.0, 15.0, Face::Mono, 1.0);
+        let text_x = 100.0;
+        let pad = 12.0;
+        let edge = text_x + layout.total - pad * 0.5;
+        for line in [0usize, 2] {
+            let wide = table_cell_wide_ranges(&model[line].raw);
+            let mut cell_x = text_x;
+            for col in 0..layout.cols {
+                let width = layout.widths.get(col).copied().unwrap_or(0.0);
+                let (start, end) = wide.get(col).copied().unwrap_or((0, 0));
+                for cursor in [start, (start + end) / 2, end.saturating_sub(1), end] {
+                    let x = table_caret_x(
+                        &mut painter,
+                        &model,
+                        line,
+                        &layout,
+                        cursor,
+                        text_x,
+                        pad,
+                        15.0,
+                        Face::Mono,
+                    );
+                    println!("line={line} col={col} cursor={cursor} caret_x={x:.1} cell={cell_x:.1}..{}", cell_x + width);
+                    assert!(
+                        x >= cell_x - 1.0 && x <= cell_x + width - pad * 0.5 + 1.0,
+                        "caret escaped its cell: line {line} col {col} x {x} cell {cell_x}..{}",
+                        cell_x + width
+                    );
+                    assert!(
+                        x < edge,
+                        "caret flew to the table edge: line {line} col {col} x {x}"
+                    );
+                }
+                cell_x += width;
+            }
+        }
+    }
+
+    #[test]
+    fn every_table_cell_maps_taps_to_its_own_text() {
+        let text = "\
+| Left | Center | Right |
+| :--- | :----: | ----: |
+| a | b | c |
+| **bold** | `code` | [link](https://x) |
+| a long cell value | mid | 1 |
+
+| A | B |
+| --- | --- |
+|   | 2 |
+| only |
+";
+        let model = crate::markdown::model(text);
+        let mut painter = Painter::new();
+        let font = 15.0;
+        let face = Face::Mono;
+        let density = 1.0;
+        let pad = 12.0;
+        let text_x = 100.0;
+        let content_width = 600.0;
+        let mut checked = 0usize;
+        let mut index = 0usize;
+        while index < model.len() {
+            if model[index].kind != "table" {
+                index += 1;
+                continue;
+            }
+            let (start, end) = table_bounds(&model, index).unwrap();
+            let layout = build_table_layout(
+                &mut painter,
+                &model,
+                start,
+                end,
+                content_width,
+                font,
+                face,
+                density,
+            );
+            assert!(layout.cols > 0);
+            for line in start..=end {
+                if model[line].kind == "table_separator" {
+                    continue;
+                }
+                let ranges = table_cell_ranges(&model[line].raw);
+                let raw_len = model[line].raw.chars().count();
+                let mut cell_x = text_x;
+                for col in 0..layout.cols {
+                    let width = layout.widths.get(col).copied().unwrap_or(0.0);
+                    let (range_start, range_end) =
+                        ranges.get(col).copied().unwrap_or((0, raw_len));
+                    let cell_raw: String = model[line]
+                        .raw
+                        .chars()
+                        .skip(range_start)
+                        .take(range_end.saturating_sub(range_start))
+                        .collect();
+                    let align = layout
+                        .aligns
+                        .get(col)
+                        .copied()
+                        .unwrap_or(TableAlign::Left);
+                    let visible = cell_visible_text(&cell_raw);
+                    let full_width = painter.width(&visible, font, face);
+                    let inner = (width - pad).max(0.0);
+                    let align_offset = match align {
+                        TableAlign::Left => 0.0,
+                        TableAlign::Center => ((inner - full_width) * 0.5).max(0.0),
+                        TableAlign::Right => (inner - full_width).max(0.0),
+                    };
+                    let text_start = pad * 0.5 + align_offset;
+                    let mut last_caret = f32::MIN;
+                    for fraction in [0.0f32, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
+                        let target_x = (width * fraction).clamp(0.0, width);
+                        let offset = cell_tap_offset(
+                            &mut painter,
+                            &cell_raw,
+                            (range_start, range_end),
+                            width,
+                            pad,
+                            align,
+                            target_x,
+                            font,
+                            face,
+                        );
+                        let offset_in_cell = offset
+                            .saturating_sub(range_start)
+                            .min(range_end.saturating_sub(range_start));
+                        let prefix_raw: String =
+                            cell_raw.chars().take(offset_in_cell).collect();
+                        let prefix = cell_visible_text(&prefix_raw);
+                        let caret_x =
+                            cell_x + text_start + painter.width(&prefix, font, face);
+                        println!(
+                            "line={line} col={col} tap={target_x:.1}/{width:.1} offset={offset} caret_x={caret_x:.1} cell_x={cell_x:.1}"
+                        );
+                        assert!(
+                            offset >= range_start && offset <= raw_len,
+                            "offset outside the cell: line {line} col {col} tap {target_x} offset {offset} range {range_start}..{range_end}"
+                        );
+                        assert!(
+                            caret_x >= cell_x - 1.0 && caret_x <= cell_x + width + 1.0,
+                            "caret outside the cell: line {line} col {col} caret {caret_x} cell {cell_x}..{}",
+                            cell_x + width
+                        );
+                        assert!(
+                            caret_x + 0.5 >= last_caret,
+                            "caret went backwards: line {line} col {col} {caret_x} < {last_caret}"
+                        );
+                        // Inside the painted text the caret must land next to
+                        // the tapped point, not a padding width away from it.
+                        if full_width > 0.0
+                            && target_x >= text_start
+                            && target_x <= text_start + full_width
+                        {
+                            let max_error =
+                                painter.advance_of_char('M', font, face).max(4.0) + 2.0;
+                            assert!(
+                                (caret_x - (cell_x + target_x)).abs() <= max_error,
+                                "caret is off the tap: line {line} col {col} tap {target_x} caret_x {caret_x} text_start {text_start} full {full_width}"
+                            );
+                        }
+                        last_caret = caret_x;
+                        checked += 1;
+                    }
+                    let start_offset = cell_tap_offset(
+                        &mut painter,
+                        &cell_raw,
+                        (range_start, range_end),
+                        width,
+                        pad,
+                        align,
+                        0.0,
+                        font,
+                        face,
+                    );
+                    assert_eq!(start_offset, range_start, "a tap left of the text starts the cell");
+                    if visible.is_empty() {
+                        // An empty cell keeps the caret at its own start for
+                        // every tap, even in the last column.
+                        for fraction in [0.25f32, 0.5, 0.75, 1.0] {
+                            let target = (width * fraction).clamp(0.0, width);
+                            let empty_offset = cell_tap_offset(
+                                &mut painter,
+                                &cell_raw,
+                                (range_start, range_end),
+                                width,
+                                pad,
+                                align,
+                                target,
+                                font,
+                                face,
+                            );
+                            assert_eq!(
+                                empty_offset, range_start,
+                                "empty cell tap moved the caret: line {line} col {col} target {target}"
+                            );
+                        }
+                    }
+                    let after_text = text_start + full_width + 1.0;
+                    if after_text < width && !visible.is_empty() {
+                        let end_offset = cell_tap_offset(
+                            &mut painter,
+                            &cell_raw,
+                            (range_start, range_end),
+                            width,
+                            pad,
+                            align,
+                            after_text,
+                            font,
+                            face,
+                        );
+                        assert_eq!(end_offset, range_end, "past a cell goes to its end");
+                    }
+                    cell_x += width;
+                }
+            }
+            index = end + 1;
+        }
+        assert!(checked > 40, "the test should click every cell: {checked}");
+
+        // Fill every cell with a marker, rebuild the document and check that
+        // the text and the caret follow the new content.
+        let lines: Vec<String> = text.lines().map(String::from).collect();
+        let mut filled = lines.clone();
+        let mut table_index = 0usize;
+        let mut at = 0usize;
+        while at < model.len() {
+            if model[at].kind != "table" {
+                at += 1;
+                continue;
+            }
+            let (start, end) = table_bounds(&model, at).unwrap();
+            let cols = build_table_layout(
+                &mut painter,
+                &model,
+                start,
+                end,
+                content_width,
+                font,
+                face,
+                density,
+            )
+            .cols;
+            for line in start..=end {
+                if model[line].kind == "table_separator" {
+                    continue;
+                }
+                let indent: String = lines[line]
+                    .chars()
+                    .take_while(|character| *character == ' ')
+                    .collect();
+                let mut row = indent;
+                for col in 0..cols {
+                    row.push_str(&format!("| F{table_index}_{line}_{col} "));
+                }
+                row.push('|');
+                filled[line] = row;
+            }
+            table_index += 1;
+            at = end + 1;
+        }
+        let filled_text = filled.join("
+");
+        let filled_model = crate::markdown::model(&filled_text);
+        let mut filled_checks = 0usize;
+        let mut check_table = 0usize;
+        let mut at = 0usize;
+        while at < filled_model.len() {
+            if filled_model[at].kind != "table" {
+                at += 1;
+                continue;
+            }
+            let (start, end) = table_bounds(&filled_model, at).unwrap();
+            let layout = build_table_layout(
+                &mut painter,
+                &filled_model,
+                start,
+                end,
+                content_width,
+                font,
+                face,
+                density,
+            );
+            for line in start..=end {
+                if filled_model[line].kind == "table_separator" {
+                    continue;
+                }
+                let ranges = table_cell_ranges(&filled_model[line].raw);
+                let raw_len = filled_model[line].raw.chars().count();
+                let mut cell_x = text_x;
+                for col in 0..layout.cols {
+                    let width = layout.widths.get(col).copied().unwrap_or(0.0);
+                    let (range_start, range_end) =
+                        ranges.get(col).copied().unwrap_or((0, raw_len));
+                    let cell_raw: String = filled_model[line]
+                        .raw
+                        .chars()
+                        .skip(range_start)
+                        .take(range_end.saturating_sub(range_start))
+                        .collect();
+                    assert!(
+                        cell_raw.contains(&format!("F{check_table}_{line}_{col}")),
+                        "cell was not filled: line {line} col {col} {cell_raw:?}"
+                    );
+                    let align = layout
+                        .aligns
+                        .get(col)
+                        .copied()
+                        .unwrap_or(TableAlign::Left);
+                    let full = cell_visible_text(&cell_raw);
+                    let full_width = painter.width(&full, font, face);
+                    let inner = (width - pad).max(0.0);
+                    let align_offset = match align {
+                        TableAlign::Left => 0.0,
+                        TableAlign::Center => ((inner - full_width) * 0.5).max(0.0),
+                        TableAlign::Right => (inner - full_width).max(0.0),
+                    };
+                    let center = (width * 0.5).clamp(0.0, width);
+                    let offset = cell_tap_offset(
+                        &mut painter,
+                        &cell_raw,
+                        (range_start, range_end),
+                        width,
+                        pad,
+                        align,
+                        center,
+                        font,
+                        face,
+                    );
+                    assert!(
+                        offset >= range_start && offset <= raw_len,
+                        "filled cell offset outside: line {line} col {col} offset {offset}"
+                    );
+                    let caret_x = cell_x
+                        + pad * 0.5
+                        + align_offset
+                        + painter.width(
+                            &cell_visible_text(
+                                &cell_raw
+                                    .chars()
+                                    .take(offset.saturating_sub(range_start))
+                                    .collect::<String>(),
+                            ),
+                            font,
+                            face,
+                        );
+                    assert!(
+                        caret_x >= cell_x - 1.0 && caret_x <= cell_x + width + 1.0,
+                        "filled caret outside cell: line {line} col {col} {caret_x}..{}",
+                        cell_x + width
+                    );
+                    println!(
+                        "filled line={line} col={col} text={full:?} tap={center:.1} offset={offset} caret_x={caret_x:.1}"
+                    );
+                    filled_checks += 1;
+                    cell_x += width;
+                }
+            }
+            check_table += 1;
+            at = end + 1;
+        }
+        assert!(filled_checks > 10, "every filled cell should be checked");
+    }
+
+    #[test]
     fn callout_blocks_cover_header_and_body_rows() {
         use crate::markdown::CalloutKind;
         let model = crate::markdown::model(
@@ -7804,6 +8657,7 @@ mod tests {
             false,
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(),
         );
         let mut raw_tables = HashSet::new();
         raw_tables.insert(0usize);
@@ -7821,6 +8675,7 @@ mod tests {
             false,
             &HashSet::new(),
             &raw_tables,
+            &HashSet::new(),
         );
         assert_eq!(grid[1].height, 0.0, "the separator collapses in grid mode");
         assert!(
@@ -7963,6 +8818,7 @@ mod tests {
             true,
             &folded,
             &HashSet::new(),
+            &HashSet::new(),
         );
         assert!(rows[0].height > 22.0, "the header keeps its height");
         assert!(
@@ -7993,6 +8849,7 @@ mod tests {
             22.0,
             1.0,
             true,
+            &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
         );

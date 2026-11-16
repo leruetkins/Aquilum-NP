@@ -806,9 +806,11 @@ class NativeEditorView(
                 Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
                 android.util.Log.d("VibecodiumTap", "copied code block: ${text.length} chars")
             }
-            "code_toggle" -> requestRender()
+            "code_toggle", "table_source" -> requestRender()
             "table_cell" -> {
                 syncSelectionFromNative()
+                composingStart = -1
+                composingEnd = -1
                 requestFocus()
                 startCaretBlink()
                 applyInsertionHandleVisible(true)

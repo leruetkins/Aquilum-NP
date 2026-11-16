@@ -62,6 +62,10 @@ gradle :app:assembleDebug
 
 Release builds are signed via `keystore.properties` (git-ignored).
 
+## Performance notes
+
+- [Tables and code blocks: startup and note-open benchmarks](docs/performance-tables-code-blocks.md)
+
 ## Limitations
 
 - Text scale doesn't apply to the native editor.
