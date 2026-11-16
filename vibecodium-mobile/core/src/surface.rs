@@ -5,7 +5,7 @@
 //! `ANativeWindow` owned by a `SurfaceView`, and reports taps back as a small
 //! JSON action. It deliberately has no Compose/View dependency.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
@@ -44,9 +44,26 @@ extern "C" {
     fn ANativeWindow_unlockAndPost(window: *mut ANativeWindow) -> i32;
 }
 
+#[cfg(target_os = "android")]
 #[link(name = "log")]
 extern "C" {
     fn __android_log_print(prio: i32, tag: *const u8, fmt: *const u8, ...) -> i32;
+}
+
+/// Host builds have no liblog; diagnostics become no-ops so the surface's
+/// tests can link without the Android NDK.
+#[cfg(target_os = "android")]
+macro_rules! android_log {
+    ($prio:expr, $tag:expr, $fmt:expr $(, $arg:expr)* $(,)?) => {
+        unsafe { __android_log_print($prio, $tag, $fmt $(, $arg)*) }
+    };
+}
+
+#[cfg(not(target_os = "android"))]
+macro_rules! android_log {
+    ($($tt:tt)*) => {
+        0i32
+    };
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1572,6 +1589,14 @@ struct EditorState {
     starts: Vec<usize>,
     byte_starts: Vec<usize>,
     starts_dirty: bool,
+    /// Measured table geometry keyed by the table's header line. Valid while
+    /// `table_layout_width`/`table_layout_font` still match the current wrap.
+    table_layouts: HashMap<usize, TableLayout>,
+    table_layout_width: f32,
+    table_layout_font: f32,
+    /// Code blocks the reader folded in reading mode, keyed by the fence
+    /// block id. Long blocks start folded; a tap on their header unfolds them.
+    code_collapsed: HashSet<usize>,
     history: History,
 }
 
@@ -1789,6 +1814,669 @@ fn visual_line_height(font_px: f32, base_line_px: f32, density: f32) -> f32 {
     }
     let step = (4.0 * density).max(1.0);
     ((unrounded / step).ceil() * step).max(base_line_px)
+}
+
+/// Horizontal alignment a table column asks for in its separator row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableAlign {
+    Left,
+    Center,
+    Right,
+}
+
+/// Measured geometry of one markdown table, shared by all of its rows so the
+/// columns stay aligned while the table scrolls.
+#[derive(Clone, Debug, Default)]
+struct TableLayout {
+    cols: usize,
+    aligns: Vec<TableAlign>,
+    /// Painted width of each column in device pixels, padding included.
+    widths: Vec<f32>,
+    total: f32,
+    /// Left offset the table inherits from its source indentation, so a table
+    /// nested in a list stays under its item instead of jumping to the margin.
+    indent: f32,
+}
+
+fn is_table_kind(kind: &str) -> bool {
+    matches!(kind, "table" | "table_row" | "table_separator")
+}
+
+/// First and last source line of the table block containing `line`.
+fn table_bounds(model: &[crate::markdown::MarkdownLine], line: usize) -> Option<(usize, usize)> {
+    if !model
+        .get(line)
+        .map(|row| is_table_kind(&row.kind))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let mut start = line;
+    while start > 0 && is_table_kind(&model[start - 1].kind) {
+        start -= 1;
+    }
+    let mut end = line;
+    while end + 1 < model.len() && is_table_kind(&model[end + 1].kind) {
+        end += 1;
+    }
+    Some((start, end))
+}
+
+fn table_align(cell: &str) -> TableAlign {
+    let trimmed = cell.trim();
+    match (trimmed.starts_with(':'), trimmed.ends_with(':')) {
+        (true, true) => TableAlign::Center,
+        (false, true) => TableAlign::Right,
+        _ => TableAlign::Left,
+    }
+}
+
+/// A cell as the reader sees it: inline markup stripped, link text kept.
+fn cell_visible_text(cell: &str) -> String {
+    use crate::markdown::SyntaxSpan;
+    let mut out = String::new();
+    for span in crate::markdown::parse_inline_syntax_spans(cell) {
+        match span {
+            SyntaxSpan::Marker(_) => {}
+            SyntaxSpan::Text(text)
+            | SyntaxSpan::Bold(text)
+            | SyntaxSpan::Italic(text)
+            | SyntaxSpan::BoldItalic(text)
+            | SyntaxSpan::InlineCode(text)
+            | SyntaxSpan::Strikethrough(text)
+            | SyntaxSpan::Underline(text)
+            | SyntaxSpan::Highlight(text)
+            | SyntaxSpan::Tag(text) => out.push_str(&text),
+            SyntaxSpan::Link { text, .. } => out.push_str(&text),
+            SyntaxSpan::Grammar { text, .. } => out.push_str(&text),
+        }
+    }
+    out
+}
+
+/// Measures every column width once per table and distributes the row to the
+/// full content width. A table narrower than the viewport spreads its columns;
+/// one that is too wide shrinks them proportionally so it still fits a phone.
+#[allow(clippy::too_many_arguments)]
+fn build_table_layout(
+    painter: &mut Painter,
+    model: &[crate::markdown::MarkdownLine],
+    start: usize,
+    end: usize,
+    content_width: f32,
+    font: f32,
+    face: Face,
+    density: f32,
+) -> TableLayout {
+    let mut cols = 0usize;
+    for row in start..=end {
+        cols = cols.max(model[row].cells.len());
+    }
+    if cols == 0 {
+        return TableLayout::default();
+    }
+    let mut aligns = vec![TableAlign::Left; cols];
+    if start + 1 <= end && model[start + 1].kind == "table_separator" {
+        for (index, cell) in model[start + 1].cells.iter().take(cols).enumerate() {
+            aligns[index] = table_align(cell);
+        }
+    }
+    // A table indented inside a list item keeps that offset; its columns share
+    // what is left of the content width.
+    let indent_chars = model[start]
+        .raw
+        .chars()
+        .take_while(|character| *character == ' ' || *character == '\t')
+        .count();
+    let indent = painter.width(&" ".repeat(indent_chars), font, face);
+    let available = (content_width - indent).max(content_width * 0.5);
+    let pad = (12.0 * density).round();
+    let mut widths = vec![0.0f32; cols];
+    for row in start..=end {
+        if model[row].kind == "table_separator" {
+            continue;
+        }
+        for (index, cell) in model[row].cells.iter().take(cols).enumerate() {
+            let text = cell_visible_text(cell);
+            let measured = painter.width(&text, font, face) + pad;
+            widths[index] = widths[index].max(measured);
+        }
+    }
+    let min = (28.0 * density).round();
+    for width in widths.iter_mut() {
+        *width = width.max(min);
+    }
+    let total: f32 = widths.iter().sum();
+    if total > available && total > 0.0 {
+        let scale = available / total;
+        for width in widths.iter_mut() {
+            *width = (*width * scale).max(min * 0.75);
+        }
+    } else if total < available {
+        let extra = (available - total) / cols as f32;
+        for width in widths.iter_mut() {
+            *width += extra;
+        }
+    }
+    let total = widths.iter().sum();
+    TableLayout {
+        cols,
+        aligns,
+        widths,
+        total,
+        indent,
+    }
+}
+
+/// Paints one source line of a table: the header row, the rule that closes it
+/// and a body row. The separator source line itself paints nothing — its rule
+/// is the header's bottom border.
+#[allow(clippy::too_many_arguments)]
+fn paint_table_row(
+    pixels: &mut [u32],
+    surface_width: usize,
+    surface_height: usize,
+    painter: &mut Painter,
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+    layout: &TableLayout,
+    text_x: f32,
+    y: f32,
+    row_h: f32,
+    line_h: f32,
+    font: f32,
+    face: Face,
+    density: f32,
+    palette: &SurfacePalette,
+) {
+    if layout.cols == 0 || layout.total <= 0.0 {
+        return;
+    }
+    let kind = model[line].kind.as_str();
+    if kind == "table_separator" {
+        return;
+    }
+    let header = kind == "table";
+    let text_x = text_x + layout.indent;
+    let hair = (1.0 * density).max(1.0);
+    let pad = (12.0 * density).round();
+    let text_pad_y = (3.0 * density).round();
+    let text_y = y + ((row_h - line_h) * 0.5).max(0.0) + text_pad_y;
+    if header {
+        rect(
+            pixels,
+            surface_width,
+            surface_height,
+            text_x,
+            y,
+            layout.total,
+            row_h,
+            palette.surface_alt,
+        );
+    }
+    let mut cell_x = text_x;
+    for col in 0..layout.cols {
+        let width = layout.widths.get(col).copied().unwrap_or(0.0);
+        let cell = model[line]
+            .cells
+            .get(col)
+            .map(String::as_str)
+            .unwrap_or("");
+        let text = cell_visible_text(cell);
+        let inner = (width - pad).max(0.0);
+        let mut shown = text;
+        let mut text_width = painter.width(&shown, font, face);
+        if text_width > inner && !shown.is_empty() {
+            let ellipsis = painter.advance_of_char('…', font, face);
+            let mut fitted = String::new();
+            let mut used = 0.0f32;
+            for character in shown.chars() {
+                let advance = painter.advance_of_char(character, font, face);
+                if used + advance > (inner - ellipsis).max(0.0) {
+                    fitted.push('…');
+                    break;
+                }
+                used += advance;
+                fitted.push(character);
+            }
+            text_width = painter.width(&fitted, font, face);
+            shown = fitted;
+        }
+        let align_offset = match layout.aligns.get(col).copied().unwrap_or(TableAlign::Left) {
+            TableAlign::Left => 0.0,
+            TableAlign::Center => ((inner - text_width) * 0.5).max(0.0),
+            TableAlign::Right => (inner - text_width).max(0.0),
+        };
+        let x = cell_x + pad * 0.5 + align_offset;
+        let color = if header { palette.heading } else { palette.text };
+        painter.draw(
+            pixels,
+            surface_width,
+            surface_height,
+            x,
+            text_y,
+            &shown,
+            font,
+            color,
+            face,
+            false,
+        );
+        if header {
+            painter.draw(
+                pixels,
+                surface_width,
+                surface_height,
+                x + (0.6 * density).round(),
+                text_y,
+                &shown,
+                font,
+                color,
+                face,
+                false,
+            );
+        }
+        cell_x += width;
+    }
+    // Grid: column separators plus the rule under every row.
+    let mut x = text_x;
+    for col in 0..layout.cols {
+        rect(
+            pixels,
+            surface_width,
+            surface_height,
+            x - hair * 0.5,
+            y,
+            hair,
+            row_h,
+            palette.border,
+        );
+        x += layout.widths.get(col).copied().unwrap_or(0.0);
+    }
+    rect(
+        pixels,
+        surface_width,
+        surface_height,
+        x - hair * 0.5,
+        y,
+        hair,
+        row_h,
+        palette.border,
+    );
+    rect(
+        pixels,
+        surface_width,
+        surface_height,
+        text_x,
+        y + row_h - hair,
+        layout.total,
+        hair,
+        palette.border,
+    );
+    if header {
+        rect(
+            pixels,
+            surface_width,
+            surface_height,
+            text_x,
+            y,
+            layout.total,
+            hair,
+            palette.border,
+        );
+    }
+}
+
+/// Whether the theme background is dark, which picks the callout colour set.
+fn palette_is_dark(palette: &SurfacePalette) -> bool {
+    let rgb = palette.editor_background;
+    let r = (rgb >> 16) & 0xff;
+    let g = (rgb >> 8) & 0xff;
+    let b = rgb & 0xff;
+    r + g + b < 0x180
+}
+
+fn callout_rgb(kind: crate::markdown::CalloutKind, palette: &SurfacePalette) -> u32 {
+    crate::markdown::callout_hex(kind, palette_is_dark(palette))
+}
+
+/// The callout whose block contains this quote line: a header opens a block
+/// that runs over the block quote under it, the extent Obsidian draws. The
+/// model only marks the header itself, so the body rows look back for it.
+fn quote_block_callout(
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+) -> Option<crate::markdown::CalloutKind> {
+    let mut index = line;
+    loop {
+        let row = model.get(index)?;
+        if row.kind != "quote" {
+            return None;
+        }
+        if let Some(callout) = crate::markdown::callout_prefix(&row.raw) {
+            return Some(callout.kind);
+        }
+        if index == 0 {
+            return None;
+        }
+        index -= 1;
+    }
+}
+
+/// Blocks longer than this start folded in reading mode; the header unfolds
+/// them with a tap, so a long note does not turn into a wall of code.
+const CODE_FOLD_LINES: usize = 12;
+
+fn is_code_kind(kind: &str) -> bool {
+    matches!(kind, "code" | "code_fence")
+}
+
+/// First and last source line of the fenced block containing `line`, plus the
+/// block id the model assigns to every fence pair.
+fn code_block_bounds(
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+) -> Option<(usize, usize)> {
+    let row = model.get(line)?;
+    if !is_code_kind(&row.kind) {
+        return None;
+    }
+    let id = row.block_id?;
+    let mut start = line;
+    while start > 0 && model[start - 1].block_id == Some(id) {
+        start -= 1;
+    }
+    let mut end = line;
+    while end + 1 < model.len() && model[end + 1].block_id == Some(id) {
+        end += 1;
+    }
+    Some((start, end))
+}
+
+fn code_block_line_count(
+    model: &[crate::markdown::MarkdownLine],
+    start: usize,
+    end: usize,
+) -> usize {
+    (start..=end)
+        .filter(|index| model.get(*index).map(|row| row.kind == "code").unwrap_or(false))
+        .count()
+}
+
+/// Opening and closing fence lines of the block.
+fn code_block_fences(
+    model: &[crate::markdown::MarkdownLine],
+    start: usize,
+    end: usize,
+) -> (usize, usize) {
+    let open = (start..=end)
+        .find(|index| {
+            model
+                .get(*index)
+                .map(|row| row.kind == "code_fence" && row.is_opening == Some(true))
+                .unwrap_or(false)
+        })
+        .unwrap_or(start);
+    let close = (start..=end)
+        .rev()
+        .find(|index| {
+            model
+                .get(*index)
+                .map(|row| row.kind == "code_fence" && row.is_opening == Some(false))
+                .unwrap_or(false)
+        })
+        .unwrap_or(end);
+    (open, close)
+}
+
+/// The code a block holds, ready for the clipboard. Every source line keeps
+/// its own trailing newline, like the desktop copy button.
+fn code_block_body(
+    model: &[crate::markdown::MarkdownLine],
+    start: usize,
+    end: usize,
+) -> String {
+    let mut body = String::new();
+    for index in start..=end {
+        if let Some(row) = model.get(index) {
+            if row.kind == "code" {
+                body.push_str(&row.content);
+                body.push('\n');
+            }
+        }
+    }
+    body
+}
+
+fn is_opening_fence(model: &[crate::markdown::MarkdownLine], line: usize) -> bool {
+    model
+        .get(line)
+        .map(|row| row.kind == "code_fence" && row.is_opening == Some(true))
+        .unwrap_or(false)
+}
+
+/// Reading-mode fold state: a long block is folded unless the reader unfolded
+/// it, so the model rebuild only has to seed the ones that start folded.
+fn default_folded_code(model: &[crate::markdown::MarkdownLine]) -> HashSet<usize> {
+    let mut folded = HashSet::new();
+    let mut index = 0usize;
+    while index < model.len() {
+        if is_code_kind(&model[index].kind) {
+            if let Some((start, end)) = code_block_bounds(model, index) {
+                if code_block_line_count(model, start, end) > CODE_FOLD_LINES {
+                    if let Some(id) = model[start].block_id {
+                        folded.insert(id);
+                    }
+                }
+                index = end + 1;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    folded
+}
+
+/// Header band of a fenced block: language on the left, copy control on the
+/// right. It is taller than a code row so the controls get breathing room.
+fn code_header_height(font_px: f32, base_line_px: f32, density: f32) -> f32 {
+    visual_line_height(font_px, base_line_px, density) + (10.0 * density).round()
+}
+
+fn row_height_for(
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+    font_px: f32,
+    base_line_px: f32,
+    density: f32,
+) -> f32 {
+    if is_opening_fence(model, line) {
+        code_header_height(font_px, base_line_px, density)
+    } else {
+        visual_line_height(font_px, base_line_px, density)
+    }
+}
+
+fn code_label_px(font_px: f32, density: f32) -> f32 {
+    (font_px * 0.82).max(9.0 * density)
+}
+
+/// Copy control geometry inside a code header row.
+fn code_copy_pill(
+    painter: &mut Painter,
+    text_x: f32,
+    content_width: f32,
+    label_px: f32,
+    density: f32,
+) -> (f32, f32, f32) {
+    let text_width = painter.width("Copy", label_px, Face::Ui);
+    let pad_x = (8.0 * density).round();
+    let width = text_width + 2.0 * pad_x;
+    let height = label_px + (8.0 * density).round();
+    let x = text_x + content_width - (10.0 * density).round() - width;
+    (x, width, height)
+}
+
+/// Rounded rectangle with anti-aliased corners; `rect` only draws squares and
+/// the block needs a real box.
+#[allow(clippy::too_many_arguments)]
+fn rounded_box(
+    pixels: &mut [u32],
+    surface_width: usize,
+    surface_height: usize,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+    rgb: u32,
+) {
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let color = logical(rgb);
+    let r = radius.min(width * 0.5).min(height * 0.5).max(0.0);
+    let x0 = x.floor().max(0.0) as usize;
+    let y0 = y.floor().max(0.0) as usize;
+    let x1 = ((x + width).ceil().min(surface_width as f32)).max(0.0) as usize;
+    let y1 = ((y + height).ceil().min(surface_height as f32)).max(0.0) as usize;
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    let half_w = width * 0.5;
+    let half_h = height * 0.5;
+    for row in y0..y1 {
+        for column in x0..x1 {
+            let px = column as f32 + 0.5 - x;
+            let py = row as f32 + 0.5 - y;
+            let qx = (px - half_w).abs() - (half_w - r);
+            let qy = (py - half_h).abs() - (half_h - r);
+            let outside = (qx.max(0.0) * qx.max(0.0) + qy.max(0.0) * qy.max(0.0)).sqrt()
+                + qx.max(qy).min(0.0)
+                - r;
+            let alpha = ((-outside + 0.5).clamp(0.0, 1.0) * 255.0) as u8;
+            if alpha > 0 {
+                let index = row * surface_width + column;
+                if index < pixels.len() {
+                    pixels[index] = blend(pixels[index], color, alpha);
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_code_header(
+    pixels: &mut [u32],
+    surface_width: usize,
+    surface_height: usize,
+    painter: &mut Painter,
+    model: &[crate::markdown::MarkdownLine],
+    open_line: usize,
+    y: f32,
+    row_h: f32,
+    text_x: f32,
+    content_width: f32,
+    font_px: f32,
+    density: f32,
+    palette: &SurfacePalette,
+    folded: bool,
+    line_count: usize,
+    show_label: bool,
+) {
+    let label_px = code_label_px(font_px, density);
+    let pad = (10.0 * density).round();
+    let text_y = y + ((row_h - label_px) * 0.5).max(0.0);
+    if show_label {
+        // Desktop treatment: the language in accent, with a `<>` glyph after
+        // it. A fence without a language reads as CODE.
+        let language = model
+            .get(open_line)
+            .and_then(|row| row.language.clone())
+            .filter(|language| !language.is_empty())
+            .unwrap_or_else(|| "code".to_string())
+            .to_uppercase();
+        let bold_offset = (0.6 * density).round();
+        painter.draw(
+            pixels,
+            surface_width,
+            surface_height,
+            text_x + pad,
+            text_y,
+            &language,
+            label_px,
+            palette.accent,
+            Face::Ui,
+            false,
+        );
+        painter.draw(
+            pixels,
+            surface_width,
+            surface_height,
+            text_x + pad + bold_offset,
+            text_y,
+            &language,
+            label_px,
+            palette.accent,
+            Face::Ui,
+            false,
+        );
+        let language_width = painter.width(&language, label_px, Face::Ui);
+        let mut icon_x = text_x + pad + language_width + (8.0 * density).round();
+        painter.draw(
+            pixels,
+            surface_width,
+            surface_height,
+            icon_x,
+            text_y,
+            "<>",
+            label_px,
+            palette.text_muted,
+            Face::Ui,
+            false,
+        );
+        if folded {
+            icon_x += painter.width("<>", label_px, Face::Ui) + (6.0 * density).round();
+            painter.draw(
+                pixels,
+                surface_width,
+                surface_height,
+                icon_x,
+                text_y,
+                &format!("· {line_count} lines"),
+                label_px,
+                palette.text_muted,
+                Face::Ui,
+                false,
+            );
+        }
+    }
+    let (pill_x, pill_w, pill_h) =
+        code_copy_pill(painter, text_x, content_width, label_px, density);
+    let pill_y = y + ((row_h - pill_h) * 0.5).max(0.0);
+    rounded_box(
+        pixels,
+        surface_width,
+        surface_height,
+        pill_x,
+        pill_y,
+        pill_w,
+        pill_h,
+        pill_h * 0.5,
+        palette.surface_alt,
+    );
+    let copy_width = painter.width("Copy", label_px, Face::Ui);
+    painter.draw(
+        pixels,
+        surface_width,
+        surface_height,
+        pill_x + (pill_w - copy_width) * 0.5,
+        pill_y + ((pill_h - label_px) * 0.5).max(0.0),
+        "Copy",
+        label_px,
+        palette.text,
+        Face::Ui,
+        false,
+    );
 }
 
 /// Index of the visual row containing `y` (a document offset in pixels), or the
@@ -2221,7 +2909,19 @@ fn compute_hidden(
     let sel_end = selection.1.min(line_start + char_count);
     let has_selection = sel_start < sel_end;
     let is_cursor = cursor_line == Some(line);
+    // Editing any line of a fenced block reveals that block's own fences, so
+    // the caret does not have to sit on the opening or closing line to see the
+    // ``` markers. The reading-mode fold path never reaches here.
+    let active_code_block = cursor_line
+        .and_then(|cursor| model.get(cursor))
+        .filter(|row| is_code_kind(&row.kind))
+        .and_then(|row| row.block_id);
     if !is_cursor && !has_selection {
+        if let (Some(block), Some(model_line)) = (active_code_block, model.get(line)) {
+            if model_line.kind == "code_fence" && model_line.block_id == Some(block) {
+                return vec![false; char_count];
+            }
+        }
         return canonical_hidden(model, line, char_count);
     }
     // The active line keeps its block prefix raw; only the inline markers of
@@ -2323,6 +3023,8 @@ fn wrap_layout(
     fallback_font_px: f32,
     base_line_px: f32,
     density: f32,
+    preview: bool,
+    folded_code: &HashSet<usize>,
 ) -> Vec<WrapLine> {
     let all: Vec<char> = text.chars().collect();
     let mut rows = Vec::with_capacity(starts.len());
@@ -2337,7 +3039,46 @@ fn wrap_layout(
             all.len()
         };
         let chars = &all[line_start.min(all.len())..line_end.min(all.len())];
-        let hidden = canonical_hidden(model, line_index, chars.len());
+        // A reading-mode table is painted as a grid by `paint_table_row`, so
+        // its source line must occupy exactly one visual row and none of its
+        // raw pipes may take part in wrapping.
+        let table_kind = if preview {
+            model.get(line_index).map(|line| line.kind.as_str())
+        } else {
+            None
+        };
+        let table = table_kind.filter(|kind| is_table_kind(kind));
+        let hidden = if table.is_some() {
+            vec![true; chars.len()]
+        } else {
+            canonical_hidden(model, line_index, chars.len())
+        };
+        // A folded reading-mode block keeps only its header row; every code
+        // line and the closing fence collapse to zero height.
+        let folded = if preview {
+            model
+                .get(line_index)
+                .filter(|row| is_code_kind(&row.kind))
+                .and_then(|row| row.block_id)
+                .map(|id| folded_code.contains(&id))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let height = match table {
+            // The header's own bottom border is the separator, so the source
+            // separator line needs no vertical space of its own.
+            Some("table_separator") => 0.0,
+            Some(_) => visual_line_height(font, base_line_px, density) + (10.0 * density).round(),
+            None if folded => {
+                if is_opening_fence(model, line_index) {
+                    code_header_height(font, base_line_px, density)
+                } else {
+                    0.0
+                }
+            }
+            None => row_height_for(model, line_index, font, base_line_px, density),
+        };
         for (start, end) in wrap_line_chunks(
             painter,
             chars,
@@ -2354,7 +3095,7 @@ fn wrap_layout(
                 start,
                 end,
                 font,
-                height: visual_line_height(font, base_line_px, density),
+                height,
             });
         }
     }
@@ -2692,16 +3433,14 @@ impl SurfaceState {
             ANativeWindow_unlockAndPost(self.window);
         }
         let t_post = t2.elapsed();
-        unsafe {
-            __android_log_print(
-                3, // DEBUG
-                b"VibecodiumRust\0".as_ptr(),
-                b"render breakdown: lock=%.2fms, paint=%.2fms, post=%.2fms\0".as_ptr(),
-                t_lock.as_secs_f64() * 1000.0,
-                t_paint.as_secs_f64() * 1000.0,
-                t_post.as_secs_f64() * 1000.0,
-            );
-        }
+        android_log!(
+            3, // DEBUG
+            b"VibecodiumRust\0".as_ptr(),
+            b"render breakdown: lock=%.2fms, paint=%.2fms, post=%.2fms\0".as_ptr(),
+            t_lock.as_secs_f64() * 1000.0,
+            t_paint.as_secs_f64() * 1000.0,
+            t_post.as_secs_f64() * 1000.0,
+        );
     }
 
     fn paint_locked(&mut self, buffer: &ANativeWindowBuffer) {
@@ -3098,6 +3837,8 @@ impl SurfaceState {
             } else {
                 Vec::new()
             };
+            self.editor.table_layouts.clear();
+            self.editor.code_collapsed = default_folded_code(&self.editor.model);
             self.editor.model_dirty = false;
         }
     }
@@ -3216,6 +3957,8 @@ impl SurfaceState {
             base,
             base_line,
             self.density,
+            self.editor.preview,
+            &self.editor.code_collapsed,
         );
         let mut first = vec![0; self.editor.starts.len()];
         let mut count = vec![0; self.editor.starts.len()];
@@ -3340,7 +4083,13 @@ impl SurfaceState {
                         start,
                         end,
                         font,
-                        height: visual_line_height(font, base_line, self.density),
+                        height: row_height_for(
+                            &self.editor.model,
+                            line,
+                            font,
+                            base_line,
+                            self.density,
+                        ),
                     });
                 }
             } else {
@@ -3388,6 +4137,8 @@ impl SurfaceState {
             } else {
                 Vec::new()
             };
+            self.editor.table_layouts.clear();
+            self.editor.code_collapsed = default_folded_code(&self.editor.model);
             self.editor.model_dirty = false;
         }
         let advance = self.painter.advance(font_px, Face::Mono);
@@ -3395,21 +4146,19 @@ impl SurfaceState {
         let gutter = self.gutter_width();
         if (self.last_gutter - gutter).abs() > 0.5 {
             if self.last_gutter >= 0.0 {
-                unsafe {
-                    __android_log_print(
-                        3,
-                        b"VibecodiumRust\0".as_ptr(),
-                        b"gutter %.1f -> %.1f lines=%d scroll=%.1f band=%.1f height=%d viewport=%d\0"
-                            .as_ptr(),
-                        self.last_gutter as f64,
-                        gutter as f64,
-                        self.editor.starts.len() as i32,
-                        self.editor.scroll as f64,
-                        self.editor.band_origin as f64,
-                        self.height as i32,
-                        self.viewport_height as i32,
-                    );
-                }
+                android_log!(
+                    3,
+                    b"VibecodiumRust\0".as_ptr(),
+                    b"gutter %.1f -> %.1f lines=%d scroll=%.1f band=%.1f height=%d viewport=%d\0"
+                        .as_ptr(),
+                    self.last_gutter as f64,
+                    gutter as f64,
+                    self.editor.starts.len() as i32,
+                    self.editor.scroll as f64,
+                    self.editor.band_origin as f64,
+                    self.height as i32,
+                    self.viewport_height as i32,
+                );
             }
             self.last_gutter = gutter;
         }
@@ -3444,6 +4193,7 @@ impl SurfaceState {
         let mut painter = std::mem::take(&mut self.painter);
         let mut prepared_line = usize::MAX;
         let mut prepared_heading: Option<HeadingStyle> = None;
+        let mut painted_rule = false;
         let mut line_start = 0usize;
         let mut chars: Vec<char> = Vec::new();
         let mut colors: Vec<u32> = Vec::new();
@@ -3457,14 +4207,139 @@ impl SurfaceState {
         let mut start_handle: Option<(f32, f32)> = None;
         let mut end_handle: Option<(f32, f32)> = None;
         let mut insertion_handle: Option<(f32, f32)> = None;
+        let mut painted_code_block: Option<usize> = None;
         let text_pad_y = (3.0 * density).round();
         for visual in first..last {
             let chunk = self.editor.wrap[visual];
             let row_h = chunk.height;
             let y = top_inset + self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0) - scroll;
             let text_y = y + ((row_h - line_h) * 0.5).max(0.0) + text_pad_y;
+            // Folded code rows and table separators own no vertical space.
+            if row_h <= 0.0 {
+                continue;
+            }
+            // One rounded box behind the whole fenced block, painted when its
+            // first visible row is reached.
+            if has_model {
+                if let Some(line) = model.get(chunk.line) {
+                    if is_code_kind(&line.kind) {
+                        if let Some((start, end)) = code_block_bounds(&model, chunk.line) {
+                            let id = model[start].block_id.unwrap_or(usize::MAX);
+                            if painted_code_block != Some(id) {
+                                painted_code_block = Some(id);
+                                let first_visual = self
+                                    .editor
+                                    .wrap_first
+                                    .get(start)
+                                    .copied()
+                                    .unwrap_or(visual);
+                                let last_visual = self
+                                    .editor
+                                    .wrap_first
+                                    .get(end)
+                                    .copied()
+                                    .unwrap_or(visual)
+                                    + self
+                                        .editor
+                                        .wrap_count
+                                        .get(end)
+                                        .copied()
+                                        .unwrap_or(1)
+                                        .saturating_sub(1);
+                                let top = top_inset
+                                    + self
+                                        .editor
+                                        .wrap_tops
+                                        .get(first_visual)
+                                        .copied()
+                                        .unwrap_or(0.0)
+                                    - scroll;
+                                let bottom = top_inset
+                                    + self
+                                        .editor
+                                        .wrap_tops
+                                        .get(last_visual)
+                                        .copied()
+                                        .unwrap_or(0.0)
+                                    + self
+                                        .editor
+                                        .wrap
+                                        .get(last_visual)
+                                        .map(|row| row.height)
+                                        .unwrap_or(0.0)
+                                    - scroll;
+                                rounded_box(
+                                    pixels,
+                                    self.width,
+                                    self.height,
+                                    text_x,
+                                    top,
+                                    content_width,
+                                    (bottom - top).max(0.0),
+                                    (8.0 * density).round(),
+                                    palette.code_background,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // Reading mode paints tables as a grid from the measured layout
+            // instead of their raw source lines.
+            if self.editor.preview && has_model {
+                let header = model
+                    .get(chunk.line)
+                    .filter(|line| is_table_kind(&line.kind))
+                    .and_then(|_| table_bounds(&model, chunk.line))
+                    .map(|(start, _)| start);
+                if let Some(start) = header {
+                    if (self.editor.table_layout_width - content_width).abs() >= 0.5
+                        || (self.editor.table_layout_font - font_px).abs() >= 0.5
+                    {
+                        self.editor.table_layouts.clear();
+                        self.editor.table_layout_width = content_width;
+                        self.editor.table_layout_font = font_px;
+                    }
+                    if !self.editor.table_layouts.contains_key(&start) {
+                        let (_, end) = table_bounds(&model, chunk.line).unwrap_or((start, start));
+                        let layout = build_table_layout(
+                            &mut painter,
+                            &model,
+                            start,
+                            end,
+                            content_width,
+                            font_px,
+                            self.text_face,
+                            density,
+                        );
+                        self.editor.table_layouts.insert(start, layout);
+                    }
+                    if let Some(layout) = self.editor.table_layouts.get(&start).cloned() {
+                        paint_table_row(
+                            pixels,
+                            self.width,
+                            self.height,
+                            &mut painter,
+                            &model,
+                            chunk.line,
+                            &layout,
+                            text_x,
+                            y,
+                            row_h,
+                            line_h,
+                            font_px,
+                            self.text_face,
+                            density,
+                            &palette,
+                        );
+                    }
+                    prepared_line = usize::MAX;
+                    continue;
+                }
+            }
             if chunk.line != prepared_line {
                 prepared_line = chunk.line;
+                painted_rule = false;
                 prepared_heading = if has_model {
                     model
                         .get(chunk.line)
@@ -3502,6 +4377,7 @@ impl SurfaceState {
                             "heading" => heading_at(&headings, line.level).color,
                             "quote" => palette.text_muted,
                             "code" => palette.code_string,
+                            "code_fence" => palette.text_muted,
                             _ => palette.code_normal,
                         };
                         colors.clear();
@@ -3561,16 +4437,73 @@ impl SurfaceState {
                                     }
                                 }
                                 "quote" => {
-                                    if let Some(character) = chars.first_mut() {
-                                        *character = '│';
-                                    }
                                     let length = line.prefix_chars.min(chars.len());
-                                    for value in hidden.iter_mut().take(length).skip(1) {
+                                    // Every quote level keeps its own bar in the
+                                    // marker cells, exactly like the desktop
+                                    // renderer, and the rest of the prefix stays
+                                    // hidden. A callout block colours all of its
+                                    // bars, the header one included.
+                                    let header = if chunk.line != cursor_line {
+                                        crate::markdown::callout_prefix(raw)
+                                    } else {
+                                        None
+                                    };
+                                    let block_color = if chunk.line != cursor_line {
+                                        quote_block_callout(&model, chunk.line)
+                                            .map(|kind| callout_rgb(kind, &palette))
+                                    } else {
+                                        None
+                                    };
+                                    let color = header
+                                        .map(|callout| callout_rgb(callout.kind, &palette))
+                                        .or(block_color);
+                                    for value in hidden.iter_mut().take(length) {
                                         *value = true;
                                     }
+                                    for index in 0..length {
+                                        if chars[index] == '>' {
+                                            chars[index] = '│';
+                                            hidden[index] = false;
+                                            colors[index] = color.unwrap_or(palette.marker);
+                                        }
+                                    }
+                                    if let Some(callout) = header {
+                                        let quote_cells = crate::markdown::quote_prefix(raw)
+                                            .map_or(0, |prefix| prefix.chars);
+                                        let label = crate::markdown::callout_label_padded(
+                                            &callout,
+                                            quote_cells,
+                                        );
+                                        for (offset, character) in label.chars().enumerate() {
+                                            let index = quote_cells + offset;
+                                            if index < length {
+                                                chars[index] = character;
+                                                hidden[index] = false;
+                                                colors[index] = color.unwrap_or(palette.marker);
+                                            }
+                                        }
+                                    }
+                                }
+                                "rule" => {
+                                    // A rule paints a divider once the caret
+                                    // leaves the line; on the active line its
+                                    // raw `---` stays editable.
+                                    hidden.fill(true);
+                                    painted_rule = true;
                                 }
                                 "code_fence" => {
-                                    hidden.fill(true);
+                                    // Editing any line of a block reveals both
+                                    // of its fences, so the caret does not have
+                                    // to sit on the marker line itself.
+                                    let active_block = model
+                                        .get(cursor_line)
+                                        .filter(|row| is_code_kind(&row.kind))
+                                        .and_then(|row| row.block_id);
+                                    let revealed = line.block_id.is_some()
+                                        && line.block_id == active_block;
+                                    if !revealed {
+                                        hidden.fill(true);
+                                    }
                                 }
                                 _ => {}
                             }
@@ -3597,6 +4530,18 @@ impl SurfaceState {
                                     palette.highlight
                                 };
                                 overlays.push((start.min(chars.len()), end.min(chars.len()), color));
+                            }
+                        }
+                        // Plain title text resets its colour to the quote base
+                        // above, so the callout header reapplies its own tint
+                        // after the span pass.
+                        if line.kind == "quote" && chunk.line != cursor_line {
+                            if let Some(callout) = crate::markdown::callout_prefix(raw) {
+                                let color = callout_rgb(callout.kind, &palette);
+                                let start = line.prefix_chars.min(chars.len());
+                                for value in colors[start..].iter_mut() {
+                                    *value = color;
+                                }
                             }
                         }
                     }
@@ -3627,6 +4572,19 @@ impl SurfaceState {
             let local_x = |index: usize| x_offsets.get(index).copied().unwrap_or(base_x) - base_x;
             let absolute_start = line_start + chunk.start;
             let absolute_end = line_start + chunk.end;
+            if painted_rule {
+                let thickness = (1.0 * density).max(1.0);
+                rect(
+                    pixels,
+                    self.width,
+                    self.height,
+                    text_x,
+                    y + (row_h - thickness) * 0.5,
+                    content_width,
+                    thickness,
+                    palette.border,
+                );
+            }
             for (overlay_start, overlay_end, color) in &overlays {
                 let start = (*overlay_start).max(chunk_start);
                 let end = (*overlay_end).min(chunk_end);
@@ -3717,6 +4675,52 @@ impl SurfaceState {
                         face,
                         italic,
                     );
+                }
+            }
+            // Header chrome of a fenced block: language, fold count and the
+            // copy control. Editing any line of the block reveals its raw
+            // fences, but the copy control stays on the header row.
+            if has_model {
+                if let Some(line) = model.get(chunk.line) {
+                    if line.kind == "code_fence" && line.is_opening == Some(true) {
+                        if let Some((start, end)) = code_block_bounds(&model, chunk.line) {
+                            let active_block = if self.editor.preview {
+                                None
+                            } else {
+                                model
+                                    .get(cursor_line)
+                                    .filter(|row| is_code_kind(&row.kind))
+                                    .and_then(|row| row.block_id)
+                            };
+                            let revealed = !self.editor.preview
+                                && line.block_id.is_some()
+                                && line.block_id == active_block;
+                            let folded = self.editor.preview
+                                && line
+                                    .block_id
+                                    .map(|id| self.editor.code_collapsed.contains(&id))
+                                    .unwrap_or(false);
+                            let lines = code_block_line_count(&model, start, end);
+                            paint_code_header(
+                                pixels,
+                                self.width,
+                                self.height,
+                                &mut painter,
+                                &model,
+                                chunk.line,
+                                y,
+                                row_h,
+                                text_x,
+                                content_width,
+                                font_px,
+                                density,
+                                &palette,
+                                folded,
+                                lines,
+                                !revealed,
+                            );
+                        }
+                    }
                 }
             }
             if visual == cursor_visual && selection_end == selection_start {
@@ -3877,6 +4881,60 @@ impl SurfaceState {
             }
             _ => None,
         }
+    }
+
+    /// Tap routing for the code-block chrome. Returns an action for Kotlin when
+    /// the tap hit the copy control or folded/unfolded a reading-mode block,
+    /// and `None` when the tap is an ordinary caret placement.
+    fn editor_code_tap(&mut self, x: f32, y: f32) -> Option<String> {
+        let (_advance, gutter, content) = self.editor_metrics();
+        self.ensure_wrap(content);
+        self.ensure_model();
+        if self.editor.wrap.is_empty() {
+            return None;
+        }
+        let scroll = self.editor.scroll;
+        let top_inset = self.editor.top_inset.round();
+        let visual = visual_at_y(&self.editor.wrap_tops, (y + scroll - top_inset).max(0.0))
+            .min(self.editor.wrap.len().saturating_sub(1));
+        let chunk = *self.editor.wrap.get(visual)?;
+        if chunk.height <= 0.0 {
+            return None;
+        }
+        let (start, end, open, block_id) = {
+            let line = self.editor.model.get(chunk.line)?;
+            if !is_code_kind(&line.kind) {
+                return None;
+            }
+            let (start, end) = code_block_bounds(&self.editor.model, chunk.line)?;
+            let (open, _) = code_block_fences(&self.editor.model, start, end);
+            (start, end, open, line.block_id)
+        };
+        if chunk.line != open {
+            return None;
+        }
+        let font = self.font_px();
+        let label_px = code_label_px(font, self.density);
+        let (pill_x, pill_w, pill_h) =
+            code_copy_pill(&mut self.painter, gutter, content, label_px, self.density);
+        let row_top =
+            top_inset + self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0) - scroll;
+        let pill_y = row_top + ((chunk.height - pill_h) * 0.5).max(0.0);
+        if x >= pill_x && x <= pill_x + pill_w && y >= pill_y && y <= pill_y + pill_h {
+            let body = code_block_body(&self.editor.model, start, end);
+            return Some(json!({ "kind": "copy_code", "text": body }).to_string());
+        }
+        if self.editor.preview {
+            if let Some(id) = block_id {
+                if !self.editor.code_collapsed.insert(id) {
+                    self.editor.code_collapsed.remove(&id);
+                }
+            }
+            self.editor.wrap_dirty = true;
+            self.invalidate();
+            return Some(json!({ "kind": "code_toggle" }).to_string());
+        }
+        None
     }
 
     fn editor_touch(&mut self, x: f32, y: f32, action: i32) -> bool {
@@ -4945,16 +6003,14 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceRender(
         ANativeWindow_unlockAndPost(window);
     }
     let t_post = t2.elapsed();
-    unsafe {
-        __android_log_print(
-            3,
-            b"VibecodiumRust\0".as_ptr(),
-            b"nativeSurfaceRender: lock=%.2fms, paint=%.2fms, post=%.2fms\0".as_ptr(),
-            t_lock.as_secs_f64() * 1000.0,
-            t_paint.as_secs_f64() * 1000.0,
-            t_post.as_secs_f64() * 1000.0,
-        );
-    }
+    android_log!(
+        3,
+        b"VibecodiumRust\0".as_ptr(),
+        b"nativeSurfaceRender: lock=%.2fms, paint=%.2fms, post=%.2fms\0".as_ptr(),
+        t_lock.as_secs_f64() * 1000.0,
+        t_paint.as_secs_f64() * 1000.0,
+        t_post.as_secs_f64() * 1000.0,
+    );
     rendered_origin
 }
 
@@ -5152,7 +6208,13 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetPrevi
 ) {
     let _ = with_surface(id, |state| {
         state.invalidate();
-        state.editor.preview = preview != 0;
+        let preview = preview != 0;
+        if state.editor.preview != preview {
+            // Reading mode collapses table source lines and paints them as a
+            // grid, so the canonical wrap has to be rebuilt.
+            state.editor.preview = preview;
+            state.editor.wrap_dirty = true;
+        }
     });
 }
 
@@ -5452,6 +6514,20 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSelectio
 }
 
 #[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorTapAction(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    x: jfloat,
+    y: jfloat,
+) -> jstring {
+    let result = with_surface(id, |state| state.editor_code_tap(x, y))
+        .flatten()
+        .unwrap_or_default();
+    to_java(&mut env, result)
+}
+
+#[no_mangle]
 pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSelectAt(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -5640,6 +6716,8 @@ mod tests {
             px,
             22.0,
             1.0,
+            false,
+            &HashSet::new(),
         );
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].start, 0);
@@ -5697,5 +6775,137 @@ mod tests {
         let px = 10.0;
         let chars: Vec<char> = "abc def ".chars().collect();
         assert_eq!(fit_name_chars(&mut painter, &chars, px, 6.0 + 8.0 * 6.0), 7);
+    }
+
+    #[test]
+    fn table_bounds_cover_header_separator_and_rows() {
+        let model = crate::markdown::model("| A | B |\n| --- | --- |\n| 1 | 2 |\n\ntail\n");
+        assert_eq!(table_bounds(&model, 0), Some((0, 2)));
+        assert_eq!(table_bounds(&model, 1), Some((0, 2)));
+        assert_eq!(table_bounds(&model, 2), Some((0, 2)));
+        assert_eq!(table_bounds(&model, 3), None);
+    }
+
+    #[test]
+    fn table_alignment_reads_the_separator_colons() {
+        assert_eq!(table_align("---"), TableAlign::Left);
+        assert_eq!(table_align(":---"), TableAlign::Left);
+        assert_eq!(table_align("---:"), TableAlign::Right);
+        assert_eq!(table_align(":---:"), TableAlign::Center);
+    }
+
+    #[test]
+    fn table_cells_paint_their_text_without_markup() {
+        assert_eq!(cell_visible_text("**bold** text"), "bold text");
+        assert_eq!(cell_visible_text("[link](https://x)"), "link");
+        assert_eq!(cell_visible_text("`code`"), "code");
+        assert_eq!(cell_visible_text("plain"), "plain");
+    }
+
+    #[test]
+    fn table_layout_fills_the_view_and_keeps_alignment() {
+        let model = crate::markdown::model("| A | B |\n| :--- | ---: |\n| 1 | 2 |\n");
+        let mut painter = Painter::new();
+        let layout = build_table_layout(&mut painter, &model, 0, 2, 300.0, 15.0, Face::Mono, 1.0);
+        assert_eq!(layout.cols, 2);
+        assert_eq!(layout.aligns, vec![TableAlign::Left, TableAlign::Right]);
+        assert!(layout.widths.iter().all(|width| *width > 0.0));
+        assert!((layout.total - 300.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn table_layout_keeps_a_nested_tables_indent() {
+        let model = crate::markdown::model("   | A | B |\n   | --- | --- |\n   | 1 | 2 |");
+        let mut painter = Painter::new();
+        let layout = build_table_layout(&mut painter, &model, 0, 2, 300.0, 15.0, Face::Mono, 1.0);
+        assert!(layout.indent > 0.0, "indent {layout:?}");
+        assert!(
+            (layout.indent + layout.total - 300.0).abs() < 0.01,
+            "indented table still fills the remaining width: {layout:?}"
+        );
+    }
+
+    #[test]
+    fn code_block_bounds_group_fences_and_lines() {
+        let model = crate::markdown::model("```rust\nlet a = 1;\nlet b = 2;\n```\n\ntail\n");
+        assert_eq!(code_block_bounds(&model, 0), Some((0, 3)));
+        assert_eq!(code_block_bounds(&model, 2), Some((0, 3)));
+        assert_eq!(code_block_bounds(&model, 4), None);
+        assert_eq!(code_block_fences(&model, 0, 3), (0, 3));
+        assert_eq!(code_block_line_count(&model, 0, 3), 2);
+        assert_eq!(code_block_body(&model, 0, 3), "let a = 1;\nlet b = 2;\n");
+    }
+
+    #[test]
+    fn long_code_blocks_start_folded() {
+        let mut text = String::from("```rust\n");
+        for index in 0..=CODE_FOLD_LINES {
+            text.push_str(&format!("let x{index} = 1;\n"));
+        }
+        text.push_str("```\n");
+        let model = crate::markdown::model(&text);
+        assert_eq!(default_folded_code(&model).len(), 1);
+    }
+
+    #[test]
+    fn folded_code_lines_collapse_to_the_header() {
+        let mut text = String::from("```rust\n");
+        for index in 0..=CODE_FOLD_LINES {
+            text.push_str(&format!("let x{index} = 1;\n"));
+        }
+        text.push_str("```");
+        let starts = line_starts(&text).0;
+        let model = crate::markdown::model(&text);
+        let folded = default_folded_code(&model);
+        let mut painter = Painter::new();
+        let line_fonts: Vec<(f32, Face)> = starts.iter().map(|_| (15.0, Face::Mono)).collect();
+        let rows = wrap_layout(
+            &text,
+            &starts,
+            300.0,
+            &mut painter,
+            &line_fonts,
+            &model,
+            Face::Mono,
+            15.0,
+            22.0,
+            1.0,
+            true,
+            &folded,
+        );
+        assert!(rows[0].height > 22.0, "the header keeps its height");
+        assert!(
+            rows[1..rows.len() - 1]
+                .iter()
+                .all(|row| row.height == 0.0),
+            "folded code lines take no space: {rows:?}"
+        );
+        assert!(rows[rows.len() - 1].height == 0.0, "closing fence folds too");
+    }
+
+    #[test]
+    fn reading_mode_collapses_each_table_line_to_one_row() {
+        let text = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+        let (starts, _) = line_starts(text);
+        let model = crate::markdown::model(text);
+        let mut painter = Painter::new();
+        let line_fonts: Vec<(f32, Face)> = starts.iter().map(|_| (15.0, Face::Mono)).collect();
+        let rows = wrap_layout(
+            text,
+            &starts,
+            200.0,
+            &mut painter,
+            &line_fonts,
+            &model,
+            Face::Mono,
+            15.0,
+            22.0,
+            1.0,
+            true,
+            &HashSet::new(),
+        );
+        assert_eq!(rows.len(), 3, "one visual row per source line: {rows:?}");
+        assert_eq!(rows[1].height, 0.0, "the separator line has no height");
+        assert!(rows[0].height > 22.0, "table rows carry vertical padding");
     }
 }

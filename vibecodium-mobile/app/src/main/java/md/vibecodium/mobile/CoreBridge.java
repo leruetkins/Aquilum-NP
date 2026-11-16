@@ -92,6 +92,13 @@ public final class CoreBridge {
     public static native String nativeSurfaceTouch(int id, float x, float y, int action);
 
     /**
+     * Runs before a tap places the caret. Returns a JSON action when the tap
+     * hit the code-block copy control or folded a code block, or an empty
+     * string when it is an ordinary caret tap.
+     */
+    public static native String nativeEditorTapAction(int id, float x, float y);
+
+    /**
      * Lock-free absolute scroll request: stores the value for the next paint
      * without taking the surface lock, so input and fling ticks never wait on
      * a frame in progress.

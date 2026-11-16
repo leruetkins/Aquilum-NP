@@ -175,7 +175,13 @@ pub fn model(text: &str) -> Vec<MarkdownLine> {
 
         if state.is_none() && is_table_start(&lines, index) {
             result.push(table_line(raw, "table", split_cells(raw)));
-            result.push(table_line(lines[index + 1], "table_separator", Vec::new()));
+            // The separator cells carry the column alignment (`:---`, `---:`,
+            // `:---:`), which the reading-mode grid uses.
+            result.push(table_line(
+                lines[index + 1],
+                "table_separator",
+                split_cells(lines[index + 1]),
+            ));
             index += 2;
             while index < lines.len() {
                 let current = lines[index];

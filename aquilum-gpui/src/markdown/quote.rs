@@ -219,7 +219,7 @@ pub fn callout_bg(kind: CalloutKind, is_dark: bool) -> gpui::Rgba {
     gpui::rgba((callout_hex(kind, is_dark) << 8) | alpha)
 }
 
-fn callout_hex(kind: CalloutKind, is_dark: bool) -> u32 {
+pub fn callout_hex(kind: CalloutKind, is_dark: bool) -> u32 {
     match (kind, is_dark) {
         (CalloutKind::Note | CalloutKind::Info, true) => 0x89b4fa,
         (CalloutKind::Note | CalloutKind::Info, false) => 0x1e66f5,

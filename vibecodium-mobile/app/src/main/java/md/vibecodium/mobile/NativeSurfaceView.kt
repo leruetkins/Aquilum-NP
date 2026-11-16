@@ -33,6 +33,7 @@ import android.view.ViewConfiguration
 import android.widget.FrameLayout
 import android.widget.Magnifier
 import android.widget.OverScroller
+import android.widget.Toast
 import kotlin.math.roundToInt
 
 import android.view.accessibility.AccessibilityNodeInfo
@@ -786,6 +787,29 @@ class NativeEditorView(
         if (height > 0) return height
         if (measuredHeight > 0) return measuredHeight
         return resources.displayMetrics.heightPixels
+    }
+
+    /**
+     * Code-block chrome taps. Returns true when the tap was consumed by the
+     * copy control or by folding/unfolding a block, so the caret stays put.
+     */
+    private fun handleCodeTap(x: Float, y: Float): Boolean {
+        val raw = CoreBridge.nativeEditorTapAction(surfaceId, x, y)
+        if (raw.isEmpty()) return false
+        val action = runCatching { JSONObject(raw) }.getOrNull() ?: return false
+        when (action.optString("kind")) {
+            "copy_code" -> {
+                val text = action.optString("text")
+                val clipboard =
+                    context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                clipboard?.setPrimaryClip(ClipData.newPlainText("Code", text))
+                Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                android.util.Log.d("VibecodiumTap", "copied code block: ${text.length} chars")
+            }
+            "code_toggle" -> requestRender()
+        }
+        helper.invalidateRoot()
+        return true
     }
 
     private fun ensureScrollMaxY(): Float {
@@ -2709,6 +2733,10 @@ class NativeEditorView(
                         showSelectionActions()
                         return true
                     } else {
+                        if (handleCodeTap(event.x, event.y)) {
+                            requestRender()
+                            return true
+                        }
                         val t0 = SystemClock.uptimeMillis()
                         CoreBridge.nativeEditorSelectAt(surfaceId, event.x, event.y, false)
                         val t1 = SystemClock.uptimeMillis()
