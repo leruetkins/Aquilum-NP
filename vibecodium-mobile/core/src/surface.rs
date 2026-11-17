@@ -5992,11 +5992,14 @@ impl SurfaceState {
                                 // Obsidian: --checkbox-size is 1.15em.
                                 (chunk.font * 1.15).max(16.0 * density);
                             let box_cells = task.checkbox.chars().count() as f32;
+                            // Keep the box inside its own marker cells: the
+                            // trailing prefix space then reads as a real gap
+                            // between the box and the text.
                             let box_x = text_x
                                 + row_shift
                                 + local_x(index)
                                 + task.list_chars() as f32 * cell_width
-                                + (box_cells * cell_width - size) * 0.5;
+                                + (box_cells * cell_width - size).min(0.0);
                             paint_task_checkbox(
                                 pixels,
                                 self.width,
@@ -6227,7 +6230,7 @@ impl SurfaceState {
                         let bx = gutter
                             + indent_w
                             + task.list_chars() as f32 * cell
-                            + (box_cells * cell - size) * 0.5;
+                            + (box_cells * cell - size).min(0.0);
                         let row_top = top_inset
                             + self
                                 .editor
