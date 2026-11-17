@@ -71,22 +71,24 @@ class ExplorerTreeTest {
         assertEquals(listOf("Sub"), byFile[0].children.map { it.name })
         assertEquals(listOf("beta.md"), byFile[0].children[0].children.map { it.name })
 
-        // A matching folder is shown as a row; unrelated children stay hidden.
+        // A matching folder keeps its whole subtree so it can be expanded and
+        // browsed, while the folder itself is not auto-expanded.
         val byFolder = filterExplorerTree(tree, "projects")
         assertEquals(listOf("Projects"), byFolder.map { it.name })
-        assertEquals(emptyList<String>(), byFolder[0].children.map { it.name })
+        assertEquals(listOf("Sub", "alpha.md"), byFolder[0].children.map { it.name })
+        assertEquals(listOf("beta.md"), byFolder[0].children[0].children.map { it.name })
         assertFalse(byFolder.any { it.name == "root-note.md" })
 
         val byChild = filterExplorerTree(tree, "alpha")
         assertEquals(listOf("Projects"), byChild.map { it.name })
         assertEquals(listOf("alpha.md"), byChild[0].children.map { it.name })
 
+        assertEquals(emptySet<String>(), filteredAncestorsForQuery(tree, "projects"))
         assertEquals(
             setOf("Projects", "Projects/Sub"),
-            filteredAncestors(byFile),
+            filteredAncestorsForQuery(tree, "beta"),
         )
-        assertEquals(emptySet<String>(), filteredAncestors(byFolder))
-        assertEquals(setOf("Projects"), filteredAncestors(byChild))
+        assertEquals(setOf("Projects"), filteredAncestorsForQuery(tree, "alpha"))
     }
 
     @Test

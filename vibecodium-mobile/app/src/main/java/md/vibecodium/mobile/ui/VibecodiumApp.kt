@@ -244,7 +244,7 @@ import md.vibecodium.mobile.ExplorerRow
 import md.vibecodium.mobile.expandDailyNoteFormat
 import md.vibecodium.mobile.explorerDisplayName
 import md.vibecodium.mobile.filterExplorerTree
-import md.vibecodium.mobile.filteredAncestors
+import md.vibecodium.mobile.filteredAncestorsForQuery
 import md.vibecodium.mobile.flattenExplorerTree
 import md.vibecodium.mobile.indentAtCursor
 import md.vibecodium.mobile.outdentAtCursor
@@ -3459,7 +3459,9 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
         val filterActive = state.fileQuery.isNotBlank()
         // Folders on the way to a matching file open automatically; the user
         // can still collapse them for this filter pass.
-        val matchAncestors = remember(filtered) { filteredAncestors(filtered) }
+        val matchAncestors = remember(state.explorerTree, state.fileQuery) {
+            filteredAncestorsForQuery(state.explorerTree, state.fileQuery)
+        }
         var filterOverrides by remember(state.fileQuery) {
             mutableStateOf<Map<String, Boolean>>(emptyMap())
         }

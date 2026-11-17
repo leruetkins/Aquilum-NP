@@ -96,9 +96,8 @@ fun explorerDisplayName(node: ExplorerNode): String =
 
 /**
  * Keeps nodes whose displayed name matches [query] plus the folders needed to
- * reach them. A matching folder is kept as a row only; its children are shown
- * only when they match themselves, and the user's collapse state decides
- * whether they are visible.
+ * reach them. A matching folder keeps its whole subtree so it can be expanded
+ * and browsed; the folder itself stays closed until the user opens it.
  */
 fun filterExplorerTree(tree: List<ExplorerNode>, query: String): List<ExplorerNode> {
     val needle = query.trim().lowercase()
@@ -106,11 +105,15 @@ fun filterExplorerTree(tree: List<ExplorerNode>, query: String): List<ExplorerNo
 
     fun filter(nodes: List<ExplorerNode>): List<ExplorerNode> = nodes.mapNotNull { node ->
         val selfMatch = explorerDisplayName(node).lowercase().contains(needle)
-        val children = filter(node.children)
-        if (selfMatch || children.isNotEmpty()) {
-            node.copy(children = children)
+        if (selfMatch) {
+            node.copy(children = node.children)
         } else {
-            null
+            val children = filter(node.children)
+            if (children.isNotEmpty()) {
+                node.copy(children = children)
+            } else {
+                null
+            }
         }
     }
 
@@ -118,19 +121,33 @@ fun filterExplorerTree(tree: List<ExplorerNode>, query: String): List<ExplorerNo
 }
 
 /**
- * Folders that should be expanded so matches from [filterExplorerTree] are
- * visible. A folder whose own name matched but has no matching children is
- * not included, so it does not reveal unrelated contents.
+ * Folders that should auto-expand to reveal matches. A folder whose own name
+ * matched is deliberately excluded: its subtree is kept, but the user expands
+ * it manually. Ancestors of matching files/folders still open automatically.
  */
-fun filteredAncestors(tree: List<ExplorerNode>): Set<String> {
+fun filteredAncestorsForQuery(tree: List<ExplorerNode>, query: String): Set<String> {
+    val needle = query.trim().lowercase()
+    if (needle.isEmpty()) return emptySet()
     val result = mutableSetOf<String>()
-    fun visit(nodes: List<ExplorerNode>) {
+    fun visit(nodes: List<ExplorerNode>): Boolean {
+        var anyMatch = false
         for (node in nodes) {
-            if (node.isFolder && node.children.isNotEmpty()) {
-                result.add(node.path)
-                visit(node.children)
+            val selfMatch = explorerDisplayName(node).lowercase().contains(needle)
+            if (node.isFolder) {
+                if (selfMatch) {
+                    anyMatch = true
+                    continue
+                }
+                val childMatch = visit(node.children)
+                if (childMatch) {
+                    result.add(node.path)
+                    anyMatch = true
+                }
+            } else if (selfMatch) {
+                anyMatch = true
             }
         }
+        return anyMatch
     }
     visit(tree)
     return result
