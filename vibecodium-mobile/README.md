@@ -3,7 +3,7 @@
 Android client: a Kotlin/Compose shell over a platform-independent Rust core.
 
 <p align="center">
-  <img src="vibecodium-mobile.jpg" alt="Vibecodium Mobile" width="320">
+  <img src="vibecodium-mobile.png" alt="Vibecodium Mobile" width="320">
 </p>
 
 ## Architecture
