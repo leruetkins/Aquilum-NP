@@ -23,8 +23,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.File
 import java.time.LocalDateTime
+
+/** Hard cap on in-page matches, matching the desktop find bar. */
+private const val MAX_FIND_MATCHES = 19_999
 
 /**
  * Holds the phone shell state, owns the active [VaultRepository] and every JNI
@@ -51,6 +55,7 @@ class VibecodiumController(context: Context) {
     private var saveJob: Job? = null
     private var derivedJob: Job? = null
     private var searchJob: Job? = null
+    private var findJob: Job? = null
     private var tabPersistJob: Job? = null
     private var themeJob: Job? = null
     private var nativePaletteKey: Pair<Boolean, ThemePalette>? = null
@@ -254,6 +259,7 @@ class VibecodiumController(context: Context) {
             searchQuery = "",
             searchResults = emptyList(),
             searchCollapsedPaths = emptySet(),
+            find = FindUiState(),
             deletePath = null,
             viewerPath = null,
             renamePath = null,
@@ -387,6 +393,7 @@ class VibecodiumController(context: Context) {
         revealOffset: Int? = null,
         revealLength: Int = 0,
     ) {
+        if (state.find.open) closeFindBar()
         val existing = state.tabs.indexOfFirst { it.path == path }
         if (existing >= 0) {
             val targetOffset = revealOffset
@@ -517,6 +524,9 @@ class VibecodiumController(context: Context) {
         derivedJob = scope.launch {
             delay(200)
             refreshDerived(adjusted.text)
+        }
+        if (state.find.open && adjusted.text != currentTab.text) {
+            scanFind()
         }
         schedulePersistTabs()
     }
@@ -662,6 +672,7 @@ class VibecodiumController(context: Context) {
          */
         onReady: (() -> Unit)? = null,
     ) {
+        if (state.find.open) closeFindBar()
         if (index !in state.tabs.indices) {
             state = state.copy(drawer = null, tabSwitcher = false)
             onReady?.invoke()
@@ -1552,6 +1563,206 @@ class VibecodiumController(context: Context) {
             revealOffset = match?.offset,
             revealLength = match?.length ?: 0,
         )
+    }
+
+    // ------------------------------------------------------------- in-page find
+
+    fun openFindBar(replace: Boolean = false) {
+        val source = state.editorMode == EditorMode.Source
+        state = state.copy(
+            find = state.find.copy(
+                open = true,
+                replaceOpen = replace && source,
+            ),
+        )
+        scanFind()
+    }
+
+    fun closeFindBar() {
+        findJob?.cancel()
+        findJob = null
+        activeEditorView?.clearFindHighlights()
+        state = state.copy(find = FindUiState())
+        activeEditorView?.focusEditor()
+    }
+
+    fun updateFindQuery(value: String) {
+        state = state.copy(find = state.find.copy(query = value))
+        scanFind()
+    }
+
+    fun updateFindReplace(value: String) {
+        state = state.copy(find = state.find.copy(replace = value))
+    }
+
+    fun toggleFindCase() {
+        state = state.copy(find = state.find.copy(caseSensitive = !state.find.caseSensitive))
+        scanFind()
+    }
+
+    fun toggleFindWholeWord() {
+        state = state.copy(find = state.find.copy(wholeWord = !state.find.wholeWord))
+        scanFind()
+    }
+
+    fun findNext() = stepFind(1)
+
+    fun findPrevious() = stepFind(-1)
+
+    fun toggleFindReplace() {
+        if (state.editorMode != EditorMode.Source) return
+        state = state.copy(find = state.find.copy(replaceOpen = !state.find.replaceOpen))
+    }
+
+    private fun stepFind(delta: Int) {
+        val find = state.find
+        if (find.matches.isEmpty()) return
+        val size = find.matches.size
+        val next = Math.floorMod(find.active + delta, size)
+        state = state.copy(find = find.copy(active = next))
+        applyFindActive(reveal = true)
+    }
+
+    private fun scanFind() {
+        findJob?.cancel()
+        val find = state.find
+        if (!find.open) return
+        val tab = state.tabs.getOrNull(state.activeTab) ?: return
+        val path = tab.path
+        val text = tab.text
+        val query = find.query
+        if (query.isEmpty()) {
+            activeEditorView?.clearFindHighlights()
+            state = state.copy(
+                find = find.copy(
+                    matches = emptyList(),
+                    active = -1,
+                    truncated = false,
+                    scanning = false,
+                ),
+            )
+            return
+        }
+        state = state.copy(find = find.copy(scanning = true))
+        findJob = scope.launch {
+            val result = withContext(Dispatchers.Default) {
+                scanFindText(
+                    text = text,
+                    query = query,
+                    caseSensitive = find.caseSensitive,
+                    wholeWord = find.wholeWord,
+                )
+            }
+            val current = state.find
+            val currentTab = state.tabs.getOrNull(state.activeTab)
+            if (currentTab?.path != path || current.query != query ||
+                current.caseSensitive != find.caseSensitive ||
+                current.wholeWord != find.wholeWord
+            ) {
+                return@launch
+            }
+            state = state.copy(
+                find = current.copy(
+                    matches = result.first,
+                    active = if (result.first.isEmpty()) -1 else 0,
+                    truncated = result.second,
+                    scanning = false,
+                ),
+            )
+            applyFindActive(reveal = true)
+        }
+    }
+
+    private fun applyFindActive(reveal: Boolean) {
+        val find = state.find
+        val match = find.matches.getOrNull(find.active)
+        val view = activeEditorView
+        if (match == null) {
+            view?.clearFindHighlights()
+            return
+        }
+        view?.setFindHighlights(find.matches.map { it.start until it.end }, find.active)
+        if (reveal) {
+            view?.revealOffset(match.start, match.end - match.start, focusEditor = false)
+        }
+    }
+
+    fun replaceCurrentFind() {
+        if (state.editorMode != EditorMode.Source || state.find.scanning) return
+        val find = state.find
+        val match = find.matches.getOrNull(find.active) ?: return
+        activeEditorView?.replaceRange(match.start, match.end, find.replace)
+        scanFind()
+    }
+
+    fun replaceAllFind() {
+        if (state.editorMode != EditorMode.Source || state.find.scanning) return
+        val find = state.find
+        val tab = state.tabs.getOrNull(state.activeTab) ?: return
+        if (find.matches.isEmpty()) return
+        val text = tab.text
+        val replacement = find.replace
+        val builder = StringBuilder(text.length)
+        var cursor = 0
+        var replaced = 0
+        for (match in find.matches) {
+            if (match.start < cursor) continue
+            builder.append(text, cursor, match.start)
+            builder.append(replacement)
+            cursor = match.end
+            replaced++
+        }
+        builder.append(text, cursor, text.length)
+        if (replaced == 0) return
+        updateEditor(TextFieldValue(builder.toString(), TextRange(0)))
+        scanFind()
+    }
+
+    private suspend fun scanFindText(
+        text: String,
+        query: String,
+        caseSensitive: Boolean,
+        wholeWord: Boolean,
+    ): Pair<List<FindMatch>, Boolean> {
+        if (query.isEmpty() || text.length < query.length) {
+            return emptyList<FindMatch>() to false
+        }
+        val lineStarts = ArrayList<Int>()
+        lineStarts.add(0)
+        for (index in text.indices) {
+            if (text[index] == '\n') lineStarts.add(index + 1)
+        }
+        fun lineAt(offset: Int): Int {
+            val found = lineStarts.binarySearch(offset)
+            return (if (found >= 0) found else -found - 2).coerceAtLeast(0) + 1
+        }
+        fun wordChar(character: Char): Boolean =
+            character.isLetterOrDigit() || character == '_'
+
+        val matches = ArrayList<FindMatch>()
+        var search = 0
+        var truncated = false
+        while (search <= text.length - query.length) {
+            if (matches.size % 256 == 0) yield()
+            val start = text.indexOf(query, search, ignoreCase = !caseSensitive)
+            if (start < 0) break
+            val end = start + query.length
+            val wholeWordBlocked = wholeWord && (
+                (start > 0 && wordChar(text[start - 1])) ||
+                    (end < text.length && wordChar(text[end]))
+                )
+            if (wholeWordBlocked) {
+                search = start + 1
+                continue
+            }
+            matches.add(FindMatch(start, end, lineAt(start)))
+            if (matches.size >= MAX_FIND_MATCHES) {
+                truncated = true
+                break
+            }
+            search = end
+        }
+        return matches to truncated
     }
 
     // ------------------------------------------------------------------- mode

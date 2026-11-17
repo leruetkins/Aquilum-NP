@@ -36,6 +36,24 @@ data class SearchFileResult(
     val matchCount: Int get() = matches.sumOf { it.ranges.size }
 }
 
+/** One in-page find match, in UTF-16 offsets of the open note. */
+data class FindMatch(val start: Int, val end: Int, val line: Int)
+
+/** State of the in-page find/replace bar. */
+data class FindUiState(
+    val open: Boolean = false,
+    val query: String = "",
+    val replace: String = "",
+    val replaceOpen: Boolean = false,
+    val caseSensitive: Boolean = false,
+    val wholeWord: Boolean = false,
+    val matches: List<FindMatch> = emptyList(),
+    /** -1 when the query has no matches. */
+    val active: Int = -1,
+    val truncated: Boolean = false,
+    val scanning: Boolean = false,
+)
+
 /** One ranked path from the search index, before its body is verified. */
 data class SearchCandidate(
     val path: String,
@@ -201,6 +219,7 @@ data class UiState(
     val searchResults: List<SearchFileResult> = emptyList(),
     /** Search files the user folded; paths survive result refreshes. */
     val searchCollapsedPaths: Set<String> = emptySet(),
+    val find: FindUiState = FindUiState(),
     val headings: List<Heading> = emptyList(),
     val stats: DocStats = DocStats(0, 0, 0),
     /** Recently opened notes, most recent first, persisted per vault. */

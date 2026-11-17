@@ -153,6 +153,10 @@ public final class CoreBridge {
 
     public static native void nativeEditorScrollToCursorCentered(int id);
 
+    public static native void nativeEditorSetFindHighlights(int id, String ranges, int active);
+
+    public static native void nativeEditorClearFindHighlights(int id);
+
     public static native void nativeEditorSetTopInset(int id, float inset);
 
     public static native void nativeEditorSetCaretVisible(int id, boolean visible);

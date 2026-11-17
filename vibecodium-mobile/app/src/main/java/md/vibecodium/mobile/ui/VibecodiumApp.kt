@@ -89,6 +89,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
@@ -235,6 +236,7 @@ import md.vibecodium.mobile.UiState
 import md.vibecodium.mobile.VibecodiumController
 import md.vibecodium.mobile.SearchFileResult
 import md.vibecodium.mobile.SearchMatch
+import md.vibecodium.mobile.FindUiState
 import md.vibecodium.mobile.ExplorerRow
 import md.vibecodium.mobile.expandDailyNoteFormat
 import md.vibecodium.mobile.explorerDisplayName
@@ -930,6 +932,7 @@ private data class EditorSlice(
     val bookmarks: Set<String>,
     val stats: DocStats,
     val headings: HeadingsSettings,
+    val find: FindUiState = FindUiState(),
     val settingsOpen: Boolean = false,
     val overlayOpen: Boolean = false,
     val focusRequestId: Long = 0L,
@@ -957,6 +960,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 bookmarks = current.bookmarks,
                 stats = current.stats,
                 headings = current.settings.headings,
+                find = current.find,
                 settingsOpen = current.settingsOpen,
                 overlayOpen = current.settingsOpen || current.renamePath != null ||
                     current.deletePath != null || current.vaultChooserOpen ||
@@ -1359,6 +1363,13 @@ private fun EditorScreen(
     val bottomInset = if (imeVisible || !navbarEnabled) 0.dp else NavbarHeight + 12.dp
     val preview = state.editorMode == EditorMode.Preview
     val topInsetPx = with(LocalDensity.current) { (ViewHeaderTopPadding + ViewHeaderHeight + 10.dp).toPx() }
+    val findBarSpace = if (state.find.open) {
+        (if (state.find.replaceOpen) 92.dp else 54.dp)
+    } else {
+        0.dp
+    }
+    val editorTopInsetPx = topInsetPx +
+        with(LocalDensity.current) { findBarSpace.toPx() }
     var editorView by remember { mutableStateOf<NativeEditorView?>(null) }
     var keyboardPrompt by remember { mutableStateOf(!preview) }
     val onViewReady: (NativeEditorView) -> Unit = remember { { editorView = it } }
@@ -1437,17 +1448,44 @@ private fun EditorScreen(
             textFontFace,
             codeFontFace,
             headings,
-            topInsetPx,
+            editorTopInsetPx,
             bottomInsetPx,
             preview,
             onEditorScroll,
             onViewReady,
             onCaretPlaced,
         )
+        if (state.find.open) {
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        // Follow the floating header: when scrolling down hides
+                        // the chrome, the find panel must not stay pinned below
+                        // the empty header slot.
+                        translationY = -(ViewHeaderHeight + ViewHeaderTopPadding)
+                            .toPx() * (1f - chromeProgress.value)
+                    }
+                    .padding(
+                        start = 8.dp,
+                        end = 8.dp,
+                        top = ViewHeaderTopPadding + ViewHeaderHeight + 4.dp,
+                    ),
+            ) {
+                FindBar(state.find, sourceMode = !preview, controller)
+            }
+        }
         // Drawn before the header so the popup page cover, which the header
         // paints, also hides this button while a menu is open.
         if (!preview && keyboardPrompt && !imeVisible) {
-            val bottomPadding = if (navbarEnabled) NavbarHeight + 16.dp else 16.dp
+            // The navbar slides down with the chrome; the keyboard button
+            // follows the same progress instead of leaving an empty gap.
+            val bottomPadding = if (navbarEnabled) {
+                16.dp + NavbarHeight * chromeProgress.value
+            } else {
+                16.dp
+            }
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -2018,6 +2056,16 @@ private fun NoteActionItems(
         },
     )
     DropdownMenuItem(
+        text = { Text("Find in note") },
+        onClick = { onDismiss(); controller.openFindBar() },
+    )
+    if (editorMode == EditorMode.Source) {
+        DropdownMenuItem(
+            text = { Text("Find and replace") },
+            onClick = { onDismiss(); controller.openFindBar(replace = true) },
+        )
+    }
+    DropdownMenuItem(
         text = { Text("Save note") },
         onClick = { onDismiss(); controller.saveActiveNow() },
     )
@@ -2558,8 +2606,8 @@ private fun MobileNavbar(
             ) { controller.redoEditor() }
             NavButton(
                 icon = Icons.Default.Search,
-                label = "Search",
-            ) { controller.setDrawerMode(DrawerMode.Search) }
+                label = "Find in note",
+            ) { controller.openFindBar() }
             NavButton(
                 icon = Icons.Default.Add,
                 label = "New note",
@@ -4283,6 +4331,216 @@ private fun SearchMatchLine(
         )
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+}
+
+@Composable
+private fun FindBar(
+    find: FindUiState,
+    sourceMode: Boolean,
+    controller: VibecodiumController,
+) {
+    val focusRequester = remember { FocusRequester() }
+    val palette = LocalVibecodiumPalette.current
+    val textColor = MaterialTheme.colorScheme.onSurface
+    val muted = palette.textMuted
+    val count = when {
+        find.query.isEmpty() -> ""
+        find.matches.isEmpty() -> "0/0"
+        else -> {
+            val current = (find.active.coerceAtLeast(0) + 1).coerceAtMost(find.matches.size)
+            "${current}/${find.matches.size}${if (find.truncated) "+" else ""}"
+        }
+    }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 3.dp,
+        shadowElevation = 5.dp,
+    ) {
+        Column(Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) {
+            Row(
+                Modifier.fillMaxWidth().height(36.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .height(34.dp)
+                        .clip(RoundedCornerShape(percent = 50))
+                        .background(palette.surface)
+                        .border(
+                            1.dp,
+                            palette.outline,
+                            RoundedCornerShape(percent = 50),
+                        )
+                        .padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = muted,
+                    )
+                    BasicTextField(
+                        value = find.query,
+                        onValueChange = controller::updateFindQuery,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 6.dp)
+                            .focusRequester(focusRequester),
+                        singleLine = true,
+                        textStyle = TextStyle(fontSize = 14.sp, color = textColor),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        decorationBox = { inner ->
+                            Box {
+                                if (find.query.isEmpty()) {
+                                    Text("Find in note...", fontSize = 14.sp, color = muted)
+                                }
+                                inner()
+                            }
+                        },
+                    )
+                    if (count.isNotEmpty()) {
+                        Text(
+                            count,
+                            fontSize = 10.sp,
+                            color = muted,
+                            modifier = Modifier.padding(start = 4.dp),
+                        )
+                    }
+                }
+                FindToggle("Aa", find.caseSensitive) { controller.toggleFindCase() }
+                FindToggle("ab", find.wholeWord, underline = true) {
+                    controller.toggleFindWholeWord()
+                }
+                IconButton(
+                    onClick = controller::findPrevious,
+                    modifier = Modifier.size(30.dp),
+                ) {
+                    Icon(
+                        Icons.Default.KeyboardArrowUp,
+                        contentDescription = "Previous match",
+                        modifier = Modifier.size(18.dp),
+                        tint = muted,
+                    )
+                }
+                IconButton(
+                    onClick = controller::findNext,
+                    modifier = Modifier.size(30.dp),
+                ) {
+                    Icon(
+                        Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Next match",
+                        modifier = Modifier.size(18.dp),
+                        tint = muted,
+                    )
+                }
+                if (sourceMode) {
+                    IconButton(
+                        onClick = controller::toggleFindReplace,
+                        modifier = Modifier.size(30.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = "Replace",
+                            modifier = Modifier.size(16.dp),
+                            tint = if (find.replaceOpen) MaterialTheme.colorScheme.primary else muted,
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = controller::closeFindBar,
+                    modifier = Modifier.size(30.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Close find",
+                        modifier = Modifier.size(18.dp),
+                        tint = muted,
+                    )
+                }
+            }
+            if (sourceMode && find.replaceOpen) {
+                Row(
+                    Modifier.fillMaxWidth().height(36.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        Modifier
+                            .weight(1f)
+                            .height(34.dp)
+                            .clip(RoundedCornerShape(percent = 50))
+                            .background(palette.surface)
+                            .border(
+                                1.dp,
+                                palette.outline,
+                                RoundedCornerShape(percent = 50),
+                            )
+                            .padding(horizontal = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = muted,
+                        )
+                        BasicTextField(
+                            value = find.replace,
+                            onValueChange = controller::updateFindReplace,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 6.dp),
+                            singleLine = true,
+                            textStyle = TextStyle(fontSize = 13.sp, color = textColor),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            decorationBox = { inner ->
+                                Box {
+                                    if (find.replace.isEmpty()) {
+                                        Text("Replace with...", fontSize = 13.sp, color = muted)
+                                    }
+                                    inner()
+                                }
+                            },
+                        )
+                    }
+                    TextButton(onClick = controller::replaceCurrentFind) {
+                        Text("Replace", fontSize = 11.sp)
+                    }
+                    TextButton(onClick = controller::replaceAllFind) {
+                        Text("All", fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FindToggle(
+    label: String,
+    active: Boolean,
+    underline: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val color = if (active) MaterialTheme.colorScheme.primary else LocalVibecodiumPalette.current.textMuted
+    Box(
+        Modifier
+            .size(26.dp)
+            .clip(RoundedCornerShape(5.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontSize = 11.sp,
+            color = color,
+            textDecoration = if (underline) TextDecoration.Underline else null,
+        )
+    }
 }
 
 @Composable

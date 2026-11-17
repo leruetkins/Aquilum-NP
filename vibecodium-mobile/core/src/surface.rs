@@ -1644,6 +1644,10 @@ struct EditorState {
     /// Horizontal pan of each wide table, keyed by its header line. One
     /// table sliding must not move the others.
     table_scroll: HashMap<usize, f32>,
+    /// Character ranges of the active in-page find query. Painted behind the
+    /// text; the range at `find_active` uses the accent colour.
+    find_ranges: Vec<(usize, usize)>,
+    find_active: Option<usize>,
     history: History,
 }
 
@@ -4933,6 +4937,33 @@ impl SurfaceState {
         let (start_visual, start_offset) =
             self.visual_for_position(&starts, selection_start);
         let (end_visual, end_offset) = self.visual_for_position(&starts, selection_end);
+        // Copy only the find ranges that can touch the visible lines; the
+        // full list can be thousands of entries and this loop runs per frame.
+        let first_line = self
+            .editor
+            .wrap
+            .get(first)
+            .map(|chunk| chunk.line)
+            .unwrap_or(0);
+        let last_line = self
+            .editor
+            .wrap
+            .get(last.saturating_sub(1))
+            .map(|chunk| chunk.line)
+            .unwrap_or_else(|| starts.len().saturating_sub(1));
+        let visible_start = starts.get(first_line).copied().unwrap_or(0);
+        let visible_end = starts.get(last_line + 1).copied().unwrap_or(usize::MAX);
+        let find_active = self.editor.find_active;
+        let find_ranges: Vec<(usize, usize, usize)> = self
+            .editor
+            .find_ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, (range_start, range_end))| {
+                *range_end > visible_start && *range_start < visible_end
+            })
+            .map(|(index, &(range_start, range_end))| (index, range_start, range_end))
+            .collect();
         let mut start_handle: Option<(f32, f32)> = None;
         let mut end_handle: Option<(f32, f32)> = None;
         let mut insertion_handle: Option<(f32, f32)> = None;
@@ -5455,6 +5486,33 @@ impl SurfaceState {
                         row_h - 4.0 * density,
                         *color,
                     );
+                }
+            }
+            for (idx, find_start, find_end) in &find_ranges {
+                let start = (*find_start).max(absolute_start).min(absolute_end);
+                let end = (*find_end).max(absolute_start).min(absolute_end);
+                if end > start {
+                    let raw_start = (start - line_start).clamp(chunk_start, chunk_end);
+                    let raw_end = (end - line_start).clamp(chunk_start, chunk_end);
+                    let offset_start = local_x(raw_start);
+                    let offset_end = local_x(raw_end);
+                    if offset_end > offset_start {
+                        let color = if Some(*idx) == find_active {
+                            palette.accent
+                        } else {
+                            palette.highlight
+                        };
+                        rect(
+                            pixels,
+                            self.width,
+                            self.height,
+                            text_x + row_shift + offset_start,
+                            y + 2.0 * density,
+                            offset_end - offset_start,
+                            (row_h - 4.0 * density).max(2.0),
+                            color,
+                        );
+                    }
                 }
             }
             if selection_end > selection_start {
@@ -6891,6 +6949,45 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorScrollTo
     let _ = with_surface(id, |state| {
         state.invalidate();
         state.scroll_to_cursor_centered();
+    });
+}
+
+/// Replaces the in-page find highlight list. `active` is the index of the
+/// accent-coloured match, or -1 for none.
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetFindHighlights(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    ranges: JString<'_>,
+    active: jint,
+) {
+    let Ok(raw) = env.get_string(&ranges) else {
+        return;
+    };
+    let ranges: String = raw.into();
+    let parsed = serde_json::from_str::<Vec<(usize, usize)>>(&ranges).unwrap_or_default();
+    let _ = with_surface(id, |state| {
+        state.editor.find_ranges = parsed;
+        state.editor.find_active = if active >= 0 {
+            Some(active as usize)
+        } else {
+            None
+        };
+        state.invalidate();
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorClearFindHighlights(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+) {
+    let _ = with_surface(id, |state| {
+        state.editor.find_ranges.clear();
+        state.editor.find_active = None;
+        state.invalidate();
     });
 }
 

@@ -2958,17 +2958,42 @@ class NativeEditorView(
      * the target tab's first frame, so the native layout already belongs to
      * the new note.
      */
-    fun revealOffset(offset: Int, length: Int) {
+    fun revealOffset(offset: Int, length: Int, focusEditor: Boolean = true) {
         mainHandler.post {
             if (!isSurfaceAttached()) return@post
             val max = mirrorText.length
             val start = offset.coerceIn(0, max)
             val end = (offset + length).coerceIn(start, max)
-            focusEditor()
+            if (focusEditor) {
+                this.focusEditor()
+            }
             selectNative(start, end)
             CoreBridge.nativeEditorScrollToCursorCentered(surfaceId)
             mainHandler.post { syncScrollFromNative() }
         }
+    }
+
+    /** Paints the in-page find ranges; `active` is -1 when none is selected. */
+    fun setFindHighlights(ranges: List<IntRange>, active: Int) {
+        val array = JSONArray()
+        ranges.forEach { range ->
+            if (range.last >= range.first) {
+                array.put(JSONArray().put(range.first).put(range.last + 1))
+            }
+        }
+        CoreBridge.nativeEditorSetFindHighlights(surfaceId, array.toString(), active)
+    }
+
+    fun clearFindHighlights() {
+        CoreBridge.nativeEditorClearFindHighlights(surfaceId)
+    }
+
+    /** Replaces one range through the native undo stack. */
+    fun replaceRange(start: Int, end: Int, text: String) {
+        val max = mirrorText.length
+        val from = start.coerceIn(0, max)
+        val to = end.coerceIn(from, max)
+        applyReplace(from, to, text)
     }
 
     fun focusEditor() {
