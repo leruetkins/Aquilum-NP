@@ -909,13 +909,18 @@ pub(crate) fn render_live_styled_row(
                 ("", trimmed)
             };
             let prefix_len = indent_len + bullet.len();
-            // Same marker text the wrap geometry measured: the rendered dot for an
-            // idle line, the raw source marker on the line being edited.
-            let bullet_text = crate::markdown::bullet_paint_text(bullet, is_active_line);
+            let indent_chars = indent.chars().count();
+            // Same marker text the wrap geometry measured: the rendered dot while
+            // the caret is away from the marker, the raw source marker while the
+            // caret or selection covers the marker cells.
+            let show_raw = crate::markdown::bullet_marker_range(line)
+                .map_or(false, |(a, b)| reveal.shows(a, b));
+            let bullet_text = crate::markdown::bullet_paint_text(bullet, show_raw);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             let guides = indent_guides();
             // An idle row draws the dot itself, sized in cells so it stays centred
-            // in its marker cell; the line being edited shows the raw source marker.
+            // in its marker cell; a caret or selection on the marker shows the raw
+            // source marker instead.
             let shows_dot = bullet_text != bullet;
 
             if sub_idx == 0 {
@@ -930,7 +935,7 @@ pub(crate) fn render_live_styled_row(
                     .child(
                         div()
                             .flex_shrink_0()
-                            .w(px(indent.chars().count() as f32 * cell_w))
+                            .w(px(indent_chars as f32 * cell_w))
                             .child(indent.to_string()),
                     )
                     .child(

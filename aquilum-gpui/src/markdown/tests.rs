@@ -848,7 +848,8 @@
         assert_eq!(text_of(&first), "• item");
         assert_eq!(first.line_chars, vec![0, 1, 2, 3, 4, 5, 6]);
 
-        // The line under the caret keeps its raw marker, so `- ` stays editable.
+        // A revealed line keeps its raw marker, so `- ` stays editable at the
+        // marker cells (the helper reveals everything on the active line).
         let active = painted(line, &kind, 0, 6, 0, true);
         assert_eq!(text_of(&active), "- item");
         assert_eq!(
@@ -861,6 +862,70 @@
         let wrapped = painted(line, &kind, 4, 6, 1, false);
         assert_eq!(text_of(&wrapped), "  em");
         assert_eq!(wrapped.line_chars, vec![4, 4, 4, 5, 6]);
+    }
+
+    #[test]
+    fn bullet_marker_reveals_only_from_its_own_cells() {
+        let line = "- item";
+        let kind = classify_line(line, None);
+
+        // The item text is painted with the dot: only the marker cells reveal
+        // the raw `- `, not every caret position on the line.
+        assert_eq!(inline_reveal(line, &kind, Some(4), None, false), InlineReveal::None);
+        // The content starts right after `- `, so the caret there keeps the dot.
+        assert_eq!(inline_reveal(line, &kind, Some(2), None, false), InlineReveal::None);
+        for cursor in [0, 1] {
+            assert_eq!(
+                inline_reveal(line, &kind, Some(cursor), None, false),
+                InlineReveal::Ranges(vec![(0, 2)]),
+                "cursor {cursor} must reveal the bullet marker"
+            );
+        }
+        // A selection that misses the marker reveals nothing either.
+        assert_eq!(inline_reveal(line, &kind, None, Some((2, 6)), false), InlineReveal::None);
+        assert_eq!(
+            inline_reveal(line, &kind, None, Some((0, 3)), false),
+            InlineReveal::Ranges(vec![(0, 2)])
+        );
+
+        // The painted row follows the reveal, not the active-line flag: a line
+        // under the caret still paints the dot when the caret is away from it.
+        let v = VisualRow {
+            line_idx: 0,
+            sub_idx: 0,
+            is_last_sub: true,
+            char_start: 0,
+            char_end: line.chars().count(),
+        };
+        let headings = crate::settings::HeadingsSettings::default();
+        let folded = row_painted_text(line, &kind, &v, true, &InlineReveal::None, &headings);
+        assert_eq!(text_of(&folded), "• item");
+        let revealed = row_painted_text(
+            line,
+            &kind,
+            &v,
+            true,
+            &InlineReveal::Ranges(vec![(0, 2)]),
+            &headings,
+        );
+        assert_eq!(text_of(&revealed), "- item");
+        assert_eq!(
+            folded.line_chars, revealed.line_chars,
+            "the dot must not shift the caret grid"
+        );
+    }
+
+    #[test]
+    fn nested_bullet_marker_reveals_only_under_the_dot() {
+        let line = "    - item";
+        let kind = classify_line(line, None);
+        // The marker cells sit after the indent; a caret inside the indent does
+        // not reveal the marker.
+        assert_eq!(inline_reveal(line, &kind, Some(3), None, false), InlineReveal::None);
+        assert_eq!(
+            inline_reveal(line, &kind, Some(4), None, false),
+            InlineReveal::Ranges(vec![(4, 6)])
+        );
     }
 
     #[test]
@@ -878,7 +943,7 @@
             let idle = painted(line, &kind, 0, len, 0, false);
             assert_eq!(text_of(&idle), idle_text);
             let active = painted(line, &kind, 0, len, 0, true);
-            assert_eq!(text_of(&active), line, "{line:?} keeps its raw marker when active");
+            assert_eq!(text_of(&active), line, "{line:?} keeps its raw marker when revealed");
             assert_eq!(
                 idle.line_chars, active.line_chars,
                 "{line:?}: the dot must not shift the caret grid"

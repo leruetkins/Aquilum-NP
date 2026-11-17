@@ -373,6 +373,72 @@
         });
     }
 
+    /// A wrapped list row indents its continuation text with synthetic padding
+    /// that repeats the first char of the row. The caret for that char — the one
+    /// a click at the right edge of the previous row lands on — must sit at the
+    /// start of the wrapped text, not at column 0 next to the line-number gutter.
+    #[test]
+    fn caret_at_a_wrapped_list_row_starts_after_the_indent() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let font_family: SharedString = "Droid Sans Mono".into();
+                let font_id = window.text_system().resolve_font(&gpui::font(font_family.clone()));
+                let cell_w = window
+                    .text_system()
+                    .advance(font_id, px(14.0), 'x')
+                    .map(|s| f32::from(s.width))
+                    .unwrap_or(7.7);
+
+                for line in ["- Пункт 1 и ещё", "    - Вложенный пункт списка"] {
+                    let kind = classify_line(line, None);
+                    let prefix_cols = crate::markdown::continuation_prefix_cols(line, &kind);
+                    assert!(prefix_cols > 0, "{line:?} is not a list row");
+                    let len = line.chars().count();
+                    let v = VisualRow {
+                        line_idx: 0,
+                        sub_idx: 1,
+                        is_last_sub: true,
+                        char_start: len - 4,
+                        char_end: len,
+                    };
+                    let layout = shape_row(
+                        window.text_system(),
+                        line,
+                        &kind,
+                        &v,
+                        false,
+                        &crate::markdown::InlineReveal::None,
+                        &crate::settings::EditorTypography::reference(),
+                        &font_family,
+                        cell_w,
+                    );
+                    assert_eq!(
+                        layout.line_char_for_column(0),
+                        v.char_start,
+                        "{line:?}: clicking the indent must land on the first wrapped char"
+                    );
+                    assert_eq!(
+                        layout.column_for_line_char(v.char_start),
+                        prefix_cols,
+                        "{line:?}: the caret at the first wrapped char must follow the indent"
+                    );
+                    assert!(layout.x_for_column(prefix_cols) > 0.0);
+                }
+
+                cx.quit();
+                use gpui::AppContext;
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
+    }
+
     /// The painted selection edge has to sit on the same device-pixel grid as the
     /// painted caret, and it has to move monotonically while the mouse drags.
     ///

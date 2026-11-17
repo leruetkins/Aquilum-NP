@@ -10,6 +10,9 @@ pub(crate) struct RowShapedLayout {
     pub(super) grammar_ranges: Arc<Vec<(usize, usize, crate::markdown::GrammarSpanStyle)>>,
     pub(super) cell_w: f32,
     pub(super) table_row: Option<Arc<TableRowLayout>>,
+    /// Cells a wrapped continuation row spends on its synthetic indent, 0 for
+    /// the first row of a line and for everything that never wraps with one.
+    pub(super) continuation_cols: usize,
 }
 
 impl RowShapedLayout {
@@ -94,6 +97,16 @@ impl RowShapedLayout {
     pub fn column_for_line_char(&self, lc: usize) -> usize {
         if let Some(tr) = &self.table_row {
             return tr.column_for_line_char(lc);
+        }
+        // A wrapped continuation row opens with synthetic padding that repeats
+        // the row's first char, so a lower bound on that char would land on
+        // column 0 — the far left of the row, next to the gutter — instead of
+        // the start of the wrapped text. The cursor and the selection edge for
+        // that char belong after the indent.
+        if self.continuation_cols > 0
+            && self.line_chars.first().copied().is_some_and(|first| lc <= first)
+        {
+            return self.continuation_cols.min(self.columns());
         }
         self.line_chars
             .partition_point(|&line_char| line_char < lc)
@@ -289,6 +302,11 @@ pub(crate) fn shape_row(
 
     let text: SharedString = text.into();
     let layout = text_system.layout_line(text.as_ref(), px(font_size), &runs, None);
+    let continuation_cols = if v.sub_idx == 0 {
+        0
+    } else {
+        crate::markdown::continuation_prefix_cols(line, classified)
+    };
     RowShapedLayout {
         layout,
         text,
@@ -298,5 +316,6 @@ pub(crate) fn shape_row(
         grammar_ranges: Arc::new(grammar_ranges),
         cell_w,
         table_row: None,
+        continuation_cols,
     }
 }

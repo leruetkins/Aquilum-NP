@@ -24,18 +24,33 @@ pub fn row_prefix_offset(line: &str, classified: &LineKind<'_>) -> usize {
 /// It is the same glyph the app's markdown previews draw (`views::settings_view`,
 /// `views::plugin_catalog`), and it advances one cell in every editor font the app
 /// ships or offers, so the substitution costs no column and the wrap geometry is
-/// unchanged. The line under the caret keeps its raw marker instead, exactly like a
-/// heading does, so the source stays editable where the user is working.
+/// unchanged. The marker cells keep their raw source while the caret or the
+/// selection covers them, so the source stays editable where it is touched.
 pub const RENDERED_BULLET: &str = "• ";
 
-/// Marker text a bullet row paints: the raw source marker while the line is being
-/// edited, the rendered dot otherwise.
+/// Char range of a bullet row's raw marker (`- `, `* `, `+ `) inside its line,
+/// indent excluded, or `None` when the line starts no bullet item.
+///
+/// The marker is revealed only while the caret or the selection covers these
+/// cells — the ones the dot is painted in — so a caret anywhere in the item
+/// text keeps the rendered dot.
+pub fn bullet_marker_range(line: &str) -> Option<(usize, usize)> {
+    let trimmed = line.trim_start();
+    if !(trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ")) {
+        return None;
+    }
+    let indent_chars = line.chars().count() - trimmed.chars().count();
+    Some((indent_chars, indent_chars + 2))
+}
+
+/// Marker text a bullet row paints: the raw source marker while the caret or
+/// selection touches the marker cells, the rendered dot otherwise.
 ///
 /// The two must keep the same char count — the dot maps onto the raw marker's chars
 /// cell for cell, which is what makes swapping it free for the caret grid — so an
 /// unexpected marker length falls back to the raw text instead.
-pub fn bullet_paint_text<'a>(raw_marker: &'a str, is_active_line: bool) -> &'a str {
-    if is_active_line || raw_marker.chars().count() != RENDERED_BULLET.chars().count() {
+pub fn bullet_paint_text<'a>(raw_marker: &'a str, show_raw: bool) -> &'a str {
+    if show_raw || raw_marker.chars().count() != RENDERED_BULLET.chars().count() {
         raw_marker
     } else {
         RENDERED_BULLET

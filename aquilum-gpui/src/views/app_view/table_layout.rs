@@ -560,6 +560,7 @@ pub(crate) fn shape_table_row(
             grammar_ranges: Arc::new(Vec::new()),
             cell_w,
             table_row: Some(table_row),
+            continuation_cols: 0,
         };
     }
 
@@ -793,5 +794,6 @@ pub(crate) fn shape_table_row(
         grammar_ranges: Arc::new(Vec::new()),
         cell_w,
         table_row: Some(table_row),
+        continuation_cols: 0,
     }
 }

@@ -440,20 +440,23 @@ pub fn inline_reveal(
 
     let (spans, base) = line_inline_spans(line, classified);
     let elements = inline_element_ranges(&spans);
-    // A task checkbox is a marker as well: it gives way to the raw `[x]` while
-    // the caret or the selection touches it, exactly like an inline marker.
-    let task_range = match classified {
+    // A task checkbox and a bullet marker are block markers as well: they give
+    // way to the raw source while the caret or the selection touches them,
+    // exactly like an inline marker. A bullet row paints its dot everywhere
+    // else, so a caret anywhere in the item text must not reveal `- `.
+    let marker_range = match classified {
         LineKind::Task { .. } => task_prefix(line).map(|task| (0, task.chars)),
+        LineKind::BulletList { .. } => bullet_marker_range(line),
         _ => None,
     };
-    if elements.is_empty() && task_range.is_none() {
+    if elements.is_empty() && marker_range.is_none() {
         return InlineReveal::None;
     }
 
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     if let Some((s, e)) = selection {
         if s < e {
-            if let Some(range) = task_range {
+            if let Some(range) = marker_range {
                 if s < range.1 && range.0 < e {
                     ranges.push(range);
                 }
@@ -467,10 +470,12 @@ pub fn inline_reveal(
         }
     }
     if let Some(c) = cursor_char {
-        if let Some(range) = task_range {
+        if let Some(range) = marker_range {
             // Unlike an inline marker, the end of a task prefix is where the
             // content starts: a caret sitting just after the checkbox must not
             // hide it, or the box could never be clicked from the line it edits.
+            // A bullet's raw marker is revealed the same way — only from the
+            // marker cells themselves, not from the item text after them.
             if range.0 <= c && c < range.1 && !ranges.contains(&range) {
                 ranges.push(range);
             }

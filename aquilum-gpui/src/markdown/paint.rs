@@ -353,7 +353,8 @@ pub fn row_painted_text(
             let trimmed = line.trim_start();
             let indent = &line[..line.len() - trimmed.len()];
             let raw_bullet = if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") { &trimmed[..2] } else { "" };
-            let bullet = bullet_paint_text(raw_bullet, is_active_line);
+            let show_raw = bullet_marker_range(line).map_or(false, |(a, b)| reveal.shows(a, b));
+            let bullet = bullet_paint_text(raw_bullet, show_raw);
             if v.sub_idx == 0 {
                 push_verbatim(&mut segments, &mut line_chars, indent, 0, false, base_italic, false);
                 push_verbatim(&mut segments, &mut line_chars, bullet, indent.chars().count(), true, base_italic, false);
