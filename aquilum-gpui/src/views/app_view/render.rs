@@ -1113,6 +1113,7 @@ if let Some(new_scroll) = new_active_scroll {
                         s.child(
                             div()
                                 .id("titlebar-right-header")
+                                .relative()
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -1120,8 +1121,20 @@ if let Some(new_scroll) = new_active_scroll {
                                 .flex_shrink_0()
                                 .h_full()
                                 .bg(theme.bg_sidebar)
-                                .border_b_1()
-                                .border_color(theme.border)
+                                // Draw the bottom border as an overlay, exactly like the
+                                // editor header does when the sidebar is collapsed: a
+                                // `border_b_1` would shrink the content box and nudge the
+                                // window controls up by one device pixel.
+                                .child(
+                                    div()
+                                        .id("titlebar-right-header-bottom-border")
+                                        .absolute()
+                                        .bottom_0()
+                                        .left_0()
+                                        .right_0()
+                                        .h(px(1.0))
+                                        .bg(theme.border),
+                                )
                                 .child(
                                     div()
                                         .id("titlebar-right-header-drag-region")
