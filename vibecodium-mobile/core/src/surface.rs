@@ -279,8 +279,8 @@ fn line(
 
 // Lucide path data mirrored from the desktop client (`src/icons.rs`) and
 // Obsidian 1.15.0's icon registry (`assets/public/app.js`).
-const CHEVRON_RIGHT_SVG: &str = "m9 18 6-6-6-6";
-const CHEVRON_DOWN_SVG: &str = "m6 9 6 6 6-6";
+const CHEVRON_RIGHT_SVG: &str = "M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z";
+const CHEVRON_DOWN_SVG: &str = "M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z";
 const FOLDER_SVG: &str = "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z M2 10h20";
 const FOLDER_OPEN_SVG: &str = "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2";
 const FILE_TEXT_SVG: &str = "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z M14 2v5a1 1 0 0 0 1 1h5 M10 9H8 M16 13H8 M16 17H8";
@@ -698,6 +698,74 @@ fn draw_icon(
     }
 }
 
+/// Filled SVG path rasterizer for the disclosed-file chevron. SVG icons in
+/// the editor are usually stroked; this one follows the filled Material
+/// chevron used by the RecyclerView search rows.
+fn fill_icon(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: f32,
+    y: f32,
+    size: f32,
+    paths: &[Vec<(f32, f32)>],
+    rgb: u32,
+) {
+    let scale = size / 24.0;
+    for path in paths {
+        if path.len() < 3 {
+            continue;
+        }
+        let points: Vec<(f32, f32)> = path
+            .iter()
+            .map(|point| (x + point.0 * scale, y + point.1 * scale))
+            .collect();
+        let min_y = points
+            .iter()
+            .map(|point| point.1)
+            .fold(f32::INFINITY, f32::min)
+            .floor()
+            .max(0.0) as usize;
+        let max_y = points
+            .iter()
+            .map(|point| point.1)
+            .fold(f32::NEG_INFINITY, f32::max)
+            .ceil()
+            .min(height as f32) as usize;
+        for py in min_y..max_y {
+            let scan_y = py as f32 + 0.5;
+            let mut crossings = Vec::new();
+            for index in 0..points.len() {
+                let a = points[index];
+                let b = points[(index + 1) % points.len()];
+                if (a.1 <= scan_y) != (b.1 <= scan_y) {
+                    let t = (scan_y - a.1) / (b.1 - a.1);
+                    crossings.push(a.0 + (b.0 - a.0) * t);
+                }
+            }
+            crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let mut index = 0;
+            while index + 1 < crossings.len() {
+                let start = crossings[index].floor().max(0.0) as usize;
+                let end = crossings[index + 1].ceil().min(width as f32) as usize;
+                if end > start {
+                    rect(
+                        pixels,
+                        width,
+                        height,
+                        start as f32,
+                        py as f32,
+                        (end - start) as f32,
+                        1.0,
+                        rgb,
+                    );
+                }
+                index += 2;
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct IconRaster {
     extent: usize,
@@ -1045,6 +1113,57 @@ impl Painter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn draw_filled_icon(
+        &mut self,
+        target: &mut [u32],
+        target_width: usize,
+        target_height: usize,
+        x: f32,
+        y: f32,
+        size: f32,
+        paths: &'static [Vec<(f32, f32)>],
+        rgb: u32,
+    ) {
+        let pad = 2usize;
+        let extent = size.ceil() as usize + pad * 2 + 2;
+        let key = (paths.as_ptr() as usize, size.to_bits(), 0u32);
+        if !self.icons.contains_key(&key) {
+            let mut mask = vec![0u32; extent * extent];
+            fill_icon(
+                &mut mask,
+                extent,
+                extent,
+                pad as f32,
+                pad as f32,
+                size,
+                paths,
+                0xffffff,
+            );
+            self.icons.insert(key, IconRaster { extent, pixels: mask });
+        }
+        let Some(raster) = self.icons.get(&key) else {
+            return;
+        };
+        let color = logical(rgb);
+        let origin_x = x.round() as i32 - pad as i32;
+        let origin_y = y.round() as i32 - pad as i32;
+        for row in 0..raster.extent {
+            let target_y = origin_y + row as i32;
+            if target_y < 0 || target_y >= target_height as i32 {
+                continue;
+            }
+            for column in 0..raster.extent {
+                let target_x = origin_x + column as i32;
+                if target_x < 0 || target_x >= target_width as i32 {
+                    continue;
+                }
+                if raster.pixels[row * raster.extent + column] != 0 {
+                    target[target_y as usize * target_width + target_x as usize] = color;
+                }
+            }
+        }
+    }
+
     fn draw_stroke_icon(
         &mut self,
         target: &mut [u32],
@@ -4331,7 +4450,7 @@ impl SurfaceState {
         let mut max_x: f32 = 0.0;
         for row in &self.tree.doc.rows[first..last] {
             let indent = 10.0 * density + row.depth as f32 * 16.0 * density;
-            let text_x = indent + 35.0 * density;
+            let text_x = indent + if row.folder { 39.0 } else { 35.0 } * density;
             let mut name_right = width - 8.0 * density;
             let tag_width = tree_tag_width(&mut painter, row, density);
             if tag_width > 0.0 {
@@ -4360,8 +4479,7 @@ impl SurfaceState {
         let name_font = 17.0 * density;
         let icon_size = 16.0 * density;
         let icon_thickness = 1.0 * density;
-        let chevron_size = 10.0 * density;
-        let chevron_thickness = 1.6667 * density;
+        let chevron_size = 18.0 * density;
         for (index, row) in rows.iter().enumerate() {
             let y = index as f32 * row_h - scroll;
             if y + row_h < 0.0 || y > self.height as f32 {
@@ -4373,19 +4491,18 @@ impl SurfaceState {
             let center_y = y + row_h / 2.0;
             let indent = 10.0 * density + row.depth as f32 * 16.0 * density - scroll_x;
             let chevron_x = indent;
-            let icon_x = indent + 13.0 * density;
-            let text_x = indent + 35.0 * density;
+            let icon_x = indent + if row.folder { 17.0 } else { 13.0 } * density;
+            let text_x = indent + if row.folder { 39.0 } else { 35.0 } * density;
             if row.folder && row.has_children {
-                painter.draw_stroke_icon(
+                painter.draw_filled_icon(
                     pixels,
                     self.width,
                     self.height,
                     chevron_x,
                     center_y - chevron_size / 2.0,
                     chevron_size,
-                    chevron_thickness,
                     chevron_paths(row.expanded),
-                    palette.tree_muted,
+                    palette.text_faint,
                 );
             }
             painter.draw_stroke_icon(
