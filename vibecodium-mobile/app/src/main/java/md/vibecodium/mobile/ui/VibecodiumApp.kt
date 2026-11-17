@@ -205,6 +205,7 @@ import androidx.compose.ui.window.PopupProperties
 import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
 import md.vibecodium.mobile.AppSettingsJson
+import md.vibecodium.mobile.BuildConfig
 import md.vibecodium.mobile.CoreBridge
 import md.vibecodium.mobile.CoreJson
 import md.vibecodium.mobile.Drawer
@@ -873,7 +874,7 @@ private fun StartScreen(state: UiState, controller: VibecodiumController) {
             .padding(24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("vibecodium", fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+        Text("Vibecodium", fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
         Text(
             "Rust core · Compose shell",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2113,7 +2114,7 @@ private fun NoteActionItems(
         text = { Text("About") },
         onClick = {
             onDismiss()
-            controller.showMessage("vibecodium · Rust core 0.1.0")
+            controller.showMessage("Vibecodium · Rust core 0.1.0")
         },
     )
 }
@@ -5365,8 +5366,8 @@ private fun SettingsSectionContent(
                 }
                 SettingsGroup("App") {
                     SettingsInfoRow(
-                        "vibecodium",
-                        "0.1.0",
+                        "Vibecodium",
+                        BuildConfig.VERSION_NAME,
                         detail = "Rust core · Compose shell",
                     )
                     SettingsInfoRow("Rust core", coreVersion)
@@ -6602,7 +6603,7 @@ private fun syncSubtitle(state: UiState): String {
         sync.connected && sync.lastSync > 0 -> "Synced ${timeLabel(sync.lastSync)}"
         sync.connected -> "Dropbox connected"
         state.vaultKind == "saf" -> "SAF vault"
-        else -> "vibecodium"
+        else -> "Vibecodium"
     }
 }
 
