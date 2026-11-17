@@ -196,7 +196,6 @@ data class UiState(
     val markdownText: String = "",
     val drawer: Drawer? = null,
     val drawerMode: DrawerMode = DrawerMode.Files,
-    val tabSwitcher: Boolean = false,
     val settingsOpen: Boolean = false,
     /** Section name inside the settings sheet, or null for the root list. */
     val settingsSection: String? = null,

@@ -51,7 +51,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -65,7 +64,6 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -800,7 +798,7 @@ fun VibecodiumApp(controller: VibecodiumController) {
         ) {
             BackHandler(
                 enabled = state.vaultChooserOpen || state.settingsOpen || state.drawer != null ||
-                    state.tabSwitcher || state.viewerPath != null || state.historyIndex > 0 ||
+                    state.viewerPath != null || state.historyIndex > 0 ||
                     state.explorerMenuPath != null || state.movePath != null ||
                     state.explorerRenamePath != null,
             ) {
@@ -966,8 +964,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 find = current.find,
                 settingsOpen = current.settingsOpen,
                 overlayOpen = current.settingsOpen || current.renamePath != null ||
-                    current.deletePath != null || current.vaultChooserOpen ||
-                    current.tabSwitcher,
+                    current.deletePath != null || current.vaultChooserOpen,
                 focusRequestId = current.focusRequestId,
             )
         }
@@ -1021,7 +1018,6 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
         }
         LaunchedEffect(
             state.drawer,
-            state.tabSwitcher,
             state.viewerPath,
             state.settingsOpen,
             editor.value.activeTab,
@@ -1084,9 +1080,9 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 imeVisible,
                 navbarEnabled,
                 chromeProgress,
-                // Drawers and the tab switcher are full-screen browsing
-                // surfaces; the keyboard must not cover them.
-                state.drawer != null || state.tabSwitcher,
+                // Drawers are full-screen browsing surfaces; the keyboard
+                // must not cover them.
+                state.drawer != null,
                 onEditorScroll,
             )
 
@@ -1241,10 +1237,6 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                         .width(drawerWidth)
                         .fillMaxHeight(),
                 )
-            }
-
-            if (state.tabSwitcher) {
-                TabSwitcher(state, controller, Modifier.fillMaxSize())
             }
 
             if (state.viewerPath != null) {
@@ -2044,15 +2036,9 @@ private fun NoteActionItems(
         },
     )
     DropdownMenuItem(
-        text = { Text("Find in note") },
+        text = { Text("Find and replace") },
         onClick = { onDismiss(); controller.openFindBar() },
     )
-    if (editorMode == EditorMode.Source) {
-        DropdownMenuItem(
-            text = { Text("Find and replace") },
-            onClick = { onDismiss(); controller.openFindBar(replace = true) },
-        )
-    }
     DropdownMenuItem(
         text = { Text("Save note") },
         onClick = { onDismiss(); controller.saveActiveNow() },
@@ -2600,12 +2586,6 @@ private fun MobileNavbar(
                 icon = Icons.Default.Add,
                 label = "New note",
             ) { controller.newNote() }
-            NavButton(
-                icon = Icons.Default.List,
-                label = "Tabs",
-                active = state.tabSwitcher,
-                badge = state.tabs.size,
-            ) { controller.toggleTabSwitcher() }
 
             Box(
                 Modifier
@@ -3124,6 +3104,8 @@ private fun RightDrawer(state: UiState, controller: VibecodiumController, modifi
                             heading.text,
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { controller.revealHeading(heading) }
                                 .padding(
                                     start = ((heading.level - 1) * 12).dp + 12.dp,
                                     end = 12.dp,
@@ -3147,184 +3129,6 @@ private fun RightDrawer(state: UiState, controller: VibecodiumController, modifi
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-    }
-}
-
-@Composable
-private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifier: Modifier) {
-    val listState = rememberLazyListState()
-    val tabOrder = remember(state.tabs) { newestFirstTabOrder(state.tabs) }
-    Surface(
-        modifier = modifier.imePadding(),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-    ) {
-        Column(Modifier.fillMaxSize()) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .padding(start = 14.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Tabs (${state.tabs.size})",
-                    modifier = Modifier.weight(1f),
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                IconButton(onClick = { controller.newNote() }) {
-                    Icon(NewNoteIcon, contentDescription = "New note", modifier = Modifier.size(20.dp))
-                }
-                IconButton(
-                    onClick = { controller.closeAllTabs() },
-                    enabled = state.tabs.isNotEmpty(),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            CloseTabsIcon,
-                            contentDescription = "Close all tabs",
-                            modifier = Modifier.size(20.dp),
-                            tint = if (state.tabs.isNotEmpty()) {
-                                MaterialTheme.colorScheme.onSurface
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                            },
-                        )
-                        if (state.tabs.isNotEmpty()) {
-                            Spacer(Modifier.width(3.dp))
-                            Text(
-                                state.tabs.size.toString(),
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-                IconButton(onClick = { controller.toggleTabSwitcher() }) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(20.dp))
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                ) {
-                    itemsIndexed(tabOrder, key = { _, index -> state.tabs[index].path }) { _, index ->
-                        val tab = state.tabs[index]
-                        TabListRow(
-                            tab = tab,
-                            active = index == state.activeTab,
-                            bookmarked = tab.path in state.bookmarks,
-                            shape = RoundedCornerShape(8.dp),
-                            onSelect = { controller.selectTab(index) },
-                            onClose = { controller.closeTab(index) },
-                        )
-                    }
-                }
-                TabScrollBar(
-                    state = listState,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxHeight()
-                        .padding(end = 3.dp, top = 6.dp, bottom = 6.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TabListRow(
-    tab: Tab,
-    active: Boolean,
-    bookmarked: Boolean,
-    shape: RoundedCornerShape,
-    onSelect: () -> Unit,
-    onClose: () -> Unit,
-) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(
-                if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                else Color.Transparent,
-                shape,
-            )
-            .clip(shape)
-            .clickable(onClick = onSelect)
-            .padding(start = 8.dp, top = 4.dp, end = 4.dp, bottom = 4.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
-                if (active) {
-                    Icon(
-                        Icons.Default.Check,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                tab.title + if (tab.dirty) " •" else "",
-                modifier = Modifier.weight(1f),
-                fontSize = 14.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (bookmarked) {
-                Icon(
-                    Icons.Default.Star,
-                    contentDescription = "Bookmarked",
-                    modifier = Modifier.size(14.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-            IconButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
-                Icon(
-                    Icons.Default.Close,
-                    contentDescription = "Close tab",
-                    modifier = Modifier.size(16.dp),
-                )
-            }
-        }
-        Text(
-            tab.path,
-            modifier = Modifier.padding(start = 24.dp),
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-/** Minimal vertical scrollbar for a Compose list; drawn only when it overflows. */
-@Composable
-private fun TabScrollBar(state: LazyListState, modifier: Modifier = Modifier) {
-    val layout = state.layoutInfo
-    val visible = layout.visibleItemsInfo
-    val total = layout.totalItemsCount
-    if (visible.isEmpty() || total <= visible.size) return
-    BoxWithConstraints(modifier) {
-        val track = maxHeight
-        val fraction = visible.size.toFloat() / total
-        val thumb = (track * fraction).coerceAtLeast(24.dp).coerceAtMost(track)
-        val maxOffset = (track - thumb).coerceAtLeast(0.dp)
-        val scrollable = (total - visible.size).coerceAtLeast(1)
-        val offset = maxOffset * (visible.first().index.toFloat() / scrollable)
-        Box(
-            Modifier
-                .offset(y = offset)
-                .width(3.dp)
-                .height(thumb)
-                .clip(RoundedCornerShape(2.dp))
-                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)),
-        )
     }
 }
 

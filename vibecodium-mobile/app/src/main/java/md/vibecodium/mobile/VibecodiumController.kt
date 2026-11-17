@@ -147,7 +147,6 @@ class VibecodiumController(context: Context) {
         state = state.copy(
             vaultChooserOpen = true,
             drawer = null,
-            tabSwitcher = false,
             settingsOpen = false,
             settingsSection = null,
         )
@@ -255,7 +254,6 @@ class VibecodiumController(context: Context) {
             activeTab = -1,
             loading = false,
             drawer = null,
-            tabSwitcher = false,
             editorMode = state.settings.defaultEditorMode,
             lines = emptyList(),
             markdownText = "",
@@ -681,7 +679,7 @@ class VibecodiumController(context: Context) {
     ) {
         if (state.find.open) closeFindBar()
         if (index !in state.tabs.indices) {
-            state = state.copy(drawer = null, tabSwitcher = false)
+            state = state.copy(drawer = null)
             onReady?.invoke()
             return
         }
@@ -700,7 +698,6 @@ class VibecodiumController(context: Context) {
                 viewerPath = null,
                 focusRequestId = focusReq,
                 drawer = null,
-                tabSwitcher = false,
             )
             loadTabContent(index, modeOverride, focusEditor, pushHistory, onReady)
             return
@@ -721,7 +718,6 @@ class VibecodiumController(context: Context) {
             recentFiles = RecentStore.remember(appContext, locatorKey(), target.path),
             // Kept open until the editor has drawn the new tab.
             drawer = if (sameTab) null else state.drawer,
-            tabSwitcher = if (sameTab) false else state.tabSwitcher,
             viewerPath = null,
             focusRequestId = focusReq,
         )
@@ -776,7 +772,6 @@ class VibecodiumController(context: Context) {
                             viewerPath = null,
                             focusRequestId = focusReq,
                             drawer = null,
-                            tabSwitcher = false,
                         )
                     } else {
                         state.copy(tabs = tabs)
@@ -794,7 +789,6 @@ class VibecodiumController(context: Context) {
                 state = state.copy(
                     message = error.message ?: "Could not read the note",
                     drawer = null,
-                    tabSwitcher = false,
                 )
                 onReady?.invoke()
             }
@@ -822,7 +816,7 @@ class VibecodiumController(context: Context) {
         val ready = pendingFrameReady
         pendingFramePath = null
         pendingFrameReady = null
-        state = state.copy(drawer = null, tabSwitcher = false)
+        state = state.copy(drawer = null)
         ready?.invoke()
     }
 
@@ -856,25 +850,18 @@ class VibecodiumController(context: Context) {
         } else {
             state = state.copy(headings = emptyList(), stats = DocStats(0, 0, 0), lines = emptyList(), markdownText = "")
         }
-        // Keep the tab list open so several tabs can be closed in a row; only
-        // leave it when there is nothing left to show.
-        if (state.tabs.isEmpty()) state = state.copy(tabSwitcher = false)
         persistTabs()
     }
 
     /** Closes every open tab; dirty documents are saved first. */
     fun closeAllTabs() {
-        if (state.tabs.isEmpty()) {
-            state = state.copy(tabSwitcher = false)
-            return
-        }
+        if (state.tabs.isEmpty()) return
         saveJob?.cancel()
         val dirty = state.tabs.filter { it.dirty && it.isLoaded }
         val repository = repository
         state = state.copy(
             tabs = emptyList(),
             activeTab = -1,
-            tabSwitcher = false,
             headings = emptyList(),
             stats = DocStats(0, 0, 0),
             lines = emptyList(),
@@ -1829,7 +1816,6 @@ class VibecodiumController(context: Context) {
             settingsOpen = true,
             settingsSection = section,
             drawer = null,
-            tabSwitcher = false,
         )
     }
 
@@ -2294,7 +2280,6 @@ class VibecodiumController(context: Context) {
             state = state.copy(
                 viewerPath = path,
                 drawer = null,
-                tabSwitcher = false,
             )
         } else {
             state = state.copy(
@@ -2657,25 +2642,35 @@ class VibecodiumController(context: Context) {
         if (state.drawer != null) closeExplorerActions()
         state = state.copy(
             drawer = if (state.drawer == drawer) null else drawer,
-            tabSwitcher = false,
         )
     }
 
     fun setDrawerMode(mode: DrawerMode) {
         closeExplorerActions()
-        state = state.copy(drawer = Drawer.Left, drawerMode = mode, tabSwitcher = false)
+        state = state.copy(drawer = Drawer.Left, drawerMode = mode)
     }
 
-    fun toggleTabSwitcher() {
-        closeExplorerActions()
-        state = state.copy(tabSwitcher = !state.tabSwitcher, drawer = null)
+    /** Closes the outline and centers the active editor on a heading line. */
+    fun revealHeading(heading: Heading) {
+        val tab = state.tabs.getOrNull(state.activeTab) ?: return
+        var offset = 0
+        var line = 0
+        val targetLine = (heading.line - 1).coerceAtLeast(0)
+        while (line < targetLine) {
+            val newline = tab.text.indexOf('\n', offset)
+            if (newline < 0) break
+            offset = newline + 1
+            line++
+        }
+        closeOverlays()
+        activeEditorView?.revealOffset(offset, 0, focusEditor = false)
     }
 
     fun closeOverlays() {
         closeExplorerActions()
         pendingFramePath = null
         pendingFrameReady = null
-        state = state.copy(drawer = null, tabSwitcher = false)
+        state = state.copy(drawer = null)
     }
 
     fun back() {
@@ -2689,10 +2684,6 @@ class VibecodiumController(context: Context) {
         }
         if (state.viewerPath != null) {
             state = state.copy(viewerPath = null)
-            return
-        }
-        if (state.tabSwitcher) {
-            state = state.copy(tabSwitcher = false)
             return
         }
         if (state.explorerMenuPath != null) {
