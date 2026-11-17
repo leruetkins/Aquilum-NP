@@ -1794,6 +1794,9 @@ struct SurfaceState {
     /// Tints the caret line while editing, like the desktop editor. Paint-only
     /// state: toggling it never re-wraps the document.
     current_line_highlight: bool,
+    /// Extends the gutter wash across every visual row of a wrapped caret
+    /// line. Off by default: only the row holding the caret is tinted.
+    gutter_wrapped_line_highlight: bool,
     background: u32,
     painter: Painter,
     tree: TreeState,
@@ -4305,6 +4308,7 @@ impl SurfaceState {
             code_face: Face::Mono,
             headings: DEFAULT_HEADINGS,
             current_line_highlight: true,
+            gutter_wrapped_line_highlight: false,
             background: palette().editor_background,
             content_kind: 0,
             painter: Painter::new(),
@@ -5214,6 +5218,7 @@ impl SurfaceState {
         let mut prepared_heading: Option<HeadingStyle> = None;
         let mut painted_rule = false;
         let mut task_prefix_open = false;
+        let mut bullet_prefix_open = false;
         let mut line_start = 0usize;
         let mut chars: Vec<char> = Vec::new();
         let mut colors: Vec<u32> = Vec::new();
@@ -5574,6 +5579,21 @@ impl SurfaceState {
                             Some((selection_start, selection_end)),
                         )
                     });
+                bullet_prefix_open = model
+                    .get(chunk.line)
+                    .filter(|line| line.kind == "bullet")
+                    .is_some_and(|line| {
+                        task_prefix_revealed(
+                            line_start,
+                            line.prefix_chars,
+                            if self.editor.preview {
+                                None
+                            } else {
+                                Some(self.editor.selection)
+                            },
+                            Some((selection_start, selection_end)),
+                        )
+                    });
                 overlays.clear();
                 if !self.editor.language.is_empty() {
                     colors = code_colors(raw, &self.editor.language, &palette);
@@ -5603,6 +5623,7 @@ impl SurfaceState {
                         }
                         if chunk.line != cursor_line
                             || (line.kind == "task" && !task_prefix_open)
+                            || (line.kind == "bullet" && !bullet_prefix_open)
                         {
                             match line.kind.as_str() {
                                 "heading" => {
@@ -6080,9 +6101,12 @@ impl SurfaceState {
             let y = top_inset + self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0) - scroll;
             // The gutter is repainted above the content, so the caret line wash
             // is laid down again here. A wrapped line owns several visual rows:
-            // every one of them keeps the gutter beside the number tinted, not
-            // only the sub-row holding the caret.
-            if show_current_line && chunk.line == cursor_line {
+            // by default only the caret row keeps the gutter tinted; the
+            // setting extends it to the whole logical line.
+            if show_current_line
+                && (visual == cursor_visual
+                    || (self.gutter_wrapped_line_highlight && chunk.line == cursor_line))
+            {
                 rect(
                     pixels,
                     self.width,
@@ -8026,6 +8050,22 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetCurre
         let enabled = enabled != 0;
         if state.current_line_highlight != enabled {
             state.current_line_highlight = enabled;
+            state.invalidate();
+        }
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetGutterWrappedLineHighlight(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    enabled: jboolean,
+) {
+    let _ = with_surface(id, |state| {
+        let enabled = enabled != 0;
+        if state.gutter_wrapped_line_highlight != enabled {
+            state.gutter_wrapped_line_highlight = enabled;
             state.invalidate();
         }
     });

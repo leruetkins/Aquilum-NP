@@ -1210,6 +1210,8 @@ class NativeEditorView(
     private var headingStyles: HeadingsSettings? = null
     /** Whether the core tints the caret line; matches the settings default. */
     private var highlightCurrentLine = true
+    /** Whether the gutter wash follows every wrapped row; off by default. */
+    private var gutterWrappedLineHighlight = false
     private var onHistoryChanged: ((Boolean, Boolean) -> Unit)? = null
     private var reportedCanUndo = false
     private var reportedCanRedo = false
@@ -1756,6 +1758,19 @@ class NativeEditorView(
     }
 
     /**
+     * Chooses between tinting only the caret row in the gutter or every visual
+     * row of a wrapped line. Paint-only state, like the caret-line wash.
+     */
+    fun setEditorGutterWrappedLineHighlight(enabled: Boolean) {
+        if (enabled == gutterWrappedLineHighlight) return
+        gutterWrappedLineHighlight = enabled
+        postRenderTask {
+            CoreBridge.nativeEditorSetGutterWrappedLineHighlight(surfaceId, enabled)
+        }
+        requestFullRender()
+    }
+
+    /**
      * Pushes a caret visibility change only when it actually flips. The
      * repaint is queued on the render thread, so the blink no longer paints a
      * whole frame on the UI thread (which used to stall an ongoing scroll).
@@ -1960,6 +1975,10 @@ class NativeEditorView(
         }
         CoreBridge.nativeEditorSetPreview(surfaceId, inPreview)
         CoreBridge.nativeEditorSetCurrentLineHighlight(surfaceId, highlightCurrentLine)
+        CoreBridge.nativeEditorSetGutterWrappedLineHighlight(
+            surfaceId,
+            gutterWrappedLineHighlight,
+        )
         caretVisible = true
         CoreBridge.nativeEditorSetCaretVisible(surfaceId, true)
         CoreBridge.nativeEditorSetInsertionHandleVisible(surfaceId, !inPreview)

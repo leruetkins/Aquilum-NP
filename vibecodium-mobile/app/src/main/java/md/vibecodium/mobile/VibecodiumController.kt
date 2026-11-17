@@ -1896,6 +1896,10 @@ class VibecodiumController(context: Context) {
         it.copy(highlightCurrentLine = enabled)
     }
 
+    fun setHighlightWrappedLineInGutter(enabled: Boolean) = updateSettings {
+        it.copy(highlightWrappedLineInGutter = enabled)
+    }
+
     fun setDailyNotesEnabled(enabled: Boolean) = updateSettings {
         it.copy(dailyNotes = it.dailyNotes.copy(enabled = enabled))
     }

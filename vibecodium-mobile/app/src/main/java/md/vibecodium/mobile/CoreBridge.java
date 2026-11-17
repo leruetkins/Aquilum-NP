@@ -167,6 +167,8 @@ public final class CoreBridge {
 
     public static native void nativeEditorSetCurrentLineHighlight(int id, boolean enabled);
 
+    public static native void nativeEditorSetGutterWrappedLineHighlight(int id, boolean enabled);
+
     public static native void nativeEditorSetFontSize(int id, float fontDp, float lineDp);
 
     /** Fenced-code size, independent from the body text size. */

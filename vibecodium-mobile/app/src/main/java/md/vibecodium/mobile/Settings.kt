@@ -141,6 +141,11 @@ data class AppSettings(
     val autoSaveDelayMs: Int = 600,
     /** Tints the caret line in the source editor, like the desktop editor. */
     val highlightCurrentLine: Boolean = true,
+    /**
+     * Extends the gutter wash over every visual row of a wrapped caret line.
+     * Off by default: only the row holding the caret is tinted.
+     */
+    val highlightWrappedLineInGutter: Boolean = false,
     val dailyNotes: DailyNoteSettings = DailyNoteSettings(),
     val headings: HeadingsSettings = HeadingsSettings(),
     /** Base color scheme; [ThemeMode.System] follows the device setting. */
@@ -207,6 +212,7 @@ object AppSettingsJson {
             .put("defaultEditorMode", settings.defaultEditorMode.name)
             .put("autoSaveDelayMs", settings.autoSaveDelayMs)
             .put("highlightCurrentLine", settings.highlightCurrentLine)
+            .put("highlightWrappedLineInGutter", settings.highlightWrappedLineInGutter)
             .put("dailyNotes", dailyNotes)
             .put("headings", headings)
             .put("themeMode", settings.themeMode.name)
@@ -247,6 +253,10 @@ object AppSettingsJson {
                 }.getOrDefault(EditorMode.Source),
                 autoSaveDelayMs = value.optInt("autoSaveDelayMs", 600).coerceIn(0, 5000),
                 highlightCurrentLine = value.optBoolean("highlightCurrentLine", true),
+                highlightWrappedLineInGutter = value.optBoolean(
+                    "highlightWrappedLineInGutter",
+                    false,
+                ),
                 dailyNotes = dailyNoteSettings(value.optJSONObject("dailyNotes")),
                 headings = headingsSettings(value.optJSONObject("headings")),
                 themeMode = runCatching {

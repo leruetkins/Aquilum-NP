@@ -14,6 +14,7 @@ class SettingsTest {
         assertEquals(EditorMode.Source, settings.defaultEditorMode)
         assertEquals(600, settings.autoSaveDelayMs)
         assertTrue(settings.highlightCurrentLine)
+        assertEquals(false, settings.highlightWrappedLineInGutter)
     }
 
     @Test
@@ -25,6 +26,7 @@ class SettingsTest {
             defaultEditorMode = EditorMode.Preview,
             autoSaveDelayMs = 300,
             highlightCurrentLine = false,
+            highlightWrappedLineInGutter = true,
             headings = HeadingsSettings(
                 h1 = HeadingStyle(26, "#123456", bold = false, italic = true),
             ),

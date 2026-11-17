@@ -934,6 +934,7 @@ private data class EditorSlice(
     val stats: DocStats,
     val headings: HeadingsSettings,
     val highlightCurrentLine: Boolean,
+    val highlightWrappedLineInGutter: Boolean,
     val find: FindUiState = FindUiState(),
     val settingsOpen: Boolean = false,
     val overlayOpen: Boolean = false,
@@ -963,6 +964,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 stats = current.stats,
                 headings = current.settings.headings,
                 highlightCurrentLine = current.settings.highlightCurrentLine,
+                highlightWrappedLineInGutter = current.settings.highlightWrappedLineInGutter,
                 find = current.find,
                 settingsOpen = current.settingsOpen,
                 overlayOpen = current.settingsOpen || current.renamePath != null ||
@@ -1319,6 +1321,7 @@ private fun EditorArea(
             keyboardHidden,
             onEditorScroll,
             editor.highlightCurrentLine,
+            editor.highlightWrappedLineInGutter,
         )
     }
 }
@@ -1368,6 +1371,7 @@ private fun EditorScreen(
     keyboardHidden: Boolean,
     onEditorScroll: (Float, Float, Boolean) -> Unit,
     highlightCurrentLine: Boolean,
+    highlightWrappedLineInGutter: Boolean,
 ) {
     val bottomInset = if (imeVisible || !navbarEnabled) 0.dp else NavbarHeight + 12.dp
     val preview = state.editorMode == EditorMode.Preview
@@ -1464,6 +1468,7 @@ private fun EditorScreen(
             onViewReady,
             onCaretPlaced,
             highlightCurrentLine,
+            highlightWrappedLineInGutter,
         )
         if (state.find.open) {
             Box(
@@ -2132,6 +2137,7 @@ private fun SourceEditor(
     onViewReady: (NativeEditorView) -> Unit,
     onCaretPlaced: () -> Unit,
     highlightCurrentLine: Boolean,
+    highlightWrappedLineInGutter: Boolean,
 ) {
     AndroidView(
         factory = { context ->
@@ -2163,6 +2169,7 @@ private fun SourceEditor(
             view.setEditorFonts(textFontFace, codeFontFace)
             view.setEditorHeadings(headings)
             view.setEditorCurrentLineHighlight(highlightCurrentLine)
+            view.setEditorGutterWrappedLineHighlight(highlightWrappedLineInGutter)
             view.setEditor(tab.text, tab.selection, tab.language, tab.path)
         },
     )
@@ -5206,6 +5213,13 @@ private fun SettingsSectionContent(
                         description = "Tint the line with the caret while editing",
                         checked = settings.highlightCurrentLine,
                         onChange = controller::setHighlightCurrentLine,
+                        showDivider = true,
+                    )
+                    SettingsSwitchRow(
+                        title = "Highlight wrapped lines in gutter",
+                        description = "Tint the whole wrapped line in the gutter instead of only the caret row",
+                        checked = settings.highlightWrappedLineInGutter,
+                        onChange = controller::setHighlightWrappedLineInGutter,
                         showDivider = false,
                     )
                 }
