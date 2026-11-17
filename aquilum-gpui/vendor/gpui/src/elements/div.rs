@@ -2067,8 +2067,14 @@ impl Interactivity {
             })
         }
 
+        // LOCAL PATCH (see [patch.crates-io] in the app's Cargo.toml).
+        //
+        // The `mouse_cursor` clause used to register this listener too. A cursor
+        // change paints nothing, and `reset_cursor_style` already applies it
+        // whenever the hit test changes, so notifying the view only costs a full
+        // rebuild and re-present. Every editor row carries an I-beam cursor, so
+        // waving the mouse across the text re-rendered the whole window.
         if self.hover_style.is_some()
-            || self.base_style.mouse_cursor.is_some()
             || cx.active_drag.is_some() && !self.drag_over_styles.is_empty()
         {
             let hitbox = hitbox.clone();

@@ -120,6 +120,14 @@ tempfile = "3"
 # itself and the saved geometry never comes back; `ConfigureNotify` coordinates
 # are translated to the root because a reparenting WM reports them relative to
 # its frame.
+#
+# 9. Hover notifications: a div that only sets `mouse_cursor` no longer notifies
+# the view when its hover state changes. A cursor change paints nothing and
+# `reset_cursor_style` already applies it whenever the hit test changes, so the
+# notification only rebuilt and re-presented the whole window. Every editor row
+# carries an I-beam cursor, so waving the mouse across the text re-rendered the
+# full scene at the refresh rate (~20% GPU on a 4K window). Elements with an
+# actual `hover`/`group_hover` style (or drag-over styles) still notify.
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
 

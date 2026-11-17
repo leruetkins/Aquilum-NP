@@ -5435,8 +5435,12 @@ impl SurfaceState {
                                     if line.prefix_chars >= 2 {
                                         let marker = line.prefix_chars - 2;
                                         if marker + 1 < chars.len() {
-                                            chars[marker] = '•';
+                                            // A filled circle reads heavier than
+                                            // the source dash, and the accent
+                                            // colour separates it from prose.
+                                            chars[marker] = '●';
                                             chars[marker + 1] = ' ';
+                                            colors[marker] = palette.accent;
                                         }
                                     }
                                 }
