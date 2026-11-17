@@ -1892,6 +1892,10 @@ class VibecodiumController(context: Context) {
 
     fun setAutoSaveDelay(millis: Int) = updateSettings { it.copy(autoSaveDelayMs = millis) }
 
+    fun setHighlightCurrentLine(enabled: Boolean) = updateSettings {
+        it.copy(highlightCurrentLine = enabled)
+    }
+
     fun setDailyNotesEnabled(enabled: Boolean) = updateSettings {
         it.copy(dailyNotes = it.dailyNotes.copy(enabled = enabled))
     }

@@ -933,6 +933,7 @@ private data class EditorSlice(
     val bookmarks: Set<String>,
     val stats: DocStats,
     val headings: HeadingsSettings,
+    val highlightCurrentLine: Boolean,
     val find: FindUiState = FindUiState(),
     val settingsOpen: Boolean = false,
     val overlayOpen: Boolean = false,
@@ -961,6 +962,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 bookmarks = current.bookmarks,
                 stats = current.stats,
                 headings = current.settings.headings,
+                highlightCurrentLine = current.settings.highlightCurrentLine,
                 find = current.find,
                 settingsOpen = current.settingsOpen,
                 overlayOpen = current.settingsOpen || current.renamePath != null ||
@@ -1316,6 +1318,7 @@ private fun EditorArea(
             chromeProgress,
             keyboardHidden,
             onEditorScroll,
+            editor.highlightCurrentLine,
         )
     }
 }
@@ -1364,6 +1367,7 @@ private fun EditorScreen(
     chromeProgress: State<Float>,
     keyboardHidden: Boolean,
     onEditorScroll: (Float, Float, Boolean) -> Unit,
+    highlightCurrentLine: Boolean,
 ) {
     val bottomInset = if (imeVisible || !navbarEnabled) 0.dp else NavbarHeight + 12.dp
     val preview = state.editorMode == EditorMode.Preview
@@ -1459,6 +1463,7 @@ private fun EditorScreen(
             onEditorScroll,
             onViewReady,
             onCaretPlaced,
+            highlightCurrentLine,
         )
         if (state.find.open) {
             Box(
@@ -2126,6 +2131,7 @@ private fun SourceEditor(
     onScroll: (Float, Float, Boolean) -> Unit,
     onViewReady: (NativeEditorView) -> Unit,
     onCaretPlaced: () -> Unit,
+    highlightCurrentLine: Boolean,
 ) {
     AndroidView(
         factory = { context ->
@@ -2156,6 +2162,7 @@ private fun SourceEditor(
             view.setEditorCodeFont(codeFontDp)
             view.setEditorFonts(textFontFace, codeFontFace)
             view.setEditorHeadings(headings)
+            view.setEditorCurrentLineHighlight(highlightCurrentLine)
             view.setEditor(tab.text, tab.selection, tab.language, tab.path)
         },
     )
@@ -5192,6 +5199,14 @@ private fun SettingsSectionContent(
                             "Reading" to EditorMode.Preview,
                         ),
                         onSelect = controller::setDefaultEditorMode,
+                        showDivider = true,
+                    )
+                    SettingsSwitchRow(
+                        title = "Highlight current line",
+                        description = "Tint the line with the caret while editing",
+                        checked = settings.highlightCurrentLine,
+                        onChange = controller::setHighlightCurrentLine,
+                        showDivider = false,
                     )
                 }
                 SettingsGroup("Saving") {

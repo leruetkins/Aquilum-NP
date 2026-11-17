@@ -139,6 +139,8 @@ data class AppSettings(
     val navbarEnabled: Boolean = false,
     val defaultEditorMode: EditorMode = EditorMode.Source,
     val autoSaveDelayMs: Int = 600,
+    /** Tints the caret line in the source editor, like the desktop editor. */
+    val highlightCurrentLine: Boolean = true,
     val dailyNotes: DailyNoteSettings = DailyNoteSettings(),
     val headings: HeadingsSettings = HeadingsSettings(),
     /** Base color scheme; [ThemeMode.System] follows the device setting. */
@@ -204,6 +206,7 @@ object AppSettingsJson {
             .put("navbarEnabled", settings.navbarEnabled)
             .put("defaultEditorMode", settings.defaultEditorMode.name)
             .put("autoSaveDelayMs", settings.autoSaveDelayMs)
+            .put("highlightCurrentLine", settings.highlightCurrentLine)
             .put("dailyNotes", dailyNotes)
             .put("headings", headings)
             .put("themeMode", settings.themeMode.name)
@@ -243,6 +246,7 @@ object AppSettingsJson {
                     EditorMode.valueOf(value.optString("defaultEditorMode", EditorMode.Source.name))
                 }.getOrDefault(EditorMode.Source),
                 autoSaveDelayMs = value.optInt("autoSaveDelayMs", 600).coerceIn(0, 5000),
+                highlightCurrentLine = value.optBoolean("highlightCurrentLine", true),
                 dailyNotes = dailyNoteSettings(value.optJSONObject("dailyNotes")),
                 headings = headingsSettings(value.optJSONObject("headings")),
                 themeMode = runCatching {

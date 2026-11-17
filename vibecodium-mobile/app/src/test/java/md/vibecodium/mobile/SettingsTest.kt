@@ -13,6 +13,7 @@ class SettingsTest {
         assertEquals(false, settings.navbarEnabled)
         assertEquals(EditorMode.Source, settings.defaultEditorMode)
         assertEquals(600, settings.autoSaveDelayMs)
+        assertTrue(settings.highlightCurrentLine)
     }
 
     @Test
@@ -23,6 +24,7 @@ class SettingsTest {
             navbarEnabled = true,
             defaultEditorMode = EditorMode.Preview,
             autoSaveDelayMs = 300,
+            highlightCurrentLine = false,
             headings = HeadingsSettings(
                 h1 = HeadingStyle(26, "#123456", bold = false, italic = true),
             ),

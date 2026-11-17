@@ -1791,6 +1791,9 @@ struct SurfaceState {
     code_face: Face,
     /// Per-level heading size, colour and format pushed by the settings screen.
     headings: [HeadingStyle; 6],
+    /// Tints the caret line while editing, like the desktop editor. Paint-only
+    /// state: toggling it never re-wraps the document.
+    current_line_highlight: bool,
     background: u32,
     painter: Painter,
     tree: TreeState,
@@ -4301,6 +4304,7 @@ impl SurfaceState {
             text_face: Face::Mono,
             code_face: Face::Mono,
             headings: DEFAULT_HEADINGS,
+            current_line_highlight: true,
             background: palette().editor_background,
             content_kind: 0,
             painter: Painter::new(),
@@ -5193,6 +5197,14 @@ impl SurfaceState {
         };
         let (cursor_visual, cursor_offset) =
             self.visual_for_position(&starts, self.editor.selection);
+        // The desktop hides the wash while a selection is active, so the
+        // selected span is the only highlight on screen.
+        let show_current_line = self.current_line_highlight
+            && !self.editor.preview
+            && selection_start == selection_end;
+        // Same token the floating header pills use, so the active line reads
+        // as part of the top toolbar in both light and dark themes.
+        let current_line_wash = palette.surface_alt;
         let line_faces: Vec<Face> = (0..starts.len()).map(|line| self.line_face(line)).collect();
         let headings = self.headings;
         let model = std::mem::take(&mut self.editor.model);
@@ -5407,6 +5419,22 @@ impl SurfaceState {
                         }
                     }
                 }
+            }
+            // The caret row wash sits above code and callout backgrounds but
+            // below inline, find and selection overlays, like the desktop row
+            // highlight. Only the visual row holding the caret is tinted, so a
+            // wrapped paragraph does not light up as one tall block.
+            if show_current_line && visual == cursor_visual {
+                rect(
+                    pixels,
+                    self.width,
+                    self.height,
+                    0.0,
+                    y,
+                    self.width as f32,
+                    row_h,
+                    current_line_wash,
+                );
             }
             // Tables are painted as a grid from the measured layout. The table
             // holding the caret falls through to its raw source lines so it can
@@ -6049,10 +6077,26 @@ impl SurfaceState {
         rect(pixels, self.width, self.height, 0.0, 0.0, gutter, self.height as f32, palette.editor_background);
         for visual in first..last {
             let chunk = self.editor.wrap[visual];
+            let y = top_inset + self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0) - scroll;
+            // The gutter is repainted above the content, so the caret line wash
+            // is laid down again here. A wrapped line owns several visual rows:
+            // every one of them keeps the gutter beside the number tinted, not
+            // only the sub-row holding the caret.
+            if show_current_line && chunk.line == cursor_line {
+                rect(
+                    pixels,
+                    self.width,
+                    self.height,
+                    0.0,
+                    y,
+                    gutter,
+                    chunk.height,
+                    current_line_wash,
+                );
+            }
             if chunk.start != 0 {
                 continue;
             }
-            let y = top_inset + self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0) - scroll;
             let number = (chunk.line + 1).to_string();
             let number_width = painter.width(&number, number_font_px, Face::Ui);
             let number_y = y + ((chunk.height - number_font_px) * 0.5).max(0.0);
@@ -7967,6 +8011,22 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetPrevi
             // grid, so the canonical wrap has to be rebuilt.
             state.editor.preview = preview;
             state.editor.wrap_dirty = true;
+        }
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetCurrentLineHighlight(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    enabled: jboolean,
+) {
+    let _ = with_surface(id, |state| {
+        let enabled = enabled != 0;
+        if state.current_line_highlight != enabled {
+            state.current_line_highlight = enabled;
+            state.invalidate();
         }
     });
 }
