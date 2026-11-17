@@ -3789,6 +3789,35 @@ fn wrap_line_chunks(
     chunks
 }
 
+/// Painted width of a line's marker column: quotes pad their marker cells,
+/// bullets pad the indent, the dot and its space. Continuation rows hang under
+/// that column.
+fn line_text_indent(
+    painter: &mut Painter,
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+    font: f32,
+    face: Face,
+) -> f32 {
+    let Some(row) = model.get(line) else {
+        return 0.0;
+    };
+    match row.kind.as_str() {
+        "quote" => {
+            let prefix = row.prefix_chars.min(64);
+            painter.width(&" ".repeat(prefix), font, face)
+        }
+        "bullet" => {
+            let indent = row.indent.min(64);
+            let mut text = " ".repeat(indent);
+            text.push('●');
+            text.push(' ');
+            painter.width(&text, font, face)
+        }
+        _ => 0.0,
+    }
+}
+
 fn wrap_layout(
     text: &str,
     starts: &[usize],
@@ -3871,17 +3900,8 @@ fn wrap_layout(
                 density,
             ),
         };
-        let (first_indent, continuation_indent) = if model
-            .get(line_index)
-            .map(|row| row.kind == "quote")
-            .unwrap_or(false)
-        {
-            let prefix = model[line_index].prefix_chars.min(64);
-            let width = painter.width(&" ".repeat(prefix), font, line_face);
-            (width, width)
-        } else {
-            (0.0, 0.0)
-        };
+        let text_indent = line_text_indent(painter, model, line_index, font, line_face);
+        let (first_indent, continuation_indent) = (text_indent, text_indent);
         for (start, end) in wrap_line_chunks(
             painter,
             chars,
@@ -4900,19 +4920,9 @@ impl SurfaceState {
                 let font = self.font_for_line(line);
                 let line_face = self.line_face(line);
                 let code_face = self.code_face;
-                let (first_indent, continuation_indent) = if self
-                    .editor
-                    .model
-                    .get(line)
-                    .map(|row| row.kind == "quote")
-                    .unwrap_or(false)
-                {
-                    let prefix = self.editor.model[line].prefix_chars.min(64);
-                    let width = self.painter.width(&" ".repeat(prefix), font, line_face);
-                    (width, width)
-                } else {
-                    (0.0, 0.0)
-                };
+                let text_indent =
+                    line_text_indent(&mut self.painter, &self.editor.model, line, font, line_face);
+                let (first_indent, continuation_indent) = (text_indent, text_indent);
                 for (start, end) in wrap_line_chunks(
                     &mut self.painter,
                     &chars,
@@ -5539,14 +5549,8 @@ impl SurfaceState {
                     }
                 }
                 let line_face = line_faces.get(chunk.line).copied().unwrap_or(Face::Mono);
-                continuation_indent = if has_model
-                    && model
-                        .get(chunk.line)
-                        .map(|row| row.kind == "quote")
-                        .unwrap_or(false)
-                {
-                    let prefix = model[chunk.line].prefix_chars.min(64);
-                    painter.width(&" ".repeat(prefix), chunk.font, line_face)
+                continuation_indent = if has_model {
+                    line_text_indent(&mut painter, &model, chunk.line, chunk.font, line_face)
                 } else {
                     0.0
                 };
@@ -6727,16 +6731,8 @@ impl SurfaceState {
         let line_face = self.line_face(chunk.line);
         let code_face = self.code_face;
         let model = &self.editor.model;
-        let continuation_indent = if model
-            .get(chunk.line)
-            .map(|row| row.kind == "quote")
-            .unwrap_or(false)
-        {
-            let prefix = model[chunk.line].prefix_chars.min(64);
-            self.painter.width(&" ".repeat(prefix), chunk.font, line_face)
-        } else {
-            0.0
-        };
+        let continuation_indent =
+            line_text_indent(&mut self.painter, model, chunk.line, chunk.font, line_face);
         let mut x_offsets = Vec::new();
         line_x_offsets(&mut x_offsets, &mut self.painter, &chars, &hidden, chunk.font, |index| {
             char_face(model, chunk.line, index, line_face, code_face)
@@ -8942,6 +8938,43 @@ mod tests {
             raw.iter().all(|row| row.height > 0.0),
             "the edited table keeps every source row: {raw:?}"
         );
+    }
+
+    #[test]
+    fn bullet_continuation_rows_hang_under_the_text() {
+        let text = "- aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa";
+        let starts = line_starts(text).0;
+        let model = crate::markdown::model(text);
+        let mut painter = Painter::new();
+        let line_fonts = vec![(15.0, Face::Mono)];
+        let rows = wrap_layout(
+            text,
+            &starts,
+            200.0,
+            &mut painter,
+            &line_fonts,
+            &model,
+            Face::Mono,
+            15.0,
+            22.0,
+            1.0,
+            false,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(rows.len() > 1, "the bullet wraps");
+        let indent = line_text_indent(&mut painter, &model, 0, 15.0, Face::Mono);
+        assert!(indent >= 9.0, "the bullet column has width: {indent}");
+        let cell = painter.advance(15.0, Face::Mono);
+        let max_chars = ((200.0 - indent) / cell).floor() as usize + 1;
+        for row in &rows {
+            let len = row.end - row.start;
+            assert!(
+                len <= max_chars,
+                "a bullet row ignores the hanging indent: {len} > {max_chars}"
+            );
+        }
     }
 
     #[test]
