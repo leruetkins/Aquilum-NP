@@ -127,7 +127,8 @@ class SearchResultsView(context: Context) : android.widget.FrameLayout(context) 
         dividerPaint.color = colors.divider
         recycler.invalidateItemDecorations()
         scrollbar.setBarColor((colors.muted and 0x00ffffff) or (0x59 shl 24))
-        if (next == rows && colors == this.colors) return
+        val colorsChanged = colors != this.colors
+        if (next == rows && !colorsChanged) return
         val firstPosition = (recycler.layoutManager as LinearLayoutManager)
             .findFirstVisibleItemPosition()
         val firstOffset = firstPosition.takeIf { it >= 0 }

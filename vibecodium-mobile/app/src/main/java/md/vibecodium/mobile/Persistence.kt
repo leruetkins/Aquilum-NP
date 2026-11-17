@@ -155,6 +155,13 @@ object RecentStore {
         return updated
     }
 
+    /** Drops one exact recent entry while keeping the rest. */
+    fun forget(context: Context, key: String, path: String): List<RecentEntry> {
+        val updated = load(context, key).filterNot { it.path == path }.take(LIMIT)
+        save(context, key, updated)
+        return updated
+    }
+
     /** Drops recent entries for a deleted file or folder subtree. */
     fun removeTree(context: Context, key: String, path: String): List<RecentEntry> {
         val updated = load(context, key)

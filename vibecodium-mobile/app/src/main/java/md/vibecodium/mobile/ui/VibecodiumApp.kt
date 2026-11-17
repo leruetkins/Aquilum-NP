@@ -1604,8 +1604,24 @@ private fun TabsDropdown(
     val footerHeight = 44.dp
     val footerGap = 6.dp
     val listMaxHeight = (maxMenuHeight - footerHeight - footerGap).coerceAtLeast(72.dp)
-    val listState = rememberLazyListState()
     val tabOrder = remember(state.tabs) { newestFirstTabOrder(state.tabs) }
+    val tabEntries = remember(state.tabs, state.activeTab, state.bookmarks, tabOrder) {
+        tabOrder.map { index ->
+            val tab = state.tabs[index]
+            TabListEntry(
+                index = index,
+                tab = tab,
+                active = index == state.activeTab,
+                bookmarked = tab.path in state.bookmarks,
+            )
+        }
+    }
+    val tabColors = TabListColors(
+        activeBackground = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f).toArgb(),
+        text = MaterialTheme.colorScheme.onSurface.toArgb(),
+        muted = MaterialTheme.colorScheme.onSurfaceVariant.toArgb(),
+        accent = MaterialTheme.colorScheme.primary.toArgb(),
+    )
     Popup(
         popupPositionProvider = FullScreenPositionProvider,
         onDismissRequest = onDismiss,
@@ -1662,56 +1678,20 @@ private fun TabsDropdown(
                     tonalElevation = 3.dp,
                     shadowElevation = 6.dp,
                 ) {
-                    Box(Modifier.fillMaxWidth().heightIn(max = listMaxHeight)) {
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                        ) {
-                            itemsIndexed(tabOrder, key = { _, index -> state.tabs[index].path }) { position, index ->
-                                val item = state.tabs[index]
-                                // The first and last rows follow the dropdown's
-                                // own rounding; the inner corners stay small.
-                                val shape = when {
-                                    tabOrder.size == 1 -> RoundedCornerShape(PanelCornerRadius)
-                                    position == 0 -> RoundedCornerShape(
-                                        topStart = PanelCornerRadius,
-                                        topEnd = PanelCornerRadius,
-                                        bottomStart = 8.dp,
-                                        bottomEnd = 8.dp,
-                                    )
-                                    position == tabOrder.lastIndex -> RoundedCornerShape(
-                                        topStart = 8.dp,
-                                        topEnd = 8.dp,
-                                        bottomStart = PanelCornerRadius,
-                                        bottomEnd = PanelCornerRadius,
-                                    )
-                                    else -> RoundedCornerShape(8.dp)
-                                }
-                                TabListRow(
-                                    tab = item,
-                                    active = index == state.activeTab,
-                                    bookmarked = item.path in state.bookmarks,
-                                    shape = shape,
-                                    onSelect = {
-                                        // Keep the list up until the tab's text
-                                        // is ready, so the previous note never
-                                        // flashes behind it.
-                                        controller.selectTab(index, onReady = onDismiss)
-                                    },
-                                    onClose = { controller.closeTab(index) },
-                                )
-                            }
-                        }
-                        TabScrollBar(
-                            state = listState,
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .fillMaxHeight()
-                                .padding(end = 1.dp, top = 2.dp, bottom = 2.dp),
-                        )
-                    }
+                    AndroidView(
+                        factory = { context -> TabListView(context) },
+                        modifier = Modifier.fillMaxWidth().heightIn(max = listMaxHeight),
+                        update = { view ->
+                            view.setData(
+                                entries = tabEntries,
+                                colors = tabColors,
+                                onSelect = { index ->
+                                    controller.selectTab(index, onReady = onDismiss)
+                                },
+                                onClose = { index -> controller.closeTab(index) },
+                            )
+                        },
+                    )
                 }
                 // Under the whole dropdown, on the page cover, so the action
                 // reads as separate from the list of tabs it closes.
@@ -3847,30 +3827,32 @@ private fun BookmarkedList(state: UiState, controller: VibecodiumController) {
         Placeholder("No bookmarked notes yet.\nUse the star in the note header.")
         return
     }
-    val listState = rememberLazyListState()
-    Box(Modifier.fillMaxSize()) {
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-            items(notes, key = { it.path }) { note ->
-                NoteRow(
-                    note,
-                    active = state.tabs.getOrNull(state.activeTab)?.path == note.path,
-                    bookmarked = true,
-                    detail = note.path,
-                ) {
-                    controller.openNote(note.path)
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-            }
+    val activePath = state.tabs.getOrNull(state.activeTab)?.path
+    val entries = remember(notes, activePath) {
+        notes.map { note ->
+            NoteListEntry(
+                path = note.path,
+                title = note.basename,
+                detail = note.path,
+                active = note.path == activePath,
+                bookmarked = true,
+            )
         }
-        ThinScrollbar(
-            listState,
-            Modifier
-                .align(Alignment.CenterEnd)
-                .fillMaxHeight()
-                .padding(end = 2.dp)
-                .width(3.dp),
-        )
     }
+    val colors = NoteListColors(
+        activeBackground = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f).toArgb(),
+        text = MaterialTheme.colorScheme.onSurface.toArgb(),
+        muted = MaterialTheme.colorScheme.onSurfaceVariant.toArgb(),
+        accent = MaterialTheme.colorScheme.primary.toArgb(),
+        divider = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f).toArgb(),
+    )
+    AndroidView(
+        factory = { context -> NoteListView(context) },
+        modifier = Modifier.fillMaxSize(),
+        update = { view ->
+            view.setData(entries, colors, onOpen = { path -> controller.openNote(path) })
+        },
+    )
 }
 
 @Composable
@@ -3883,7 +3865,25 @@ private fun RecentList(state: UiState, controller: VibecodiumController) {
         Placeholder("Notes you open will appear here.")
         return
     }
-    val listState = rememberLazyListState()
+    val entries = remember(recent, state.bookmarks) {
+        recent.map { (note, openedAt) ->
+            NoteListEntry(
+                path = note.path,
+                title = note.basename,
+                detail = if (openedAt > 0) dateTimeLabel(openedAt) else "—",
+                active = false,
+                bookmarked = note.path in state.bookmarks,
+                closable = true,
+            )
+        }
+    }
+    val colors = NoteListColors(
+        activeBackground = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f).toArgb(),
+        text = MaterialTheme.colorScheme.onSurface.toArgb(),
+        muted = MaterialTheme.colorScheme.onSurfaceVariant.toArgb(),
+        accent = MaterialTheme.colorScheme.primary.toArgb(),
+        divider = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f).toArgb(),
+    )
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -3904,28 +3904,18 @@ private fun RecentList(state: UiState, controller: VibecodiumController) {
             }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                items(recent, key = { it.first.path }) { (note, openedAt) ->
-                    NoteRow(
-                        note,
-                        active = false,
-                        bookmarked = note.path in state.bookmarks,
-                        detail = if (openedAt > 0) dateTimeLabel(openedAt) else "—",
-                    ) {
-                        controller.openNote(note.path)
-                    }
-                }
-            }
-            ThinScrollbar(
-                listState,
-                Modifier
-                    .align(Alignment.CenterEnd)
-                    .fillMaxHeight()
-                    .padding(end = 2.dp)
-                    .width(3.dp),
-            )
-        }
+        AndroidView(
+            factory = { context -> NoteListView(context) },
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            update = { view ->
+                view.setData(
+                    entries,
+                    colors,
+                    onOpen = { path -> controller.openNote(path) },
+                    onClose = { path -> controller.removeRecent(path) },
+                )
+            },
+        )
     }
 }
 

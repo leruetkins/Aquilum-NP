@@ -168,6 +168,13 @@ class VibecodiumController(context: Context) {
         state = state.copy(knownVaults = VaultListStore.forget(appContext, vault.locator))
     }
 
+    fun removeRecent(path: String) {
+        val key = locatorKey()
+        if (key.isEmpty()) return
+        val recent = RecentStore.forget(appContext, key, path)
+        state = state.copy(recentFiles = recent)
+    }
+
     fun clearRecent() {
         val key = locatorKey()
         if (key.isNotEmpty()) RecentStore.clear(appContext, key)
