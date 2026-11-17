@@ -1041,7 +1041,7 @@ struct Painter {
     glyphs: HashMap<(u8, char, u32), (fontdue::Metrics, Vec<u8>)>,
     icons: HashMap<(usize, u32, u32), IconRaster>,
     emojis: HashMap<(String, u32), EmojiRaster>,
-    metrics_cache: HashMap<(u32, u8), (f32, f32)>,
+    metrics_cache: HashMap<(u32, u8), (f32, f32, f32)>,
     char_advances: HashMap<(u8, char, u32), f32>,
 }
 
@@ -1266,7 +1266,7 @@ impl Painter {
         primary
     }
 
-    fn font_metrics(&mut self, px: f32, face: Face) -> (f32, f32) {
+    fn font_metrics(&mut self, px: f32, face: Face) -> (f32, f32, f32) {
         let key = (px.to_bits(), face as u8);
         if let Some(&cached) = self.metrics_cache.get(&key) {
             return cached;
@@ -1275,14 +1275,21 @@ impl Painter {
             .font(face)
             .map(|f| f.metrics('M', px).advance_width)
             .unwrap_or(px * 0.6);
-        let ascent = self
+        let (ascent, descent) = self
             .font(face)
             .and_then(|f| f.horizontal_line_metrics(px))
-            .map(|line| line.ascent)
-            .unwrap_or(px * 0.8)
-            .round();
-        self.metrics_cache.insert(key, (advance, ascent));
-        (advance, ascent)
+            .map(|line| (line.ascent.round(), line.descent.abs().round()))
+            .unwrap_or((px * 0.8, px * 0.25));
+        self.metrics_cache.insert(key, (advance, ascent, descent));
+        (advance, ascent, descent)
+    }
+
+    /// Ascent and descent (both positive) of the face at `px`. Their sum is the
+    /// text box the glyphs are drawn into, which is what must be centered in a
+    /// row so descenders sit inside the highlight and caret.
+    fn font_line_span(&mut self, px: f32, face: Face) -> (f32, f32) {
+        let (_, ascent, descent) = self.font_metrics(px, face);
+        (ascent, descent)
     }
 
     fn advance(&mut self, px: f32, face: Face) -> f32 {
@@ -1365,7 +1372,7 @@ impl Painter {
         face: Face,
         italic: bool,
     ) {
-        let (cell_advance, ascent) = self.font_metrics(px, face);
+        let (cell_advance, ascent, _) = self.font_metrics(px, face);
         let baseline = y + ascent;
         let mut cursor = x;
         // A tab has no glyph; layout treats it as a space, so drawing must too.
@@ -1559,6 +1566,13 @@ impl Painter {
             i += 1;
         }
     }
+}
+
+/// Top of a text box that vertically centers the font's ascent and descent in
+/// a row. Accounts for descenders, unlike a fixed top pad.
+fn centered_text_y(painter: &mut Painter, y: f32, row_h: f32, font: f32, face: Face) -> f32 {
+    let (ascent, descent) = painter.font_line_span(font, face);
+    y + ((row_h - (ascent + descent)) * 0.5).max(0.0)
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -2409,7 +2423,6 @@ fn paint_table_row(
     text_x: f32,
     y: f32,
     row_h: f32,
-    line_h: f32,
     font: f32,
     face: Face,
     density: f32,
@@ -2426,8 +2439,7 @@ fn paint_table_row(
     let text_x = text_x + layout.indent - x_shift;
     let hair = (1.0 * density).max(1.0);
     let pad = (12.0 * density).round();
-    let text_pad_y = (3.0 * density).round();
-    let text_y = y + ((row_h - line_h) * 0.5).max(0.0) + text_pad_y;
+    let text_y = centered_text_y(painter, y, row_h, font, face);
     if header {
         rect(
             pixels,
@@ -2759,7 +2771,7 @@ fn paint_callout_header(
         let label = crate::markdown::callout_label(callout, "en");
         let label_px = (font_px * 0.82).max(9.0 * density);
         let label_x = icon_x + icon_size + (6.0 * density).round();
-        let label_y = y + ((row_h - label_px) * 0.5).max(0.0);
+        let label_y = centered_text_y(painter, y, row_h, label_px, face);
         painter.draw(
             pixels,
             surface_width,
@@ -3249,7 +3261,7 @@ fn paint_code_header(
 ) {
     let label_px = code_label_px(font_px, density);
     let pad = (10.0 * density).round();
-    let text_y = y + ((row_h - label_px) * 0.5).max(0.0);
+    let text_y = centered_text_y(painter, y, row_h, label_px, Face::Ui);
     if show_label {
         // Desktop treatment: the language in accent, with a `<>` glyph after
         // it. A fence without a language reads as CODE.
@@ -5144,7 +5156,6 @@ impl SurfaceState {
     fn draw_editor(&mut self, pixels: &mut [u32]) {
         let palette = palette();
         let density = self.density;
-        let line_h = self.line_px();
         let font_px = self.font_px();
         if self.editor.model_dirty {
             self.editor.model = if self.editor.language.is_empty() {
@@ -5262,12 +5273,12 @@ impl SurfaceState {
         let mut insertion_handle: Option<(f32, f32)> = None;
         let mut painted_code_block: Option<usize> = None;
         let mut painted_callout: Option<usize> = None;
-        let text_pad_y = (3.0 * density).round();
         for visual in first..last {
             let chunk = self.editor.wrap[visual];
             let row_h = chunk.height;
             let y = top_inset + self.editor.wrap_tops.get(visual).copied().unwrap_or(0.0) - scroll;
-            let text_y = y + ((row_h - line_h) * 0.5).max(0.0) + text_pad_y;
+            let row_face = line_faces.get(chunk.line).copied().unwrap_or(Face::Mono);
+            let text_y = centered_text_y(&mut painter, y, row_h, chunk.font, row_face);
             // Folded code rows and table separators own no vertical space.
             if row_h <= 0.0 {
                 continue;
@@ -5507,7 +5518,6 @@ impl SurfaceState {
                             text_x,
                             y,
                             row_h,
-                            line_h,
                             self.code_font_px(),
                             self.code_face,
                             density,
@@ -9575,3 +9585,4 @@ mod tests {
         assert!(rows[0].height > 22.0, "table rows carry vertical padding");
     }
 }
+// touch
