@@ -3010,6 +3010,94 @@ fn paint_table_source_button(
     );
 }
 
+/// Obsidian-style task checkbox: a rounded square with a thin border when
+/// open, filled with the accent and a contrasting check when done.
+#[allow(clippy::too_many_arguments)]
+fn paint_task_checkbox(
+    pixels: &mut [u32],
+    surface_width: usize,
+    surface_height: usize,
+    x: f32,
+    y: f32,
+    row_h: f32,
+    size: f32,
+    checked: bool,
+    palette: &SurfacePalette,
+    density: f32,
+) {
+    let size = size.max(8.0 * density);
+    let top = y + ((row_h - size) * 0.5).max(0.0);
+    let radius = (3.0 * density).min(size * 0.5);
+    if checked {
+        rounded_box(
+            pixels,
+            surface_width,
+            surface_height,
+            x,
+            top,
+            size,
+            size,
+            radius,
+            palette.accent,
+        );
+        let accent = palette.accent;
+        let r = (accent >> 16) & 0xff;
+        let g = (accent >> 8) & 0xff;
+        let b = accent & 0xff;
+        let check = if r + g + b > 0x1e0 { 0x000000 } else { 0xffffff };
+        let thickness = (2.0 * density).max(1.0);
+        let s = size;
+        line(
+            pixels,
+            surface_width,
+            surface_height,
+            x + 0.26 * s,
+            top + 0.52 * s,
+            x + 0.44 * s,
+            top + 0.70 * s,
+            thickness,
+            check,
+        );
+        line(
+            pixels,
+            surface_width,
+            surface_height,
+            x + 0.44 * s,
+            top + 0.70 * s,
+            x + 0.76 * s,
+            top + 0.30 * s,
+            thickness,
+            check,
+        );
+    } else {
+        let border = (1.5 * density).max(1.0);
+        rounded_box(
+            pixels,
+            surface_width,
+            surface_height,
+            x,
+            top,
+            size,
+            size,
+            radius,
+            palette.text_faint,
+        );
+        if size > border * 2.0 {
+            rounded_box(
+                pixels,
+                surface_width,
+                surface_height,
+                x + border,
+                top + border,
+                size - border * 2.0,
+                size - border * 2.0,
+                (radius - border * 0.5).max(1.0),
+                palette.surface_alt,
+            );
+        }
+    }
+}
+
 /// Rounded rectangle with anti-aliased edges; `rect` only draws squares and
 /// the block needs a real box.
 ///
@@ -3660,6 +3748,58 @@ fn canonical_hidden(
         .collect()
 }
 
+/// Whether a task's raw `- [ ]` marker column is showing. Like the desktop
+/// live preview, the caret or a selection has to touch the marker itself:
+/// editing the text keeps the painted checkbox in place.
+fn task_prefix_revealed(
+    line_start: usize,
+    prefix_chars: usize,
+    cursor: Option<usize>,
+    selection: Option<(usize, usize)>,
+) -> bool {
+    if prefix_chars == 0 {
+        return true;
+    }
+    let end = line_start + prefix_chars;
+    if let Some(cursor) = cursor {
+        if cursor >= line_start && cursor < end {
+            return true;
+        }
+    }
+    if let Some((start, finish)) = selection {
+        if start < finish && start < end && line_start < finish {
+            return true;
+        }
+    }
+    false
+}
+
+/// An idle task row keeps its whole marker column as visible blanks, so the
+/// painted checkbox reserves the same width as the raw `- [ ]` source and
+/// never overlaps the text that follows it.
+fn clear_closed_task_prefix(
+    model: &[crate::markdown::MarkdownLine],
+    line: usize,
+    line_start: usize,
+    hidden: &mut [bool],
+    cursor: Option<usize>,
+    selection: Option<(usize, usize)>,
+) {
+    let Some(model_line) = model.get(line) else {
+        return;
+    };
+    if model_line.kind != "task" {
+        return;
+    }
+    let prefix = model_line.prefix_chars.min(hidden.len());
+    if prefix == 0 || task_prefix_revealed(line_start, prefix, cursor, selection) {
+        return;
+    }
+    for value in hidden.iter_mut().take(prefix) {
+        *value = false;
+    }
+}
+
 /// Hidden chars for one line in its current paint state.
 fn compute_hidden(
     model: &[crate::markdown::MarkdownLine],
@@ -3673,7 +3813,9 @@ fn compute_hidden(
 ) -> Vec<bool> {
     let char_count = chars.len();
     if preview {
-        return canonical_hidden(model, line, char_count);
+        let mut hidden = canonical_hidden(model, line, char_count);
+        clear_closed_task_prefix(model, line, line_start, &mut hidden, None, None);
+        return hidden;
     }
     let sel_start = selection.0.max(line_start);
     let sel_end = selection.1.min(line_start + char_count);
@@ -3692,7 +3834,9 @@ fn compute_hidden(
                 return vec![false; char_count];
             }
         }
-        return canonical_hidden(model, line, char_count);
+        let mut hidden = canonical_hidden(model, line, char_count);
+        clear_closed_task_prefix(model, line, line_start, &mut hidden, None, None);
+        return hidden;
     }
     // The active line keeps its block prefix raw; only the inline markers of
     // the element under the caret/selection appear.
@@ -3813,6 +3957,10 @@ fn line_text_indent(
             text.push('●');
             text.push(' ');
             painter.width(&text, font, face)
+        }
+        "task" => {
+            let prefix = row.prefix_chars.min(64);
+            painter.width(&" ".repeat(prefix), font, face)
         }
         _ => 0.0,
     }
@@ -5053,6 +5201,7 @@ impl SurfaceState {
         let mut prepared_line = usize::MAX;
         let mut prepared_heading: Option<HeadingStyle> = None;
         let mut painted_rule = false;
+        let mut task_prefix_open = false;
         let mut line_start = 0usize;
         let mut chars: Vec<char> = Vec::new();
         let mut colors: Vec<u32> = Vec::new();
@@ -5382,6 +5531,21 @@ impl SurfaceState {
                     (selection_start, selection_end),
                     self.editor.preview,
                 );
+                task_prefix_open = model
+                    .get(chunk.line)
+                    .filter(|line| line.kind == "task")
+                    .is_some_and(|line| {
+                        task_prefix_revealed(
+                            line_start,
+                            line.prefix_chars,
+                            if self.editor.preview {
+                                None
+                            } else {
+                                Some(self.editor.selection)
+                            },
+                            Some((selection_start, selection_end)),
+                        )
+                    });
                 overlays.clear();
                 if !self.editor.language.is_empty() {
                     colors = code_colors(raw, &self.editor.language, &palette);
@@ -5409,7 +5573,9 @@ impl SurfaceState {
                                 colors = code_colors(raw, language, &palette);
                             }
                         }
-                        if chunk.line != cursor_line {
+                        if chunk.line != cursor_line
+                            || (line.kind == "task" && !task_prefix_open)
+                        {
                             match line.kind.as_str() {
                                 "heading" => {
                                     let length = line.prefix_chars.min(chars.len());
@@ -5418,25 +5584,21 @@ impl SurfaceState {
                                     }
                                 }
                                 "task" => {
-                                    blank_range(&mut chars, 0, line.prefix_chars);
-                                    let icon = if line.checked == Some(true) { '☑' } else { '☐' };
-                                    if line.indent < chars.len() {
-                                        chars[line.indent] = icon;
-                                        if line.checked == Some(true) {
-                                            colors[line.indent] = palette.marker;
-                                        }
+                                    // The checkbox is painted as a real square
+                                    // below; the marker cells stay blank and
+                                    // reserve the column. Editing the text keeps
+                                    // the box, like the desktop live preview:
+                                    // only a caret in the marker shows raw.
+                                    if !task_prefix_open {
+                                        blank_range(&mut chars, 0, line.prefix_chars);
                                         if line.indent + 1 < chars.len() {
+                                            chars[line.indent] = ' ';
                                             chars[line.indent + 1] = ' ';
                                         }
-                                        let hide_start = (line.indent + 2).min(chars.len());
-                                        let hide_end = line.prefix_chars.min(chars.len());
-                                        for value in hidden[hide_start..hide_end].iter_mut() {
-                                            *value = true;
-                                        }
-                                    }
-                                    if line.checked == Some(true) {
-                                        for color in colors[line.prefix_chars.min(chars.len())..].iter_mut() {
-                                            *color = palette.marker;
+                                        if line.checked == Some(true) {
+                                            for color in colors[line.prefix_chars.min(chars.len())..].iter_mut() {
+                                                *color = palette.marker;
+                                            }
                                         }
                                     }
                                 }
@@ -5816,6 +5978,41 @@ impl SurfaceState {
                     }
                 }
             }
+            // Task checkbox on the first visual row while the marker column is
+            // collapsed; a caret inside the marker shows its raw `[x]` instead.
+            if has_model && chunk.start == 0 && !task_prefix_open {
+                if let Some(line) = model.get(chunk.line) {
+                    if line.kind == "task" {
+                        if let Some(task) = crate::markdown::task_prefix(&line.raw) {
+                            let index = task.indent_chars.min(chars.len().saturating_sub(1));
+                            let cell_width =
+                                (local_x(index + 1) - local_x(index)).max(1.0);
+                            // Desktop: a box two cells wide, clamped to 12..18pt.
+                            let size =
+                                // Obsidian: --checkbox-size is 1.15em.
+                                (chunk.font * 1.15).max(16.0 * density);
+                            let box_cells = task.checkbox.chars().count() as f32;
+                            let box_x = text_x
+                                + row_shift
+                                + local_x(index)
+                                + task.list_chars() as f32 * cell_width
+                                + (box_cells * cell_width - size) * 0.5;
+                            paint_task_checkbox(
+                                pixels,
+                                self.width,
+                                self.height,
+                                box_x,
+                                y,
+                                row_h,
+                                size,
+                                line.checked == Some(true),
+                                &palette,
+                                density,
+                            );
+                        }
+                    }
+                }
+            }
             if visual == cursor_visual && selection_end == selection_start {
                 let cursor_col = chunk_start + cursor_offset;
                 let x = text_x + row_shift + local_x(cursor_col);
@@ -5993,6 +6190,74 @@ impl SurfaceState {
         let chunk = *self.editor.wrap.get(visual)?;
         if chunk.height <= 0.0 {
             return None;
+        }
+        // A tap on the painted checkbox toggles it, like the desktop. While the
+        // marker column is open (the caret sits in it) the raw source is
+        // editable and the tap is an ordinary caret placement.
+        let line_start = self
+            .editor
+            .starts
+            .get(chunk.line)
+            .copied()
+            .unwrap_or(0);
+        let marker_open = self
+            .editor
+            .model
+            .get(chunk.line)
+            .filter(|line| line.kind == "task")
+            .is_some_and(|line| {
+                task_prefix_revealed(
+                    line_start,
+                    line.prefix_chars,
+                    Some(self.editor.selection),
+                    Some(self.selected_range()),
+                )
+            });
+        if chunk.start == 0 && !marker_open {
+            if let Some(line) = self.editor.model.get(chunk.line) {
+                if line.kind == "task" {
+                    if let Some(task) = crate::markdown::task_prefix(&line.raw) {
+                        let font = self.font_for_line(chunk.line);
+                        let face = self.line_face(chunk.line);
+                        let cell = self.painter.advance_of_char(' ', font, face).max(1.0);
+                        let indent = task.indent_chars.min(64);
+                        let indent_w = self.painter.width(&" ".repeat(indent), font, face);
+                        let size = (font * 1.15).max(16.0 * self.density);
+                        let box_cells = task.checkbox.chars().count() as f32;
+                        let bx = gutter
+                            + indent_w
+                            + task.list_chars() as f32 * cell
+                            + (box_cells * cell - size) * 0.5;
+                        let row_top = top_inset
+                            + self
+                                .editor
+                                .wrap_tops
+                                .get(visual)
+                                .copied()
+                                .unwrap_or(0.0)
+                            - scroll;
+                        let by = row_top + ((chunk.height - size) * 0.5).max(0.0);
+                        if x >= bx && x <= bx + size && y >= by && y <= by + size {
+                            if let Some((range, replacement)) =
+                                crate::markdown::task_toggle(&line.raw)
+                            {
+                                let start = line_start
+                                    + line.raw[..range.start].chars().count();
+                                let end = start + line.raw[range.clone()].chars().count();
+                                let (saved_selection, saved_anchor) =
+                                    (self.editor.selection, self.editor.anchor);
+                                self.replace_range(start, end, replacement);
+                                // Toggling is not a caret move: the checkbox
+                                // stays visible and the row does not reveal.
+                                self.editor.selection = saved_selection;
+                                self.editor.anchor = saved_anchor;
+                                self.invalidate();
+                                return Some(json!({ "kind": "task_toggle" }).to_string());
+                            }
+                        }
+                    }
+                }
+            }
         }
         // A table grid tap chooses a caret inside the tapped cell and keeps
         // the grid; only tables switched to source take the normal caret path.
@@ -8472,6 +8737,62 @@ mod tests {
         assert_eq!(sanitize_table_cell_text("a|b"), r"a\|b");
         assert_eq!(sanitize_table_cell_text("a\nb"), "a b");
         assert_eq!(sanitize_table_cell_text("plain"), "plain");
+    }
+
+    #[test]
+    fn task_marker_reveals_only_from_the_marker_column() {
+        let prefix = 6;
+        assert!(task_prefix_revealed(0, prefix, Some(0), None));
+        assert!(task_prefix_revealed(0, prefix, Some(5), None));
+        assert!(!task_prefix_revealed(0, prefix, Some(6), None));
+        assert!(!task_prefix_revealed(0, prefix, Some(20), None));
+        assert!(task_prefix_revealed(10, prefix, None, Some((10, 20))));
+        assert!(task_prefix_revealed(10, prefix, None, Some((12, 30))));
+        assert!(!task_prefix_revealed(10, prefix, None, Some((16, 30))));
+        assert!(!task_prefix_revealed(10, prefix, None, Some((16, 16))));
+    }
+
+    #[test]
+    fn idle_task_prefix_reserves_its_marker_column() {
+        let model = model_for_editor("- [ ] привет\n");
+        let chars: Vec<char> = model[0].raw.chars().collect();
+        let mut hidden = canonical_hidden(&model, 0, chars.len());
+        assert!(hidden[2], "the idle marker cells collapse by default");
+        clear_closed_task_prefix(&model, 0, 0, &mut hidden, None, None);
+        let prefix = model[0].prefix_chars;
+        assert_eq!(prefix, 6);
+        assert!(
+            hidden[..prefix].iter().all(|value| !*value),
+            "the checkbox column keeps the width of its raw source"
+        );
+    }
+
+    #[test]
+    fn task_checkbox_paints_like_obsidian() {
+        let palette = SurfacePalette::default();
+        let (w, h) = (80usize, 60usize);
+        let mut open = vec![0u32; w * h];
+        paint_task_checkbox(&mut open, w, h, 10.0, 0.0, 60.0, 40.0, false, &palette, 1.0);
+        // The border is the faint text colour; the inside is the editor bg.
+        let border = open[30 * w + 10];
+        assert_ne!(border, 0, "the open checkbox has a border");
+        assert_eq!(
+            open[30 * w + 30],
+            logical(palette.surface_alt),
+            "the open checkbox is hollow"
+        );
+
+        let mut done = vec![0u32; w * h];
+        paint_task_checkbox(&mut done, w, h, 10.0, 0.0, 60.0, 40.0, true, &palette, 1.0);
+        assert_eq!(
+            done[30 * w + 30],
+            logical(palette.accent),
+            "the done checkbox is filled with the accent"
+        );
+        assert!(
+            done.iter().any(|pixel| *pixel == logical(0xffffff)),
+            "the done checkbox carries a light check mark"
+        );
     }
 
     #[test]

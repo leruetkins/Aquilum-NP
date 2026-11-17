@@ -807,6 +807,12 @@ class NativeEditorView(
                 android.util.Log.d("VibecodiumTap", "copied code block: ${text.length} chars")
             }
             "code_toggle", "table_source" -> requestRender()
+            "task_toggle" -> {
+                syncFromNative(notify = true)
+                syncSelectionFromNative()
+                applyInsertionHandleVisible(true)
+                requestRender()
+            }
             "table_cell" -> {
                 syncSelectionFromNative()
                 composingStart = -1
