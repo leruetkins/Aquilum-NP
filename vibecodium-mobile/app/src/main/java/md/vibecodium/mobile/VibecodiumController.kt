@@ -691,6 +691,17 @@ class VibecodiumController(context: Context) {
         val focusReq = if (focusEditor) state.focusRequestId + 1 else state.focusRequestId
 
         if (!target.isLoaded) {
+            // Switch right away so the tab row turns active and the menu can
+            // close; the body loads behind the editor spinner.
+            state = state.copy(
+                activeTab = index,
+                editorMode = mode,
+                recentFiles = RecentStore.remember(appContext, locatorKey(), target.path),
+                viewerPath = null,
+                focusRequestId = focusReq,
+                drawer = null,
+                tabSwitcher = false,
+            )
             loadTabContent(index, modeOverride, focusEditor, pushHistory, onReady)
             return
         }
@@ -752,17 +763,26 @@ class VibecodiumController(context: Context) {
                 val cur = tabs.indexOfFirst { it.path == target.path }
                 if (cur >= 0) {
                     tabs[cur] = loaded
-                    state = state.copy(
-                        tabs = tabs,
-                        activeTab = cur,
-                        editorMode = mode,
-                        recentFiles = RecentStore.remember(appContext, locatorKey(), loaded.path),
-                        // Kept open until the editor has drawn the new tab.
-                        viewerPath = null,
-                        focusRequestId = focusReq,
-                    )
+                    // The user may have picked another tab while this body was
+                    // loading; only the still-active tab owns the editor state.
+                    val stillActive = state.tabs.getOrNull(state.activeTab)?.path == loaded.path
+                    state = if (stillActive) {
+                        state.copy(
+                            tabs = tabs,
+                            activeTab = cur,
+                            editorMode = mode,
+                            recentFiles = RecentStore.remember(appContext, locatorKey(), loaded.path),
+                            // Kept open until the editor has drawn the new tab.
+                            viewerPath = null,
+                            focusRequestId = focusReq,
+                            drawer = null,
+                            tabSwitcher = false,
+                        )
+                    } else {
+                        state.copy(tabs = tabs)
+                    }
                     if (pushHistory) pushHistory(loaded.path)
-                    awaitTabFrame(loaded.path, onReady)
+                    if (stillActive) awaitTabFrame(loaded.path, onReady)
                     refreshDerived(
                         loaded.text,
                         force = mode == EditorMode.Preview,

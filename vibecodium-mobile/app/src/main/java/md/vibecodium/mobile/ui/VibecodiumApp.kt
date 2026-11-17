@@ -1688,7 +1688,10 @@ private fun TabsDropdown(
                                 entries = tabEntries,
                                 colors = tabColors,
                                 onSelect = { index ->
-                                    controller.selectTab(index, onReady = onDismiss)
+                                    // Close the menu on the tap; an unloaded tab
+                                    // shows its spinner while the body loads.
+                                    onDismiss()
+                                    controller.selectTab(index)
                                 },
                                 onClose = { index -> controller.closeTab(index) },
                             )
@@ -4234,26 +4237,49 @@ private fun FindBar(
                         .padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        Icons.Default.Search,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = muted,
-                    )
+                    Box(
+                        Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .clickable(
+                                enabled = find.query.isNotEmpty(),
+                                onClick = { controller.updateFindQuery("") },
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (find.query.isEmpty()) Icons.Default.Search else Icons.Default.Close,
+                            contentDescription = if (find.query.isEmpty()) null else "Clear find query",
+                            // Material's close glyph is drawn tighter than the
+                            // magnifier; matching the visible extent keeps the
+                            // icon from shrinking once a query is typed.
+                            modifier = Modifier.size(if (find.query.isEmpty()) 16.dp else 20.dp),
+                            tint = muted,
+                        )
+                    }
                     BasicTextField(
                         value = find.query,
                         onValueChange = controller::updateFindQuery,
                         modifier = Modifier
                             .weight(1f)
+                            .fillMaxHeight()
                             .padding(horizontal = 6.dp)
                             .focusRequester(focusRequester),
                         singleLine = true,
-                        textStyle = TextStyle(fontSize = 14.sp, color = textColor),
+                        textStyle = TextStyle(fontSize = 14.sp, lineHeight = 18.sp, color = textColor),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         decorationBox = { inner ->
-                            Box {
+                            Box(
+                                Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
                                 if (find.query.isEmpty()) {
-                                    Text("Find in note...", fontSize = 14.sp, color = muted)
+                                    Text(
+                                        "Find in note...",
+                                        fontSize = 13.sp,
+                                        lineHeight = 18.sp,
+                                        color = palette.textFaint,
+                                    )
                                 }
                                 inner()
                             }
@@ -4338,25 +4364,42 @@ private fun FindBar(
                             .padding(horizontal = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = muted,
-                        )
+                        Box(
+                            Modifier
+                                .size(20.dp)
+                                .clip(CircleShape)
+                                .clickable(
+                                    enabled = find.replace.isNotEmpty(),
+                                    onClick = { controller.updateFindReplace("") },
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                if (find.replace.isEmpty()) Icons.Default.Edit else Icons.Default.Close,
+                                contentDescription = if (find.replace.isEmpty()) null else "Clear replacement",
+                                // Match the close glyph's visible extent to the
+                                // pencil so the icon does not shrink after typing.
+                                modifier = Modifier.size(if (find.replace.isEmpty()) 16.dp else 20.dp),
+                                tint = muted,
+                            )
+                        }
                         BasicTextField(
                             value = find.replace,
                             onValueChange = controller::updateFindReplace,
                             modifier = Modifier
                                 .weight(1f)
+                                .fillMaxHeight()
                                 .padding(horizontal = 6.dp),
                             singleLine = true,
-                            textStyle = TextStyle(fontSize = 13.sp, color = textColor),
+                            textStyle = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, color = textColor),
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                             decorationBox = { inner ->
-                                Box {
+                                Box(
+                                    Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.CenterStart,
+                                ) {
                                     if (find.replace.isEmpty()) {
-                                        Text("Replace with...", fontSize = 13.sp, color = muted)
+                                        Text("Replace with...", fontSize = 13.sp, lineHeight = 18.sp, color = palette.textFaint)
                                     }
                                     inner()
                                 }
