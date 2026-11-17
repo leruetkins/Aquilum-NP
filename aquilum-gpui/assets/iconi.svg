@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Vi icon surreal sun">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B1B4B"/>
+      <stop offset="0.45" stop-color="#5B2A86"/>
+      <stop offset="0.75" stop-color="#DE4F8A"/>
+      <stop offset="1" stop-color="#FFB36B"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFE27A"/>
+      <stop offset="1" stop-color="#FF4F9A"/>
+    </linearGradient>
+    <linearGradient id="chrome" gradientUnits="userSpaceOnUse" x1="0" y1="130" x2="0" y2="390">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.5" stop-color="#E9D5FF"/>
+      <stop offset="0.52" stop-color="#A78BFA"/>
+      <stop offset="1" stop-color="#F9A8D4"/>
+    </linearGradient>
+    <mask id="stripes">
+      <rect width="512" height="512" fill="#fff"/>
+      <rect y="300" width="512" height="5" fill="#000"/>
+      <rect y="332" width="512" height="8" fill="#000"/>
+      <rect y="366" width="512" height="11" fill="#000"/>
+      <rect y="402" width="512" height="14" fill="#000"/>
+    </mask>
+    <clipPath id="clip"><rect width="512" height="512" rx="112" ry="112"/></clipPath>
+    <filter id="blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="16"/></filter>
+    <g id="glyph" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M100 150 L205 370 L310 150" fill="none"/>
+      <g transform="translate(0 13.6) rotate(30 385 250)">
+        <path d="M354 190 C348 211 360 233 390 255 C440 295 440 330 390 370" fill="none"/>
+        <circle cx="354" cy="128" r="25" stroke="none"/>
+      </g>
+    </g>
+  </defs>
+  <g clip-path="url(#clip)">
+    <rect width="512" height="512" fill="url(#sky)"/>
+    <g fill="#fff">
+      <circle cx="70" cy="60" r="2" opacity="0.8"/><circle cx="160" cy="36" r="1.6" opacity="0.6"/>
+      <circle cx="300" cy="52" r="2.2" opacity="0.8"/><circle cx="440" cy="80" r="1.8" opacity="0.7"/>
+      <circle cx="480" cy="170" r="1.5" opacity="0.6"/><circle cx="40" cy="170" r="1.8" opacity="0.6"/>
+    </g>
+    <g mask="url(#stripes)">
+      <circle cx="256" cy="330" r="190" fill="url(#sun)"/>
+    </g>
+    <path d="M0 430 Q130 400 256 430 T512 420 V512 H0 Z" fill="#1B1040" opacity="0.85"/>
+    <g transform="translate(0 20)" fill="#1B1040" stroke="#1B1040" stroke-width="40" opacity="0.5" filter="url(#blur)"><use href="#glyph"/></g>
+    <g fill="url(#chrome)" stroke="url(#chrome)" stroke-width="40"><use href="#glyph"/></g>
+  </g>
+  <rect x="1" y="1" width="510" height="510" rx="111" ry="111" fill="none" stroke="#fff" stroke-opacity="0.2" stroke-width="2"/>
+</svg>

@@ -24,7 +24,6 @@ impl AppView {
             Some(active_tab_index),
             available_strip_w,
             160.0,
-            120.0,
             6.0,
             32.0,
             6.0,

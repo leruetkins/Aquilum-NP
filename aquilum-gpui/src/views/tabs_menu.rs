@@ -297,7 +297,7 @@ pub struct TabWidthsResult {
 ///
 /// Features:
 /// 1. When overflowing, the last tab's right boundary is locked at a fixed position right before the + button.
-/// 2. Active tab maintains a minimum readable size (`min_active_tab_w`), while inactive tabs shrink proportionally.
+/// 2. The active tab always keeps the maximum width; the inactive tabs share what is left and shrink.
 /// 3. Tab widths and gaps are computed with integer precision so the right boundary never jitters.
 ///
 /// `leading_w` / `leading_gap` reserve room for a button at the very start of the
@@ -308,7 +308,6 @@ pub fn calculate_tab_widths(
     active_tab_idx: Option<usize>,
     available_width: f32,
     max_tab_w: f32,
-    min_active_tab_w: f32,
     nominal_tab_gap: f32,
     btn_w: f32,
     btn_gap: f32,
@@ -354,7 +353,7 @@ pub fn calculate_tab_widths(
     // Compute effective tab gap. If tab count is huge (e.g. 50-100 tabs),
     // reduce tab gap smoothly down to 1px or 0px so inactive tabs still get room.
     let mut effective_tab_gap = nominal_tab_gap;
-    let target_active_w = min_active_tab_w.min(w_tabs);
+    let target_active_w = max_tab_w.min(w_tabs);
     let remaining_for_inactive_and_gaps = (w_tabs - target_active_w).max(0.0);
     let min_inactive_tab_reserve = (num_tabs - 1) as f32 * 2.0;
     let max_allowed_gaps = (remaining_for_inactive_and_gaps - min_inactive_tab_reserve).max(0.0);
@@ -367,34 +366,12 @@ pub fn calculate_tab_widths(
     let space_for_tab_bodies = (w_tabs - actual_gaps_total).max(0.0);
     let total_tab_pixels = space_for_tab_bodies.round() as i32;
 
-    let equal_tab_w = space_for_tab_bodies / num_tabs as f32;
-
     let valid_active_idx = active_tab_idx.filter(|&idx| idx < num_tabs);
 
-    if equal_tab_w >= min_active_tab_w || valid_active_idx.is_none() {
-        // Equal distribution across all tabs
-        let base_tab_w = total_tab_pixels / num_tabs as i32;
-        let remainder = (total_tab_pixels - base_tab_w * num_tabs as i32) as usize;
-
-        let mut widths = Vec::with_capacity(num_tabs);
-        for idx in 0..num_tabs {
-            let w = if idx < remainder {
-                base_tab_w + 1
-            } else {
-                base_tab_w
-            } as f32;
-            widths.push(w);
-        }
-
-        TabWidthsResult {
-            widths,
-            is_overflowing: true,
-            tab_gap: effective_tab_gap,
-        }
-    } else {
-        // Active tab is guaranteed min_active_tab_w; inactive tabs shrink proportionally.
-        let act_idx = valid_active_idx.unwrap();
-        let active_pixels = (min_active_tab_w as i32).min(total_tab_pixels);
+    if let Some(act_idx) = valid_active_idx {
+        // The active tab always keeps the maximum width; the inactive tabs
+        // share the rest so the right boundary stays locked.
+        let active_pixels = (max_tab_w as i32).min(total_tab_pixels);
         let inactive_pixels = (total_tab_pixels - active_pixels).max(0);
         let num_inactive = (num_tabs - 1) as i32;
 
@@ -415,6 +392,26 @@ pub fn calculate_tab_widths(
                 };
                 widths.push(w as f32);
             }
+        }
+
+        TabWidthsResult {
+            widths,
+            is_overflowing: true,
+            tab_gap: effective_tab_gap,
+        }
+    } else {
+        // No valid active tab: equal distribution across all tabs.
+        let base_tab_w = total_tab_pixels / num_tabs as i32;
+        let remainder = (total_tab_pixels - base_tab_w * num_tabs as i32) as usize;
+
+        let mut widths = Vec::with_capacity(num_tabs);
+        for idx in 0..num_tabs {
+            let w = if idx < remainder {
+                base_tab_w + 1
+            } else {
+                base_tab_w
+            } as f32;
+            widths.push(w);
         }
 
         TabWidthsResult {
@@ -502,7 +499,7 @@ mod tests {
         let btn_gap = 6.0;
         let left_pad = 8.0;
         let nominal_gap = 6.0;
-        let min_active_tab_w = 120.0;
+        let max_tab_w = 160.0;
         let expected_tabs_end_x = avail_w - btn_w - btn_gap; // 566.0
 
         for num_tabs in 4..=100 {
@@ -513,8 +510,7 @@ mod tests {
                     num_tabs,
                     active_idx,
                     avail_w,
-                    160.0,
-                    min_active_tab_w,
+                    max_tab_w,
                     nominal_gap,
                     btn_w,
                     btn_gap,
@@ -534,26 +530,20 @@ mod tests {
                     num_tabs, active_idx
                 );
 
-                                // Verify active tab minimum readable size constraint
+                // The active tab keeps the maximum width even when overflowing.
                 if let Some(act) = active_idx {
-                    let w_tabs = expected_tabs_end_x - left_pad;
-                    let target_active = min_active_tab_w.min(w_tabs);
-
-                    assert!(
-                        res.widths[act] >= target_active,
-                        "Active tab {} width {} was less than minimum readable size {} for {} tabs",
-                        act, res.widths[act], target_active, num_tabs
+                    assert_eq!(
+                        res.widths[act], max_tab_w,
+                        "Active tab {} must keep max width for {} tabs",
+                        act, num_tabs
                     );
-                    if num_tabs > 5 {
-                        // Inactive tabs should be smaller than active tab
-                        for (i, &w) in res.widths.iter().enumerate() {
-                            if i != act {
-                                assert!(
-                                    w <= res.widths[act],
-                                    "Inactive tab {} width {} should be <= active tab width {}",
-                                    i, w, res.widths[act]
-                                );
-                            }
+                    for (i, &w) in res.widths.iter().enumerate() {
+                        if i != act {
+                            assert!(
+                                w <= res.widths[act],
+                                "Inactive tab {} width {} should be <= active tab width {}",
+                                i, w, res.widths[act]
+                            );
                         }
                     }
                 }
@@ -577,7 +567,6 @@ mod tests {
                 Some(0),
                 avail_w,
                 160.0,
-                120.0,
                 6.0,
                 btn_w,
                 btn_gap,
@@ -589,9 +578,11 @@ mod tests {
             let gaps_total = (num_tabs.saturating_sub(1)) as f32 * res.tab_gap;
             let sum_widths: f32 = res.widths.iter().sum();
             if res.is_overflowing {
-                // Tabs exactly fill [tabs_start_x, expected_end_x].
+                // Tabs exactly fill [tabs_start_x, expected_end_x] and the active
+                // tab keeps its maximum width.
                 let actual_end_x = tabs_start_x + sum_widths + gaps_total;
                 assert_eq!(actual_end_x, expected_end_x, "num_tabs={}", num_tabs);
+                assert_eq!(res.widths[0], 160.0, "num_tabs={}", num_tabs);
             } else {
                 // Everything at max width incl. the leading button must fit.
                 let total = tabs_start_x + sum_widths + gaps_total + btn_gap + btn_w;
