@@ -264,7 +264,7 @@ impl AppView {
                 tab_item = tab_item.when(!is_active, |tab| {
                     let tab = tab
                         .bg(theme.bg_sidebar)
-                        .rounded_t_md()
+                        .rounded_t_lg()
                         .border_b_1()
                         .border_color(theme.border);
                     if hovered_tab == Some(tab_idx) {
@@ -275,7 +275,7 @@ impl AppView {
                                 .left_0()
                                 .right_0()
                                 .h(px(tab_body_h))
-                                .rounded_t_md()
+                                .rounded_t_lg()
                                 .bg(theme.bg_hover),
                         )
                     } else {
@@ -344,8 +344,8 @@ impl AppView {
                             .absolute()
                             .top(px(cap_top))
                             .bottom_0()
-                            .left(px(6.0))
-                            .right(px(6.0))
+                            .left(px(8.0))
+                            .right(px(8.0))
                             .bg(theme.bg_editor),
                     );
                     // 2. Solid fill mask at the baseline connecting active tab into the editor
@@ -365,8 +365,8 @@ impl AppView {
                             .id("tab-top-stroke")
                             .absolute()
                             .top(px(cap_top))
-                            .left(px(7.0))
-                            .right(px(7.0))
+                            .left(px(8.0))
+                            .right(px(8.0))
                             .h(px(1.0))
                             .bg(theme.border),
                     );
@@ -377,16 +377,16 @@ impl AppView {
                             .absolute()
                             .top(px(cap_top))
                             .left(px(-8.0))
-                            .w(px(16.0))
+                            .w(px(20.0))
                             .h(px(36.0))
                             .child(
-                                icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_FILL, 16.0, 36.0, theme.bg_editor)
+                                icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_FILL, 20.0, 36.0, theme.bg_editor)
                                     .absolute()
                                     .top_0()
                                     .left_0(),
                             )
                             .child(
-                                icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_STROKE, 16.0, 36.0, theme.border)
+                                icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_STROKE, 20.0, 36.0, theme.border)
                                     .absolute()
                                     .top_0()
                                     .left_0(),
@@ -399,16 +399,16 @@ impl AppView {
                             .absolute()
                             .top(px(cap_top))
                             .right(px(-8.0))
-                            .w(px(16.0))
+                            .w(px(20.0))
                             .h(px(36.0))
                             .child(
-                                icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_FILL, 16.0, 36.0, theme.bg_editor)
+                                icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_FILL, 20.0, 36.0, theme.bg_editor)
                                     .absolute()
                                     .top_0()
                                     .left_0(),
                             )
                             .child(
-                                icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_STROKE, 16.0, 36.0, theme.border)
+                                icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_STROKE, 20.0, 36.0, theme.border)
                                     .absolute()
                                     .top_0()
                                     .left_0(),
