@@ -1111,6 +1111,16 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 ) { controller.toggleDrawer(Drawer.Left) }
             }
 
+            if (controller.popupCover) {
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .background(palette.overlay.compositeOver(palette.background)),
+                )
+            }
+
             Box(
                 Modifier
                     .align(Alignment.BottomCenter)
@@ -1225,7 +1235,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             }
 
             if (state.drawer == Drawer.Right) {
-                DrawerBackdrop {
+                DrawerBackdrop(alpha = 1f) {
                     focusManager.clearFocus()
                     controller.closeOverlays()
                 }
@@ -1739,6 +1749,9 @@ private fun ViewHeader(
     var titleBottomPx by remember { mutableStateOf(0) }
     val palette = LocalVibecodiumPalette.current
     val density = LocalDensity.current
+    DisposableEffect(Unit) {
+        onDispose { controller.popupCover = false }
+    }
     // The popups are separate windows, so the page is covered here in the main
     // window: the toolbar strip and the rest of the page fill in the same
     // frame, and only the menu card itself arrives on the next one.
@@ -1773,6 +1786,7 @@ private fun ViewHeader(
             Surface(
                 onClick = {
                     onHideKeyboard()
+                    controller.popupCover = true
                     tabsMenuOpen = true
                 },
                 modifier = Modifier.fillMaxSize(),
@@ -1808,7 +1822,10 @@ private fun ViewHeader(
                     state = state,
                     controller = controller,
                     anchorBottomPx = titleBottomPx,
-                    onDismiss = { tabsMenuOpen = false },
+                    onDismiss = {
+                        tabsMenuOpen = false
+                        controller.popupCover = false
+                    },
                 )
             }
         }
@@ -1832,11 +1849,15 @@ private fun ViewHeader(
                         description = "More options",
                     ) {
                         onHideKeyboard()
+                        controller.popupCover = true
                         menuOpen = true
                     }
                     HeaderNoteMenu(
                         expanded = menuOpen,
-                        onDismiss = { menuOpen = false },
+                        onDismiss = {
+                            menuOpen = false
+                            controller.popupCover = false
+                        },
                         tab = tab,
                         editorMode = state.editorMode,
                         bookmarked = bookmarked,
@@ -1940,7 +1961,7 @@ private fun HeaderNoteMenu(
                     .padding(end = 12.dp, top = menuOffsetY)
                     .width(IntrinsicSize.Max)
                     .heightIn(max = maxMenuHeight),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(22.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 tonalElevation = 3.dp,
                 shadowElevation = 6.dp,
@@ -3070,7 +3091,12 @@ private fun drawerModeIcon(mode: DrawerMode): ImageVector = when (mode) {
 
 @Composable
 private fun RightDrawer(state: UiState, controller: VibecodiumController, modifier: Modifier) {
-    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface, tonalElevation = 8.dp) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(topStart = PanelCornerRadius, bottomStart = PanelCornerRadius),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 8.dp,
+    ) {
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier

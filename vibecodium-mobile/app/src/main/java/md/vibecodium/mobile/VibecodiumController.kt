@@ -52,6 +52,13 @@ class VibecodiumController(context: Context) {
     var state by mutableStateOf(UiState())
         private set
 
+    /**
+     * True while a toolbar popup is open. Read by the shell so the bottom
+     * seam strip appears in the same frame as the page cover, instead of
+     * waiting for the popup window's first draw.
+     */
+    var popupCover by mutableStateOf(false)
+
     private var saveJob: Job? = null
     private var derivedJob: Job? = null
     private var searchJob: Job? = null
