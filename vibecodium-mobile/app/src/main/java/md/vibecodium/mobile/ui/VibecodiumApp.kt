@@ -1604,6 +1604,7 @@ private fun TabsDropdown(
     val footerHeight = 44.dp
     val footerGap = 6.dp
     val listMaxHeight = (maxMenuHeight - footerHeight - footerGap).coerceAtLeast(72.dp)
+    val tabRowHeight = 54.dp
     val tabOrder = remember(state.tabs) { newestFirstTabOrder(state.tabs) }
     val tabEntries = remember(state.tabs, state.activeTab, state.bookmarks, tabOrder) {
         tabOrder.map { index ->
@@ -1616,6 +1617,7 @@ private fun TabsDropdown(
             )
         }
     }
+    val listHeight = (tabRowHeight * tabEntries.size).coerceAtMost(listMaxHeight)
     val tabColors = TabListColors(
         activeBackground = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f).toArgb(),
         text = MaterialTheme.colorScheme.onSurface.toArgb(),
@@ -1672,7 +1674,7 @@ private fun TabsDropdown(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = listMaxHeight),
+                        .height(listHeight),
                     shape = RoundedCornerShape(PanelCornerRadius),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
                     tonalElevation = 3.dp,
@@ -1680,7 +1682,7 @@ private fun TabsDropdown(
                 ) {
                     AndroidView(
                         factory = { context -> TabListView(context) },
-                        modifier = Modifier.fillMaxWidth().heightIn(max = listMaxHeight),
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight(),
                         update = { view ->
                             view.setData(
                                 entries = tabEntries,
