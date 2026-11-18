@@ -36,6 +36,25 @@ use crate::views::scrollbar::{overlay_scrollbar, ScrollbarGeometry, ScrollbarSty
 /// while the explicit height makes the geometry exact instead of relying on text metrics.
 const SIDEBAR_ROW_H: f32 = 29.0;
 
+/// Logical indent for a tree row, snapped so every depth lands on a whole
+/// device pixel. A plain `depth * 14` is 24.5 device px at 175%, which makes
+/// alternate levels land on half pixels and look thicker/blurrier.
+fn tree_indent(depth: usize, base_logical: f32, scale: f32) -> f32 {
+    let base = (base_logical * scale).round();
+    let step = (14.0 * scale).round();
+    (base + depth as f32 * step) / scale
+}
+
+/// Gap between a tree icon and its neighbours, snapped to device pixels.
+fn tree_gap(scale: f32) -> f32 {
+    (6.0 * scale).round() / scale
+}
+
+/// Icon size snapped to a whole number of device pixels.
+fn tree_icon_size(logical: f32, scale: f32) -> f32 {
+    (logical * scale).round() / scale
+}
+
 /// Font size of a sidebar tree label, in pixels.
 const SIDEBAR_LABEL_FONT_SIZE: f32 = 13.0;
 
@@ -1065,17 +1084,20 @@ impl AppView {
             let is_folder_selected = (self.folder_context_menu.is_open && self.folder_context_menu.folder_path == row.path)
                 || row.is_selected;
 
+            let scale = window.scale_factor();
+            let chevron_size = tree_icon_size(12.0, scale);
+            let folder_size = tree_icon_size(14.0, scale);
             let chevron = if row.is_expanded {
-                icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted)
+                icons::icon(icons::ICON_CHEVRON_DOWN, chevron_size, theme.text_muted)
             } else {
-                icons::icon(icons::ICON_CHEVRON_RIGHT, 12.0, theme.text_muted)
+                icons::icon(icons::ICON_CHEVRON_RIGHT, chevron_size, theme.text_muted)
             };
             let folder_svg = if row.is_expanded {
-                icons::icon(icons::ICON_FOLDER_OPEN, 14.0, theme.accent)
+                icons::icon(icons::ICON_FOLDER_OPEN, folder_size, theme.accent)
             } else {
-                icons::icon(icons::ICON_FOLDER, 14.0, theme.accent)
+                icons::icon(icons::ICON_FOLDER, folder_size, theme.accent)
             };
-            let indent = (row.depth * 14) as f32 + 4.0;
+            let indent = tree_indent(row.depth, 4.0, scale);
             let label_color = if is_folder_selected || is_dragged || is_move_flash {
                 theme.accent
             } else {
@@ -1097,7 +1119,7 @@ impl AppView {
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap_1p5()
+                .gap(px(tree_gap(scale)))
                 .h(px(SIDEBAR_ROW_H))
                 .flex_shrink_0()
                 .pl(px(indent))
@@ -1224,7 +1246,8 @@ impl AppView {
             }
         } else {
             let is_selected = row.is_selected;
-            let indent = (row.depth * 14 + 18) as f32 + 4.0;
+            let scale = window.scale_factor();
+            let indent = tree_indent(row.depth, 22.0, scale);
             let display_name = row.name.strip_suffix(".md").unwrap_or(&row.name).to_string();
             let base_color = if is_selected || is_dragged || is_move_flash {
                 theme.accent
@@ -1242,7 +1265,7 @@ impl AppView {
 
             let file_svg = icons::icon(
                 icons::ICON_FILE_TEXT,
-                13.0,
+                tree_icon_size(13.0, scale),
                 if is_selected || is_dragged || is_move_flash {
                     theme.accent
                 } else {
@@ -1260,7 +1283,7 @@ impl AppView {
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap_1p5()
+                .gap(px(tree_gap(scale)))
                 .h(px(SIDEBAR_ROW_H))
                 .flex_shrink_0()
                 .pl(px(indent))
