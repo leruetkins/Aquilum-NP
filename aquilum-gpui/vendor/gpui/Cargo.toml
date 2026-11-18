@@ -663,6 +663,9 @@ features = ["wgsl-in"]
 [target.'cfg(target_os = "windows")'.dependencies.flume]
 version = "0.11"
 
+[target.'cfg(target_os = "windows")'.dependencies.swash]
+version = "0.2"
+
 [target.'cfg(target_os = "windows")'.dependencies.rand]
 version = "0.9"
 

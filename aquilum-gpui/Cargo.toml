@@ -128,6 +128,13 @@ tempfile = "3"
 # carries an I-beam cursor, so waving the mouse across the text re-rendered the
 # full scene at the refresh rate (~20% GPU on a 4K window). Elements with an
 # actual `hover`/`group_hover` style (or drag-over styles) still notify.
+# 10. Text rasterization (experimental): `VIBECODIUM_TEXT_RASTERIZER=swash`
+# loads the font bytes through DirectWrite's font-file stream and rasterizes
+# monochrome glyphs with swash (hinting + analytic AA) instead of DirectWrite's
+# hinted bitmap path. It covers UI and system fonts, not only bundled Inter.
+# The swash path is unhinted by default; `VIBECODIUM_TEXT_HINTING=hinted`
+# enables hinting. `SNAP_X=1` and `PPEM_INT=1` adjust subpixel placement and
+# the rasterization ppem.
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
 

@@ -21,6 +21,10 @@ use windows::{
 use windows_numerics::Vector2;
 
 use crate::*;
+use swash::scale::image::Image as SwashImage;
+use swash::scale::{Render, ScaleContext, Source};
+use swash::zeno::{Format, Vector as ZenoVector};
+use swash::FontRef as SwashFontRef;
 
 #[derive(Debug)]
 struct FontInfo {
@@ -29,6 +33,16 @@ struct FontInfo {
     features: IDWriteTypography,
     fallbacks: Option<IDWriteFontFallback>,
     is_system_font: bool,
+    font_index: u32,
+    font_data: std::sync::OnceLock<Option<Arc<[u8]>>>,
+}
+
+impl FontInfo {
+    fn font_bytes(&self) -> Option<&[u8]> {
+        self.font_data
+            .get_or_init(|| load_font_bytes(&self.font_face))
+            .as_deref()
+    }
 }
 
 pub(crate) struct DirectWriteTextSystem(RwLock<DirectWriteState>);
@@ -280,6 +294,61 @@ impl PlatformTextSystem for DirectWriteTextSystem {
     }
 }
 
+fn swash_enabled() -> bool {
+    std::env::var("VIBECODIUM_TEXT_RASTERIZER").as_deref() == Ok("swash")
+}
+
+fn swash_hint() -> bool {
+    // Unhinted is the default for the swash path; hinting is opt-in.
+    std::env::var("VIBECODIUM_TEXT_HINTING").as_deref() == Ok("hinted")
+}
+
+fn swash_snap_x() -> bool {
+    std::env::var("VIBECODIUM_TEXT_SNAP_X").as_deref() == Ok("1")
+}
+
+fn swash_round_ppem() -> bool {
+    std::env::var("VIBECODIUM_TEXT_PPEM_INT").as_deref() == Ok("1")
+}
+
+fn load_font_bytes(face: &IDWriteFontFace3) -> Option<Arc<[u8]>> {
+    unsafe {
+        let mut count = 0u32;
+        face.GetFiles(&mut count, None).ok()?;
+        if count == 0 {
+            return None;
+        }
+        let mut files: Vec<Option<IDWriteFontFile>> =
+            std::iter::repeat_with(|| None).take(count as usize).collect();
+        face.GetFiles(&mut count, Some(files.as_mut_ptr())).ok()?;
+        let file = files.into_iter().flatten().next()?;
+
+        let mut key_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let mut key_size = 0u32;
+        file.GetReferenceKey(&mut key_ptr, &mut key_size).ok()?;
+        if key_size == 0 {
+            return None;
+        }
+        let loader = file.GetLoader().ok()?;
+        let stream = loader
+            .CreateStreamFromKey(key_ptr as *const std::ffi::c_void, key_size)
+            .ok()?;
+        let size = stream.GetFileSize().ok()?;
+        if size == 0 {
+            return None;
+        }
+
+        let mut fragment: *mut std::ffi::c_void = std::ptr::null_mut();
+        let mut context: *mut std::ffi::c_void = std::ptr::null_mut();
+        stream
+            .ReadFileFragment(&mut fragment, 0, size, &mut context)
+            .ok()?;
+        let bytes = std::slice::from_raw_parts(fragment as *const u8, size as usize).to_vec();
+        stream.ReleaseFileFragment(context);
+        Some(Arc::from(bytes.into_boxed_slice()))
+    }
+}
+
 impl DirectWriteState {
     fn add_fonts(&mut self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
         for font_data in fonts {
@@ -319,6 +388,66 @@ impl DirectWriteState {
         self.custom_font_collection = collection;
 
         Ok(())
+    }
+
+    fn swash_image(&self, params: &RenderGlyphParams) -> Option<SwashImage> {
+        if params.is_emoji {
+            return None;
+        }
+        let info = self.fonts.get(params.font_id.0)?;
+        let data = info.font_bytes()?;
+        let font = SwashFontRef::from_index(data, info.font_index as usize)?;
+        let mut ppem = params.font_size.0 * params.scale_factor;
+        if swash_round_ppem() {
+            ppem = ppem.round();
+        }
+        let phase_x = if swash_snap_x() {
+            0.0
+        } else {
+            params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32
+        };
+
+        let mut context = ScaleContext::new();
+        let mut scaler = context.builder(font).size(ppem).hint(swash_hint()).build();
+        let mut render = Render::new(&[Source::Outline]);
+        render
+            .format(Format::Alpha)
+            .offset(ZenoVector::new(phase_x, 0.0));
+        render.render(&mut scaler, params.glyph_id.0 as u16)
+    }
+
+    fn swash_bounds(&self, params: &RenderGlyphParams) -> Option<Bounds<DevicePixels>> {
+        let image = self.swash_image(params)?;
+        if image.placement.width == 0 || image.placement.height == 0 {
+            return Some(Bounds {
+                origin: point(DevicePixels(0), DevicePixels(0)),
+                size: size(DevicePixels(0), DevicePixels(0)),
+            });
+        }
+        Some(Bounds {
+            origin: point(
+                DevicePixels(image.placement.left),
+                DevicePixels(-image.placement.top),
+            ),
+            size: size(
+                DevicePixels(image.placement.width as i32),
+                DevicePixels(image.placement.height as i32),
+            ),
+        })
+    }
+
+    fn swash_mask(
+        &self,
+        params: &RenderGlyphParams,
+        glyph_bounds: Bounds<DevicePixels>,
+    ) -> Option<Vec<u8>> {
+        let image = self.swash_image(params)?;
+        let expected =
+            glyph_bounds.size.width.0 as usize * glyph_bounds.size.height.0 as usize;
+        if image.data.len() != expected {
+            return None;
+        }
+        Some(image.data)
     }
 
     fn generate_font_fallbacks(
@@ -429,12 +558,15 @@ impl DirectWriteState {
             };
             let fallbacks = font_fallbacks
                 .and_then(|fallbacks| self.generate_font_fallbacks(fallbacks).log_err().flatten());
+            let font_index = unsafe { font_face.GetIndex() };
             let font_info = FontInfo {
                 font_family: family_name.to_owned(),
                 font_face,
                 features: direct_write_features,
                 fallbacks,
                 is_system_font,
+                font_index,
+                font_data: std::sync::OnceLock::new(),
             };
             let font_id = FontId(self.fonts.len());
             self.fonts.push(font_info);
@@ -771,6 +903,11 @@ impl DirectWriteState {
     }
 
     fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+        if swash_enabled()
+            && let Some(bounds) = self.swash_bounds(params)
+        {
+            return Ok(bounds);
+        }
         let glyph_analysis = self.create_glyph_run_analysis(params)?;
 
         let bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1)? };
@@ -835,6 +972,11 @@ impl DirectWriteState {
         params: &RenderGlyphParams,
         glyph_bounds: Bounds<DevicePixels>,
     ) -> Result<Vec<u8>> {
+        if swash_enabled()
+            && let Some(data) = self.swash_mask(params, glyph_bounds)
+        {
+            return Ok(data);
+        }
         let mut bitmap_data =
             vec![0u8; glyph_bounds.size.width.0 as usize * glyph_bounds.size.height.0 as usize];
 
