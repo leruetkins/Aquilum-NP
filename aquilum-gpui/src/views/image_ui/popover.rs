@@ -204,7 +204,7 @@ impl AppView {
                                 cx.notify();
                             }),
                         )
-                        .child(input.render("0", this_theme, window, pixel_scale, 13.0, "Segoe UI")),
+                        .child(input.render("0", this_theme, window, pixel_scale, 13.0, crate::fonts::ui_font_family())),
                 )
         };
 

@@ -230,7 +230,7 @@ impl AppView {
                         div()
                             .h(px(16.0))
                             .line_height(px(15.0))
-                            .font_family("Segoe UI")
+                            .font_family(crate::fonts::ui_font_family())
                             .child(position_label.clone()),
                     )
                     .child(icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted)),
@@ -309,7 +309,7 @@ impl AppView {
                     .h(px(16.0))
                     .line_height(px(15.0))
                     .text_size(px(12.0))
-                    .font_family("Segoe UI")
+                    .font_family(crate::fonts::ui_font_family())
                     .text_color(theme.text_primary)
                     .child(crate::i18n::t("editor.image.numbered", lang)),
             );
@@ -357,7 +357,7 @@ impl AppView {
                                 // places the caret, drag selects, double-click
                                 // picks a word. Focusing alone left the old
                                 // caret/selection in place.
-                                state.input.handle_mouse_down(event, window, 12.0, "Segoe UI");
+                                state.input.handle_mouse_down(event, window, 12.0, crate::fonts::ui_font_family());
                                 state
                                     .input
                                     .blink
@@ -370,7 +370,7 @@ impl AppView {
                     .on_mouse_move(cx.listener(|this, event, window, cx| {
                         if let Some(state) = this.caption_editor.as_mut() {
                             if state.input.is_mouse_selecting {
-                                state.input.handle_mouse_move(event, window, 12.0, "Segoe UI");
+                                state.input.handle_mouse_move(event, window, 12.0, crate::fonts::ui_font_family());
                                 state
                                     .input
                                     .blink
@@ -393,7 +393,7 @@ impl AppView {
                         window,
                         window.scale_factor(),
                         12.0,
-                        "Segoe UI",
+                        crate::fonts::ui_font_family(),
                     )),
             )
             .child(
@@ -401,7 +401,7 @@ impl AppView {
                     .h(px(16.0))
                     .line_height(px(15.0))
                     .text_size(px(12.0))
-                    .font_family("Segoe UI")
+                    .font_family(crate::fonts::ui_font_family())
                     .text_color(theme.text_secondary)
                     .flex_shrink_0()
                     .child(crate::i18n::t("editor.image.caption_position", lang)),

@@ -333,7 +333,7 @@ impl AppView {
 
             let run = gpui::TextRun {
                 len: title_text.len(),
-                font: gpui::font("Segoe UI").bold(),
+                font: gpui::font(crate::fonts::ui_font_family()).bold(),
                 color: Default::default(),
                 underline: Default::default(),
                 strikethrough: None,
@@ -471,7 +471,7 @@ impl AppView {
                         } else {
                             let run = gpui::TextRun {
                                 len: input.text.len(),
-                                font: gpui::font("Segoe UI").bold(),
+                                font: gpui::font(crate::fonts::ui_font_family()).bold(),
                                 color: Default::default(),
                                 underline: Default::default(),
                                 strikethrough: None,
@@ -537,7 +537,7 @@ impl AppView {
                 })
                 .child(
                     div()
-                        .font_family("Segoe UI")
+                        .font_family(crate::fonts::ui_font_family())
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_size(px(28.0))
                         .line_height(px(36.0))
@@ -551,7 +551,7 @@ impl AppView {
                             .left_0()
                             .top_0()
                             .h(px(36.0))
-                            .font_family("Segoe UI")
+                            .font_family(crate::fonts::ui_font_family())
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_size(px(28.0))
                             .line_height(px(36.0))
@@ -1660,7 +1660,7 @@ impl AppView {
                                     .h(px(row_h))
                                     .flex()
                                     .items_center()
-                                    .font_family("Segoe UI")
+                                    .font_family(crate::fonts::ui_font_family())
                                     .text_sm()
                                     .text_color(theme.marked_line_red())
                                     .child(eol_symbol)

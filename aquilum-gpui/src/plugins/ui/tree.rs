@@ -263,7 +263,7 @@ pub fn plugin_input_click_pos(text: &str, click_x: f32, box_origin_x: f32, windo
     let rel_x = (click_x - box_origin_x).max(0.0);
     let run = gpui::TextRun {
         len: text.len(),
-        font: gpui::font("Segoe UI"),
+        font: gpui::font(crate::fonts::ui_font_family()),
         color: Default::default(),
         underline: Default::default(),
         strikethrough: None,

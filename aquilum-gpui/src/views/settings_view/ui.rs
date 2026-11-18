@@ -172,6 +172,8 @@ impl SettingsView {
             show_ignored: false,
             font_popup: None,
             font_popup_subscription: None,
+            ui_font_popup: None,
+            ui_font_popup_subscription: None,
             theme_popup: None,
             theme_popup_subscription: None,
             active_plugin_input: None,
@@ -289,6 +291,7 @@ impl SettingsView {
 
     /// Persists the modified AppConfig to disk via SettingsModel.
     pub fn save_settings(&mut self, cx: &mut Context<Self>) {
+        crate::fonts::set_ui_font_family(&self.config.ui.font.font_family);
         self.theme = crate::theme::Theme::from_ui(&self.config.ui, None);
         let config = self.config.clone();
         let old_ui = self.model.read(cx).config.ui.clone();
@@ -406,6 +409,10 @@ impl SettingsView {
     pub fn handle_escape(&mut self, cx: &mut Context<Self>) -> bool {
         if self.locale_popup.is_some() {
             self.close_locale_popup(cx);
+            return true;
+        }
+        if self.ui_font_popup.is_some() {
+            self.close_ui_font_popup(cx);
             return true;
         }
         if self.font_popup.is_some() {
@@ -1045,6 +1052,66 @@ impl SettingsView {
         self.font_popup.is_some()
     }
 
+    pub fn open_ui_font_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.config.ui.font.font_family.clone();
+        let tabs: Vec<TabEntry> = crate::fonts::UI_FONT_CHOICES
+            .iter()
+            .enumerate()
+            .map(|(id, name)| TabEntry {
+                id,
+                title: SharedString::from(*name),
+                subtitle: None,
+                icon: icons::ICON_TYPE,
+                font_family: Some(SharedString::from(*name)),
+                dot_color: None,
+                trailing_icon: None,
+            })
+            .collect();
+        let active_ix = crate::fonts::UI_FONT_CHOICES
+            .iter()
+            .position(|name| *name == current)
+            .unwrap_or(0);
+        let theme = self.theme.clone();
+
+        let popup = cx.new(|cx| TabListPopup::new(tabs, Some(active_ix), theme, None, None, None, cx));
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(name) = crate::fonts::UI_FONT_CHOICES.get(*id) {
+                            this.config.ui.font.font_family = name.to_string();
+                            this.save_settings(cx);
+                        }
+                        this.close_ui_font_popup(cx);
+                    }
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_ui_font_popup(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.ui_font_popup = Some(popup);
+        self.ui_font_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_ui_font_popup(&mut self, cx: &mut Context<Self>) {
+        if self.ui_font_popup.take().is_none() {
+            return;
+        }
+        self.ui_font_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn ui_font_popup_is_open(&self) -> bool {
+        self.ui_font_popup.is_some()
+    }
+
     pub fn open_theme_popup(&mut self, slot: ThemeSlot, window: &mut Window, cx: &mut Context<Self>) {
         let is_dark = slot == ThemeSlot::Dark;
         let selected = if is_dark {
@@ -1462,7 +1529,7 @@ impl SettingsView {
             .flex_col()
             .bg(theme.bg_editor)
             .text_color(theme.text_primary)
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::ui_font_family())
             .cursor(gpui::CursorStyle::Arrow)
             // Continue a text-field selection drag outside its small box, the
             // same way the sidebar quick filter does from the app root.
@@ -2035,7 +2102,7 @@ impl SettingsView {
                 } else {
                     let run = gpui::TextRun {
                         len: this.search_query.len(),
-                        font: gpui::font("Segoe UI"),
+                        font: gpui::font(crate::fonts::ui_font_family()),
                         color: Default::default(),
                         underline: Default::default(),
                         strikethrough: None,
@@ -2107,7 +2174,7 @@ impl SettingsView {
 
                 let run = gpui::TextRun {
                     len: query.len(),
-                    font: gpui::font("Segoe UI"),
+                    font: gpui::font(crate::fonts::ui_font_family()),
                     color: Default::default(),
                     underline: Default::default(),
                     strikethrough: None,
@@ -2197,7 +2264,7 @@ impl SettingsView {
                     .child(
                         if query.is_empty() {
                             div()
-                                .font_family("Segoe UI")
+                                .font_family(crate::fonts::ui_font_family())
                                 .text_xs()
                                 .line_height(px(16.0))
                                 .text_color(theme.text_muted)
@@ -2208,7 +2275,7 @@ impl SettingsView {
                                 .absolute()
                                 .left(px(-scroll_offset))
                                 .top(px(0.0))
-                                .font_family("Segoe UI")
+                                .font_family(crate::fonts::ui_font_family())
                                 .text_xs()
                                 .line_height(px(16.0))
                                 .text_color(theme.text_primary)
@@ -2746,7 +2813,7 @@ impl SettingsView {
             return false;
         }
         let before = input.cursor_pos;
-        input.handle_mouse_move(event, window, 12.0, "Segoe UI");
+        input.handle_mouse_move(event, window, 12.0, crate::fonts::ui_font_family());
         if input.cursor_pos == before {
             return false;
         }
@@ -2780,7 +2847,7 @@ impl SettingsView {
             window,
             window.scale_factor(),
             12.0,
-            "Segoe UI",
+            crate::fonts::ui_font_family(),
         );
         let focus_handle = focus_handle.clone();
 
@@ -2804,7 +2871,7 @@ impl SettingsView {
                     cx.stop_propagation();
                     window.focus(&focus_handle);
                     begin_edit(this, cx);
-                    get_input(this).handle_mouse_down(event, window, 12.0, "Segoe UI");
+                    get_input(this).handle_mouse_down(event, window, 12.0, crate::fonts::ui_font_family());
                     get_input(this).enable_blink(get_blink, cx);
                     get_input(this).pause_and_show(get_blink, cx);
                     cx.notify();

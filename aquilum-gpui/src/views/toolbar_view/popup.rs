@@ -511,7 +511,7 @@ impl AppView {
 
         let run = TextRun {
             len: content.len(),
-            font: gpui::font("Segoe UI"),
+            font: gpui::font(crate::fonts::ui_font_family()),
             color: Default::default(),
             underline: Default::default(),
             strikethrough: None,
@@ -545,7 +545,7 @@ impl AppView {
                 .border_color(theme.border_subtle)
                 .rounded_md()
                 .shadow_md()
-                .font_family("Segoe UI")
+                .font_family(crate::fonts::ui_font_family())
                 .text_size(px(12.0))
                 .text_color(theme.text_primary)
                 .child(content),

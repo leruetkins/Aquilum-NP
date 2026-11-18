@@ -507,7 +507,7 @@ impl AppView {
         let rel_x = (click_x - box_x).max(0.0);
         let run = gpui::TextRun {
             len: query.len(),
-            font: gpui::font("Segoe UI"),
+            font: gpui::font(crate::fonts::ui_font_family()),
             color: Default::default(),
             underline: Default::default(),
             strikethrough: None,
@@ -596,7 +596,7 @@ impl AppView {
         let selection_range = self.search_dialog.selection_range();
         let run = gpui::TextRun {
             len: query.len(),
-            font: gpui::font("Segoe UI"),
+            font: gpui::font(crate::fonts::ui_font_family()),
             color: Default::default(),
             underline: Default::default(),
             strikethrough: None,
@@ -826,14 +826,14 @@ impl AppView {
                                             })
                                             .child(if query.is_empty() {
                                                 div()
-                                                    .font_family("Segoe UI")
+                                                    .font_family(crate::fonts::ui_font_family())
                                                     .text_size(px(14.0))
                                                     .line_height(px(22.0))
                                                     .text_color(theme.text_muted)
                                                     .child(self.t("search.title"))
                                             } else {
                                                 div()
-                                                    .font_family("Segoe UI")
+                                                    .font_family(crate::fonts::ui_font_family())
                                                     .text_size(px(14.0))
                                                     .line_height(px(22.0))
                                                     .text_color(theme.text_primary)
@@ -856,7 +856,7 @@ impl AppView {
                                         h.child(
                                             div()
                                                 .flex_shrink_0()
-                                                .font_family("Segoe UI")
+                                                .font_family(crate::fonts::ui_font_family())
                                                 .text_size(px(12.0))
                                                 .text_color(theme.text_muted)
                                                 .child(pending_label.clone()),

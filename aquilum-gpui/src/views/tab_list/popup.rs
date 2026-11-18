@@ -180,7 +180,7 @@ impl TabListPopup {
         } else {
             let run = gpui::TextRun {
                 len: self.search_query.len(),
-                font: gpui::font("Segoe UI"),
+                font: gpui::font(crate::fonts::ui_font_family()),
                 color: Default::default(),
                 underline: Default::default(),
                 strikethrough: None,
@@ -521,7 +521,7 @@ impl TabListPopup {
         let font_family = tab
             .font_family
             .clone()
-            .unwrap_or_else(|| SharedString::from("Segoe UI"));
+            .unwrap_or_else(|| SharedString::from(crate::fonts::ui_font_family()));
         let trailing_icon = tab.trailing_icon;
         let is_active = self.active_ix == Some(ix);
 
@@ -741,7 +741,7 @@ impl TabListPopup {
 
         let run = gpui::TextRun {
             len: query.len(),
-            font: gpui::font("Segoe UI"),
+            font: gpui::font(crate::fonts::ui_font_family()),
             color: Default::default(),
             underline: Default::default(),
             strikethrough: None,
@@ -803,7 +803,7 @@ impl TabListPopup {
                 } else {
                     let run = gpui::TextRun {
                         len: this.search_query.len(),
-                        font: gpui::font("Segoe UI"),
+                        font: gpui::font(crate::fonts::ui_font_family()),
                         color: Default::default(),
                         underline: Default::default(),
                         strikethrough: None,
@@ -876,7 +876,7 @@ impl TabListPopup {
                     .child(
                         if query.is_empty() {
                             div()
-                                .font_family("Segoe UI")
+                                .font_family(crate::fonts::ui_font_family())
                                 .text_xs()
                                 .line_height(px(16.0))
                                 .text_color(theme.text_muted)
@@ -884,7 +884,7 @@ impl TabListPopup {
                                 .child(self.search_placeholder.clone())
                         } else {
                             div()
-                                .font_family("Segoe UI")
+                                .font_family(crate::fonts::ui_font_family())
                                 .text_xs()
                                 .line_height(px(16.0))
                                 .text_color(theme.text_primary)

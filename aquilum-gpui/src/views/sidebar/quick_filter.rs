@@ -111,7 +111,7 @@ impl QuickFilterState {
         } else {
             let run = gpui::TextRun {
                 len: query.len(),
-                font: gpui::font("Segoe UI"),
+                font: gpui::font(crate::fonts::ui_font_family()),
                 color: Default::default(),
                 underline: Default::default(),
                 strikethrough: None,
@@ -441,7 +441,7 @@ impl AppView {
                 } else {
                     let run = gpui::TextRun {
                         len: this.state.search_query.len(),
-                        font: gpui::font("Segoe UI"),
+                        font: gpui::font(crate::fonts::ui_font_family()),
                         color: Default::default(),
                         underline: Default::default(),
                         strikethrough: None,
@@ -505,7 +505,7 @@ impl AppView {
 
                 let run = gpui::TextRun {
                     len: query.len(),
-                    font: gpui::font("Segoe UI"),
+                    font: gpui::font(crate::fonts::ui_font_family()),
                     color: Default::default(),
                     underline: Default::default(),
                     strikethrough: None,
@@ -619,7 +619,7 @@ impl AppView {
                     .child(
                         if query.is_empty() {
                             div()
-                                .font_family("Segoe UI")
+                                .font_family(crate::fonts::ui_font_family())
                                 .text_xs()
                                 .line_height(px(16.0))
                                 .text_color(theme.text_muted)
@@ -629,7 +629,7 @@ impl AppView {
                                 .child("Quick filter...")
                         } else {
                             div()
-                                .font_family("Segoe UI")
+                                .font_family(crate::fonts::ui_font_family())
                                 .text_xs()
                                 .line_height(px(16.0))
                                 .text_color(theme.text_primary)
@@ -723,8 +723,8 @@ pub fn highlight_matches(
         return StyledText::new(text.to_string());
     }
 
-    let reg_font = gpui::font("Segoe UI");
-    let match_font = gpui::font("Segoe UI").bold();
+    let reg_font = gpui::font(crate::fonts::ui_font_family());
+    let match_font = gpui::font(crate::fonts::ui_font_family()).bold();
     let hl_bg = Rgba {
         r: theme.accent.r,
         g: theme.accent.g,

@@ -491,7 +491,7 @@ impl AppView {
                         window,
                         window.scale_factor(),
                         13.0,
-                        "Segoe UI",
+                        crate::fonts::ui_font_family(),
                     )),
             );
         }
@@ -630,7 +630,7 @@ impl AppView {
                         cx.notify();
                     }),
                 )
-                .child(input.render("0", theme, window, pixel_scale, 12.0, "Segoe UI"))
+                .child(input.render("0", theme, window, pixel_scale, 12.0, crate::fonts::ui_font_family()))
         };
 
         let field = |index: usize, label: String| {
@@ -674,7 +674,7 @@ impl AppView {
                                 cx.notify();
                             }),
                         )
-                        .child(input.render("0", theme, window, pixel_scale, 13.0, "Segoe UI")),
+                        .child(input.render("0", theme, window, pixel_scale, 13.0, crate::fonts::ui_font_family())),
                 )
         };
 

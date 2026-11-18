@@ -1047,7 +1047,7 @@ impl AppView {
                     .h(px(15.0))
                     .line_height(px(14.0))
                     .text_size(px(10.5))
-                    .font_family("Segoe UI")
+                    .font_family(crate::fonts::ui_font_family())
                     .whitespace_nowrap()
                     .text_color(color)
                     .child(label),

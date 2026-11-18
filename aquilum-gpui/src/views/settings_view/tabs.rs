@@ -423,13 +423,43 @@ impl SettingsView {
         ];
 
         let font_rows = vec![
-            self.render_setting_row_with_id(
-                Some("ui.fontFamily"),
-                &self.t("settings.ui.font_family"),
-                Some(&self.t("settings.ui.font_family_desc")),
-                self.render_select_pill(&config.ui.font.font_family),
-                cx,
-            ),
+            {
+                let current_font = config.ui.font.font_family.clone();
+                self.render_setting_row_with_id(
+                    Some("ui.fontFamily"),
+                    &self.t("settings.ui.font_family"),
+                    Some(&self.t("settings.ui.font_family_desc")),
+                    div()
+                        .relative()
+                        .child(
+                            div()
+                                .id("select-ui-font-btn")
+                                .cursor_pointer()
+                                .child(self.render_select_pill(&current_font))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if this.ui_font_popup_is_open() {
+                                        this.close_ui_font_popup(cx);
+                                    } else {
+                                        this.open_ui_font_popup(window, cx);
+                                    }
+                                })),
+                        )
+                        .when_some(self.ui_font_popup.clone(), |parent, popup| {
+                            parent.child(
+                                gpui::deferred(
+                                    div()
+                                        .id("ui-font-dropdown-menu")
+                                        .absolute()
+                                        .top_full()
+                                        .right_0()
+                                        .mt_1()
+                                        .child(popup),
+                                )
+                            )
+                        }),
+                    cx,
+                )
+            },
             self.render_setting_row_with_id(
                 Some("ui.fontWeight"),
                 &self.t("settings.ui.font_weight"),
@@ -2295,10 +2325,10 @@ impl SettingsView {
         let mut ranges = Vec::new();
         let mut urls = Vec::new();
 
-        let reg_font = gpui::font("Segoe UI");
-        let bold_font = gpui::font("Segoe UI").bold();
-        let italic_font = gpui::font("Segoe UI").italic();
-        let bold_italic_font = gpui::font("Segoe UI").bold().italic();
+        let reg_font = gpui::font(crate::fonts::ui_font_family());
+        let bold_font = gpui::font(crate::fonts::ui_font_family()).bold();
+        let italic_font = gpui::font(crate::fonts::ui_font_family()).italic();
+        let bold_italic_font = gpui::font(crate::fonts::ui_font_family()).bold().italic();
         let code_font = gpui::font(self.editor_font_family());
 
         for span in spans {
@@ -3519,7 +3549,7 @@ impl SettingsView {
             window,
             window.scale_factor(),
             12.0,
-            "Segoe UI",
+            crate::fonts::ui_font_family(),
         );
         let text = self.sync_custom_input.text();
         let text_width = if text.is_empty() {
@@ -3527,7 +3557,7 @@ impl SettingsView {
         } else {
             let run = gpui::TextRun {
                 len: text.len(),
-                font: gpui::font("Segoe UI"),
+                font: gpui::font(crate::fonts::ui_font_family()),
                 color: Default::default(),
                 underline: Default::default(),
                 strikethrough: None,
@@ -3558,7 +3588,7 @@ impl SettingsView {
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     window.focus(&this.sync_custom_focus_handle);
-                    this.sync_custom_input.handle_mouse_down(event, window, 12.0, "Segoe UI");
+                    this.sync_custom_input.handle_mouse_down(event, window, 12.0, crate::fonts::ui_font_family());
                     this.sync_custom_input.enable_blink(
                         |s: &mut SettingsView| &mut s.sync_custom_input.blink,
                         cx,
@@ -3573,7 +3603,7 @@ impl SettingsView {
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 if this.sync_custom_input.is_mouse_selecting {
                     let before = this.sync_custom_input.cursor_pos;
-                    this.sync_custom_input.handle_mouse_move(event, window, 12.0, "Segoe UI");
+                    this.sync_custom_input.handle_mouse_move(event, window, 12.0, crate::fonts::ui_font_family());
                     if this.sync_custom_input.cursor_pos != before {
                         this.sync_custom_input.pause_and_show(
                             |s: &mut SettingsView| &mut s.sync_custom_input.blink,

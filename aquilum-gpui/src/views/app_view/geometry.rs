@@ -533,7 +533,7 @@ impl AppView {
                     .bg(gpui::rgb(0x9873f7))
                     .hover(|h| h.bg(gpui::rgb(0x8b5cf6)))
                     .cursor_pointer()
-                    .font_family("Segoe UI")
+                    .font_family(crate::fonts::ui_font_family())
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_size(px(11.0))
                     .text_color(gpui::rgb(0xffffff))

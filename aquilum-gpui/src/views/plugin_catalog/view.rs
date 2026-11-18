@@ -481,7 +481,7 @@ impl PluginCatalogView {
         let rel_x = (click_x - box_x).max(0.0);
         let run = gpui::TextRun {
             len: query.len(),
-            font: gpui::font("Segoe UI"),
+            font: gpui::font(crate::fonts::ui_font_family()),
             color: Default::default(),
             underline: Default::default(),
             strikethrough: None,
@@ -977,7 +977,7 @@ impl PluginCatalogView {
 
         let run = gpui::TextRun {
             len: before_cursor.len(),
-            font: gpui::font("Segoe UI"),
+            font: gpui::font(crate::fonts::ui_font_family()),
             color: Default::default(),
             underline: Default::default(),
             strikethrough: None,
@@ -1001,13 +1001,13 @@ impl PluginCatalogView {
             let s_shaped = window.text_system().shape_line(
                 SharedString::from(s_str.clone()),
                 px(14.0),
-                &[gpui::TextRun { len: s_str.len(), font: gpui::font("Segoe UI"), color: Default::default(), underline: Default::default(), strikethrough: None, background_color: None }],
+                &[gpui::TextRun { len: s_str.len(), font: gpui::font(crate::fonts::ui_font_family()), color: Default::default(), underline: Default::default(), strikethrough: None, background_color: None }],
                 None,
             );
             let e_shaped = window.text_system().shape_line(
                 SharedString::from(e_str.clone()),
                 px(14.0),
-                &[gpui::TextRun { len: e_str.len(), font: gpui::font("Segoe UI"), color: Default::default(), underline: Default::default(), strikethrough: None, background_color: None }],
+                &[gpui::TextRun { len: e_str.len(), font: gpui::font(crate::fonts::ui_font_family()), color: Default::default(), underline: Default::default(), strikethrough: None, background_color: None }],
                 None,
             );
             let x1 = f32::from(s_shaped.width).round();
@@ -1190,7 +1190,7 @@ impl PluginCatalogView {
                                     })
                                     .child(if query.is_empty() {
                                         div()
-                                            .font_family("Segoe UI")
+                                            .font_family(crate::fonts::ui_font_family())
                                             .text_size(px(14.0))
                                             .line_height(px(22.0))
                                             .text_color(theme.text_muted)
@@ -1201,7 +1201,7 @@ impl PluginCatalogView {
                                             })
                                     } else {
                                         div()
-                                            .font_family("Segoe UI")
+                                            .font_family(crate::fonts::ui_font_family())
                                             .text_size(px(14.0))
                                             .line_height(px(22.0))
                                             .text_color(theme.text_primary)
@@ -2469,7 +2469,7 @@ impl Render for PluginCatalogView {
             .flex_col()
             .bg(theme.bg_editor)
             .text_color(theme.text_primary)
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::ui_font_family())
             .cursor(gpui::CursorStyle::Arrow)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 cx.stop_propagation();

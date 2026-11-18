@@ -500,7 +500,7 @@ impl AppView {
         // the one the handlers drive, so the caret would never blink.
         let mut input = rename.input.clone();
         input.blink = self.bookmark_rename_blink.clone();
-        let input_div = input.render("", theme, window, pixel_scale, 12.0, "Segoe UI");
+        let input_div = input.render("", theme, window, pixel_scale, 12.0, crate::fonts::ui_font_family());
 
         div()
             .id("bookmark-inline-rename-box")
@@ -523,7 +523,7 @@ impl AppView {
                     cx.stop_propagation();
                     window.focus(&this.bookmark_rename_focus_handle);
                     if let Some(ref mut r) = this.bookmark_rename {
-                        r.input.handle_mouse_down(event, window, 12.0, "Segoe UI");
+                        r.input.handle_mouse_down(event, window, 12.0, crate::fonts::ui_font_family());
                     }
                     this.bookmark_rename_blink
                         .pause_and_show(crate::blink_manager::BlinkTarget::SidebarRename, cx);
@@ -533,7 +533,7 @@ impl AppView {
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 if let Some(ref mut r) = this.bookmark_rename {
                     if r.input.is_mouse_selecting {
-                        r.input.handle_mouse_move(event, window, 12.0, "Segoe UI");
+                        r.input.handle_mouse_move(event, window, 12.0, crate::fonts::ui_font_family());
                         cx.notify();
                     }
                 }

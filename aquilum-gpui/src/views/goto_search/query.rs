@@ -686,8 +686,8 @@ pub(crate) fn highlight_terms_cased(
     if ranges.is_empty() {
         return StyledText::new(text.to_string());
     }
-    let reg_font = gpui::font("Segoe UI");
-    let match_font = gpui::font("Segoe UI").bold();
+    let reg_font = gpui::font(crate::fonts::ui_font_family());
+    let match_font = gpui::font(crate::fonts::ui_font_family()).bold();
     let hl_bg = Rgba {
         r: theme.accent.r,
         g: theme.accent.g,

@@ -339,7 +339,7 @@ impl AppView {
         let rel_x = (click_x - box_x + self.sidebar_search.scroll_x.get()).max(0.0);
         let run = gpui::TextRun {
             len: query.len(),
-            font: gpui::font("Segoe UI"),
+            font: gpui::font(crate::fonts::ui_font_family()),
             color: Default::default(),
             underline: Default::default(),
             strikethrough: None,
@@ -650,7 +650,7 @@ impl AppView {
         let selection_range = self.sidebar_search.selection_range();
         let run = gpui::TextRun {
             len: query.len(),
-            font: gpui::font("Segoe UI"),
+            font: gpui::font(crate::fonts::ui_font_family()),
             color: Default::default(),
             underline: Default::default(),
             strikethrough: None,
@@ -832,7 +832,7 @@ impl AppView {
                             })
                             .child(if query.is_empty() {
                                 div()
-                                    .font_family("Segoe UI")
+                                    .font_family(crate::fonts::ui_font_family())
                                     .text_xs()
                                     .line_height(px(16.0))
                                     .text_color(theme.text_muted)
@@ -842,7 +842,7 @@ impl AppView {
                                     .child(self.t("search.panel_hint"))
                             } else {
                                 div()
-                                    .font_family("Segoe UI")
+                                    .font_family(crate::fonts::ui_font_family())
                                     .text_xs()
                                     .line_height(px(16.0))
                                     .text_color(theme.text_primary)
@@ -882,7 +882,7 @@ impl AppView {
                             .when(!cs, |d| d.hover(|h| h.bg(theme.bg_hover)))
                             .child(
                                 div()
-                                    .font_family("Segoe UI")
+                                    .font_family(crate::fonts::ui_font_family())
                                     .text_xs()
                                     .text_color(if cs {
                                         theme.accent

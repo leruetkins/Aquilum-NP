@@ -206,6 +206,7 @@ impl AppView {
 
     /// Persists the modified AppConfig to disk via SettingsModel.
     pub fn save_settings(&mut self, cx: &mut Context<Self>) {
+        crate::fonts::set_ui_font_family(&self.config.ui.font.font_family);
         for view in self.state.views.values_mut() {
             view.visual_cache_dirty = true;
         }
@@ -440,6 +441,8 @@ pub struct SettingsView {
     pub show_ignored: bool,
     pub font_popup: Option<gpui::Entity<TabListPopup>>,
     pub font_popup_subscription: Option<Subscription>,
+    pub ui_font_popup: Option<gpui::Entity<TabListPopup>>,
+    pub ui_font_popup_subscription: Option<Subscription>,
     pub theme_popup: Option<(ThemeSlot, gpui::Entity<TabListPopup>)>,
     pub theme_popup_subscription: Option<Subscription>,
     pub active_plugin_input: Option<PluginInputFocusState>,
@@ -584,7 +587,7 @@ impl SearchFilterState {
         } else {
             let run = gpui::TextRun {
                 len: query.len(),
-                font: gpui::font("Segoe UI"),
+                font: gpui::font(crate::fonts::ui_font_family()),
                 color: Default::default(),
                 underline: Default::default(),
                 strikethrough: None,

@@ -784,7 +784,7 @@ impl AppView {
     pub(super) fn render_find_bar(&self, leaf_id: Option<crate::workspace::LeafId>, theme: &Theme, window: &mut Window, cx: &Context<Self>) -> Div {
         let pixel_scale = window.scale_factor();
         let font_size = 13.0;
-        let font_family = "Segoe UI";
+        let font_family = crate::fonts::ui_font_family();
         let query_focused = self.find_bar.query.is_focused(window);
         let replace_focused = self.find_bar.replace.is_focused(window);
         let has_matches = !self.find_bar.matches.is_empty();
@@ -811,7 +811,7 @@ impl AppView {
                 .when(!active, |d| d.hover(|h| h.bg(theme.bg_hover)))
                 .child(
                     div()
-                        .font_family("Segoe UI")
+                        .font_family(crate::fonts::ui_font_family())
                         .text_xs()
                         .text_color(if active { theme.accent } else { theme.text_muted })
                         .when(underline, |d| d.underline())
@@ -855,13 +855,13 @@ impl AppView {
                 cx.stop_propagation();
                 this.find_bar.replace.blink.disable(cx);
                 this.find_bar.query.focus(window);
-                this.find_bar.query.handle_mouse_down(event, window, 13.0, "Segoe UI");
+                this.find_bar.query.handle_mouse_down(event, window, 13.0, crate::fonts::ui_font_family());
                 this.find_bar.query.blink.pause_and_show(BlinkTarget::FindQuery, cx);
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 if this.find_bar.query.is_mouse_selecting {
-                    this.find_bar.query.handle_mouse_move(event, window, 13.0, "Segoe UI");
+                    this.find_bar.query.handle_mouse_move(event, window, 13.0, crate::fonts::ui_font_family());
                     cx.notify();
                 }
             }))
@@ -885,7 +885,7 @@ impl AppView {
             .child(
                 div()
                     .flex_shrink_0()
-                    .font_family("Segoe UI")
+                    .font_family(crate::fonts::ui_font_family())
                     .text_xs()
                     .text_color(theme.text_muted)
                     .child(self.find_bar.counter()),
@@ -1011,7 +1011,7 @@ impl AppView {
         // right edge.
         let action_label = |text: String| {
             div()
-                .font_family("Segoe UI")
+                .font_family(crate::fonts::ui_font_family())
                 .text_xs()
                 .text_color(theme.text_primary)
                 .child(text)
@@ -1133,13 +1133,13 @@ impl AppView {
                     cx.stop_propagation();
                     this.find_bar.query.blink.disable(cx);
                     this.find_bar.replace.focus(window);
-                    this.find_bar.replace.handle_mouse_down(event, window, 13.0, "Segoe UI");
+                    this.find_bar.replace.handle_mouse_down(event, window, 13.0, crate::fonts::ui_font_family());
                     this.find_bar.replace.blink.pause_and_show(BlinkTarget::FindReplace, cx);
                     cx.notify();
                 }))
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                     if this.find_bar.replace.is_mouse_selecting {
-                        this.find_bar.replace.handle_mouse_move(event, window, 13.0, "Segoe UI");
+                        this.find_bar.replace.handle_mouse_move(event, window, 13.0, crate::fonts::ui_font_family());
                         cx.notify();
                     }
                 }))
@@ -1166,7 +1166,7 @@ impl AppView {
                     d.child(
                         div()
                             .flex_shrink_0()
-                            .font_family("Segoe UI")
+                            .font_family(crate::fonts::ui_font_family())
                             .text_xs()
                             .text_color(theme.text_secondary)
                             .child(percent),

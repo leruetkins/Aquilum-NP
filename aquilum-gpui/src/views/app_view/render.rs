@@ -307,6 +307,7 @@ if let Some(new_scroll) = new_active_scroll {
             .size_full()
             .overflow_hidden()
             .bg(theme.bg_app)
+            .font_family(crate::fonts::ui_font_family())
             .text_color(theme.text_primary)
             // A click anywhere outside the inline rename field commits it. The
             // field stops its own mouse-down, so this only sees outside clicks.
@@ -397,7 +398,7 @@ if let Some(new_scroll) = new_active_scroll {
                         .map(|ti| {
                             let run = gpui::TextRun {
                                 len: ti.text.len(),
-                                font: gpui::font("Segoe UI").bold(),
+                                font: gpui::font(crate::fonts::ui_font_family()).bold(),
                                 color: Default::default(),
                                 underline: Default::default(),
                                 strikethrough: None,
@@ -422,7 +423,7 @@ if let Some(new_scroll) = new_active_scroll {
                             } else {
                                 let run = gpui::TextRun {
                                     len: input.text.len(),
-                                    font: gpui::font("Segoe UI").bold(),
+                                    font: gpui::font(crate::fonts::ui_font_family()).bold(),
                                     color: Default::default(),
                                     underline: Default::default(),
                                     strikethrough: None,
@@ -450,7 +451,7 @@ if let Some(new_scroll) = new_active_scroll {
                     .is_some_and(|state| state.input.is_mouse_selecting)
                 {
                     if let Some(state) = this.caption_editor.as_mut() {
-                        state.input.handle_mouse_move(event, window, 12.0, "Segoe UI");
+                        state.input.handle_mouse_move(event, window, 12.0, crate::fonts::ui_font_family());
                     }
                     cx.notify();
                 } else if this.quick_filter.is_mouse_selecting {
@@ -461,7 +462,7 @@ if let Some(new_scroll) = new_active_scroll {
                     .is_some_and(|state| state.input.is_mouse_selecting)
                 {
                     if let Some(state) = this.bookmark_rename.as_mut() {
-                        state.input.handle_mouse_move(event, window, 12.0, "Segoe UI");
+                        state.input.handle_mouse_move(event, window, 12.0, crate::fonts::ui_font_family());
                     }
                     cx.notify();
                 } else if this.panel_scrollbar_drag.active {

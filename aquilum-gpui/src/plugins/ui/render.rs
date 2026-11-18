@@ -892,7 +892,7 @@ fn render_ui_node_inner<V: UiSink>(
             let pixel_scale = window.scale_factor();
             let run = gpui::TextRun {
                 len: current_val.len(),
-                font: gpui::font("Segoe UI"),
+                font: gpui::font(crate::fonts::ui_font_family()),
                 color: Default::default(),
                 underline: Default::default(),
                 strikethrough: None,
@@ -1098,7 +1098,7 @@ fn render_ui_node_inner<V: UiSink>(
                         .child(
                             if current_val.is_empty() {
                                 div()
-                                    .font_family("Segoe UI")
+                                    .font_family(crate::fonts::ui_font_family())
                                     .text_size(px(14.0))
                                     .line_height(px(20.0))
                                     .text_color(theme.text_muted)
@@ -1108,7 +1108,7 @@ fn render_ui_node_inner<V: UiSink>(
                                     .child(placeholder.as_deref().unwrap_or("").to_string())
                             } else {
                                 div()
-                                    .font_family("Segoe UI")
+                                    .font_family(crate::fonts::ui_font_family())
                                     .text_size(px(14.0))
                                     .line_height(px(20.0))
                                     .text_color(theme.text_primary)
