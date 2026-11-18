@@ -135,6 +135,13 @@ tempfile = "3"
 # The swash path is unhinted by default; `VIBECODIUM_TEXT_HINTING=hinted`
 # enables hinting. `SNAP_X=1` and `PPEM_INT=1` adjust subpixel placement and
 # the rasterization ppem.
+# 11. Custom drag cursor: `Window::set_custom_drag_cursor_style` pins one cursor
+# style for a hand-rolled drag until the next mouse-up, and hover cursors are no
+# longer recomputed while a mouse button is held. A splitter that the app moves
+# to the pointer position on every move event used to lose its resize cursor to
+# the elements painted behind it: the hit test comes from the last completed
+# frame, so the pointer was always one step ahead of the edge (flicker between
+# resize, I-beam and pointer).
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
 

@@ -41,11 +41,12 @@ impl AppView {
                         this.is_hovering_right_resizer = *hovered;
                         cx.notify();
                     }))
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                         if event.click_count == 2 {
                             this.toggle_right_sidebar(cx);
                         } else {
                             this.is_resizing_right_sidebar = true;
+                            window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ResizeColumn), cx);
                             cx.notify();
                         }
                     })),

@@ -945,9 +945,12 @@ impl AppView {
                     })
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
                             this.begin_image_viewer_drag(event, cx);
+                            // Hover cursors freeze while the button is held, so the
+                            // grabbing hand has to be pinned for the drag explicitly.
+                            window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ClosedHand), cx);
                         }),
                     )
                     .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {

@@ -225,10 +225,11 @@ pub(crate) fn render_live_styled_row(
                     .bottom_0()
                     .w(px(8.0))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
                         let click_x: f32 = event.position.x.into();
                         this.start_table_col_resize(tbl_first_line, c_idx, click_x, &col_widths_clone);
+                        window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ResizeLeftRight), cx);
                         cx.notify();
                     }))
             );

@@ -1050,11 +1050,12 @@ if let Some(new_scroll) = new_active_scroll {
                                             this.is_hovering_resizer = *hovered;
                                             cx.notify();
                                         }))
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                                             if event.click_count == 2 {
                                                 this.toggle_sidebar(cx);
                                             } else {
                                                 this.is_resizing_sidebar = true;
+                                                window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ResizeColumn), cx);
                                                 cx.notify();
                                             }
                                         })),
@@ -1096,11 +1097,12 @@ if let Some(new_scroll) = new_active_scroll {
                                             this.is_hovering_right_resizer = *hovered;
                                             cx.notify();
                                         }))
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                                             if event.click_count == 2 {
                                                 this.toggle_right_sidebar(cx);
                                             } else {
                                                 this.is_resizing_right_sidebar = true;
+                                                window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ResizeColumn), cx);
                                                 cx.notify();
                                             }
                                         })),
@@ -1544,7 +1546,7 @@ if let Some(new_scroll) = new_active_scroll {
                                                 *hovered && !this.sidebar_scrollbar_drag.active;
                                             cx.notify();
                                         }))
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                                             // One gesture at a time: the scrollbar already
                                             // owns the pointer, so the border must not steal it.
                                             if this.sidebar_scrollbar_drag.active {
@@ -1554,6 +1556,7 @@ if let Some(new_scroll) = new_active_scroll {
                                                 this.toggle_sidebar(cx);
                                             } else {
                                                 this.is_resizing_sidebar = true;
+                                                window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ResizeColumn), cx);
                                                 cx.notify();
                                             }
                                         })),

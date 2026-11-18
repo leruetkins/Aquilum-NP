@@ -759,15 +759,27 @@ impl Frame {
         }
     }
 
-    pub(crate) fn cursor_style(&self, window: &Window) -> Option<CursorStyle> {
+    /// Resolves the cursor style requests collected for this frame.
+    ///
+    /// `ignore_hovered_hitboxes` drops the hover-driven requests and keeps only
+    /// window-wide ones (`set_window_cursor_style`, e.g. an active drag). While
+    /// a mouse button is held the hit test describes the last completed frame,
+    /// so hover results lag behind whatever the app is dragging under the
+    /// pointer; the caller uses this to keep the style the press started with.
+    pub(crate) fn cursor_style(
+        &self,
+        window: &Window,
+        ignore_hovered_hitboxes: bool,
+    ) -> Option<CursorStyle> {
         self.cursor_styles
             .iter()
             .rev()
             .fold_while(None, |style, request| match request.hitbox_id {
                 None => Done(Some(request.style)),
-                Some(hitbox_id) => Continue(
-                    style.or_else(|| hitbox_id.is_hovered(window).then_some(request.style)),
-                ),
+                Some(hitbox_id) => Continue(style.or_else(|| {
+                    (!ignore_hovered_hitboxes && hitbox_id.is_hovered(window))
+                        .then_some(request.style)
+                })),
             })
             .into_inner()
     }
@@ -853,6 +865,8 @@ pub struct Window {
     default_prevented: bool,
     mouse_position: Point<Pixels>,
     mouse_hit_test: HitTest,
+    pressed_mouse_button: Option<MouseButton>,
+    custom_drag_cursor_style: Option<CursorStyle>,
     modifiers: Modifiers,
     capslock: Capslock,
     scale_factor: f32,
@@ -1250,6 +1264,8 @@ impl Window {
             default_prevented: true,
             mouse_position,
             mouse_hit_test: HitTest::default(),
+            pressed_mouse_button: None,
+            custom_drag_cursor_style: None,
             modifiers,
             capslock,
             scale_factor,
@@ -3540,12 +3556,42 @@ impl Window {
 
     fn reset_cursor_style(&self, cx: &mut App) {
         // Set the cursor only if we're the active window.
-        if self.is_window_hovered() {
-            let style = self
-                .rendered_frame
-                .cursor_style(self)
-                .unwrap_or(CursorStyle::Arrow);
-            cx.platform.set_cursor_style(style);
+        if !self.is_window_hovered() {
+            return;
+        }
+
+        let frozen = self.pressed_mouse_button.is_some();
+        let style = match self.custom_drag_cursor_style {
+            Some(style) => Some(style),
+            None => self.rendered_frame.cursor_style(self, frozen),
+        };
+        match style {
+            Some(style) => cx.platform.set_cursor_style(style),
+            // While a button is held, hover hitboxes describe the last completed
+            // frame while the app moves the dragged element in response to the
+            // current event. Recomputing from hover would flip the cursor onto
+            // whatever is painted behind the drag, so keep the current style
+            // until the release. Without a drag, no hovered style means Arrow.
+            None if frozen => {}
+            None => cx.platform.set_cursor_style(CursorStyle::Arrow),
+        }
+    }
+
+    /// Overrides the cursor style for a hand-rolled drag, until the next mouse-up.
+    ///
+    /// [`Self::set_window_cursor_style`] lives for a single painted frame, and
+    /// hover cursors come from the hit test of the last completed frame. An
+    /// element that the app moves under the pointer during a drag (a sidebar
+    /// edge, a splitter) therefore loses the cursor to whatever is painted
+    /// behind it on every mouse event. An override holds one style for the
+    /// whole gesture; GPUI clears it on mouse-up, so handlers do not need to
+    /// undo it.
+    ///
+    /// Call it from a `MouseDown` handler; pass `None` to clear it early.
+    pub fn set_custom_drag_cursor_style(&mut self, style: Option<CursorStyle>, cx: &mut App) {
+        if self.custom_drag_cursor_style != style {
+            self.custom_drag_cursor_style = style;
+            self.reset_cursor_style(cx);
         }
     }
 
@@ -3605,16 +3651,30 @@ impl Window {
             PlatformInput::MouseMove(mouse_move) => {
                 self.mouse_position = mouse_move.position;
                 self.modifiers = mouse_move.modifiers;
+                // A release outside the window (or a capture lost to another
+                // app) can arrive as a plain move instead of a mouse-up.
+                if mouse_move.pressed_button.is_none() {
+                    self.pressed_mouse_button = None;
+                    self.custom_drag_cursor_style = None;
+                }
                 PlatformInput::MouseMove(mouse_move)
             }
             PlatformInput::MouseDown(mouse_down) => {
                 self.mouse_position = mouse_down.position;
                 self.modifiers = mouse_down.modifiers;
+                self.pressed_mouse_button = Some(mouse_down.button);
+                // A new press starts a new gesture; a handler may set an override
+                // for it during this dispatch.
+                self.custom_drag_cursor_style = None;
                 PlatformInput::MouseDown(mouse_down)
             }
             PlatformInput::MouseUp(mouse_up) => {
                 self.mouse_position = mouse_up.position;
                 self.modifiers = mouse_up.modifiers;
+                if self.pressed_mouse_button == Some(mouse_up.button) {
+                    self.pressed_mouse_button = None;
+                }
+                self.custom_drag_cursor_style = None;
                 PlatformInput::MouseUp(mouse_up)
             }
             PlatformInput::MouseExited(mouse_exited) => {

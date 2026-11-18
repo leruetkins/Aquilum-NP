@@ -860,6 +860,7 @@ impl AppView {
                                         span,
                                         initial_ratio: init_ratio,
                                     });
+                                    window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ResizeColumn), cx);
                                     cx.notify();
                                 })),
                         ),
@@ -979,6 +980,7 @@ impl AppView {
                                                 span,
                                                 initial_ratio: init_ratio,
                                             });
+                                            window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ResizeColumn), cx);
                                             cx.notify();
                                         }))
                                 );
@@ -1026,6 +1028,7 @@ impl AppView {
                                                 span,
                                                 initial_ratio: init_ratio,
                                             });
+                                            window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ResizeRow), cx);
                                             cx.notify();
                                         }))
                                 );
