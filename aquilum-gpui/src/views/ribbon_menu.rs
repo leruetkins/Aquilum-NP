@@ -5,7 +5,7 @@ use gpui::{
 
 use crate::icons;
 use crate::sync::SyncStatus;
-use crate::theme::Theme;
+use crate::theme::{Theme, MENU_ITEM_FONT_SIZE, MENU_ITEM_HEIGHT};
 use crate::views::app_view::AppView;
 use crate::views::notification::NotificationType;
 use crate::views::settings_view::SettingsTab;
@@ -630,7 +630,7 @@ impl AppView {
                             .items_center()
                             .justify_between()
                             .px_2p5()
-                            .py_1p5()
+                            .h(px(MENU_ITEM_HEIGHT))
                             .rounded_md()
                             .cursor_pointer()
                             .hover(|h| h.bg(theme.bg_hover))
@@ -643,7 +643,7 @@ impl AppView {
                                     .child(icons::icon(item.icon, 15.0, theme.text_secondary))
                                     .child(
                                         div()
-                                            .text_sm()
+                                            .text_size(px(MENU_ITEM_FONT_SIZE))
                                             .text_color(theme.text_primary)
                                             .child(item.title),
                                     ),
@@ -679,14 +679,14 @@ impl AppView {
                             .items_center()
                             .gap_2p5()
                             .px_2p5()
-                            .py_1p5()
+                            .h(px(MENU_ITEM_HEIGHT))
                             .rounded_md()
                             .cursor_pointer()
                             .hover(|h| h.bg(theme.bg_hover))
                             .child(icons::icon(icons::ICON_PANEL_LEFT, 15.0, theme.text_secondary))
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_size(px(MENU_ITEM_FONT_SIZE))
                                     .text_color(theme.text_primary)
                                     .child(hide_panel_label),
                             )

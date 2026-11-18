@@ -4,7 +4,7 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseMoveEvent, SharedString, Window,
 };
 use crate::icons;
-use crate::theme::Theme;
+use crate::theme::{Theme, MENU_ITEM_FONT_SIZE, MENU_ITEM_HEIGHT};
 use crate::views::app_view::AppView;
 use super::data::*;
 
@@ -1355,7 +1355,7 @@ impl AppView {
                 .items_center()
                 .gap_2()
                 .px_2()
-                .py_1p5()
+                .h(px(MENU_ITEM_HEIGHT))
                 .rounded_md()
                 .cursor_pointer()
                 .hover(|h| h.bg(theme.bg_hover))
@@ -1371,7 +1371,7 @@ impl AppView {
                 .child(icons::icon(icon_svg, 13.0, icon_color))
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(px(MENU_ITEM_FONT_SIZE))
                         .text_color(text_color)
                         .child(label),
                 )

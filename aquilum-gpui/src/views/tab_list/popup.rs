@@ -11,7 +11,7 @@ use gpui::{
 use crate::blink_manager::BlinkManager;
 use crate::icons;
 use crate::snap::{snap_x, snapped_span};
-use crate::theme::Theme;
+use crate::theme::{Theme, MENU_ITEM_FONT_SIZE};
 use super::model::*;
 
 /// Dropdown list of open tabs with cursor driven scrolling.
@@ -584,7 +584,7 @@ impl TabListPopup {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_xs()
+                                    .text_size(px(MENU_ITEM_FONT_SIZE))
                                     .font_family(font_family)
                                     .text_color(text_primary)
                                     .child(title),
@@ -608,7 +608,7 @@ impl TabListPopup {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_xs()
+                        .text_size(px(MENU_ITEM_FONT_SIZE))
                         .font_family(font_family)
                         .text_color(text_primary)
                         .child(title),
@@ -671,7 +671,7 @@ impl TabListPopup {
             .child(icons::icon(icon, ICON_SIZE, self.theme.text_secondary))
             .child(
                 div()
-                    .text_xs()
+                    .text_size(px(MENU_ITEM_FONT_SIZE))
                     .text_color(self.theme.text_primary)
                     .child(label),
             )

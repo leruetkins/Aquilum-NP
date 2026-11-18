@@ -5,7 +5,7 @@ use gpui::{
 };
 use crate::blink_manager::BlinkTarget;
 use crate::icons;
-use crate::theme::Theme;
+use crate::theme::{Theme, MENU_ITEM_FONT_SIZE, MENU_ITEM_HEIGHT};
 use crate::views::app_view::AppView;
 use crate::views::sidebar::file_actions;
 use crate::views::sidebar::folder_actions;
@@ -143,7 +143,7 @@ impl AppView {
 
         div()
             .id(id)
-            .h(px(28.0))
+            .h(px(MENU_ITEM_HEIGHT))
             .flex()
             .flex_row()
             .items_center()
@@ -172,7 +172,7 @@ impl AppView {
                     .child(icons::icon(icon_path, 14.0, icon_color))
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(MENU_ITEM_FONT_SIZE))
                             .text_color(text_color)
                             .child(label),
                     ),
@@ -201,7 +201,7 @@ impl AppView {
 
         div()
             .id(id)
-            .h(px(28.0))
+            .h(px(MENU_ITEM_HEIGHT))
             .flex()
             .flex_row()
             .items_center()
@@ -230,7 +230,7 @@ impl AppView {
                     .child(icons::icon(icon_path, 14.0, icon_color))
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(MENU_ITEM_FONT_SIZE))
                             .text_color(text_color)
                             .child(label),
                     ),
@@ -1013,7 +1013,7 @@ impl AppView {
                             let p = target_for_copy.clone();
                             div()
                                 .id("more-sub-copy-rel")
-                                .h(px(28.0))
+                                .h(px(MENU_ITEM_HEIGHT))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -1025,7 +1025,7 @@ impl AppView {
                                 .child(icons::icon(icons::ICON_COPY, 13.0, theme.text_secondary))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(MENU_ITEM_FONT_SIZE))
                                         .text_color(theme.text_primary)
                                         .child(self.t("app.more_options.copy_relative_path")),
                                 )
@@ -1054,7 +1054,7 @@ impl AppView {
                             let p = target_for_copy.clone();
                             div()
                                 .id("more-sub-copy-abs")
-                                .h(px(28.0))
+                                .h(px(MENU_ITEM_HEIGHT))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -1066,7 +1066,7 @@ impl AppView {
                                 .child(icons::icon(icons::ICON_COPY, 13.0, theme.text_secondary))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(MENU_ITEM_FONT_SIZE))
                                         .text_color(theme.text_primary)
                                         .child(self.t("app.more_options.copy_absolute_path")),
                                 )
@@ -1091,7 +1091,7 @@ impl AppView {
                             let p = target_for_copy.clone();
                             div()
                                 .id("more-sub-copy-obsidian-url")
-                                .h(px(28.0))
+                                .h(px(MENU_ITEM_HEIGHT))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -1103,7 +1103,7 @@ impl AppView {
                                 .child(icons::icon(icons::ICON_LINK, 13.0, theme.text_secondary))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(MENU_ITEM_FONT_SIZE))
                                         .text_color(theme.text_primary)
                                         .child(self.t("app.more_options.as_obsidian_url")),
                                 )
@@ -1172,7 +1172,7 @@ impl AppView {
                             let p = target_for_linked.clone();
                             div()
                                 .id("more-sub-linked-preview")
-                                .h(px(28.0))
+                                .h(px(MENU_ITEM_HEIGHT))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -1184,7 +1184,7 @@ impl AppView {
                                 .child(icons::icon(icons::ICON_BOOK_OPEN, 13.0, theme.text_secondary))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(MENU_ITEM_FONT_SIZE))
                                         .text_color(theme.text_primary)
                                         .child(self.t("app.more_options.linked_reading_view")),
                                 )
@@ -1203,7 +1203,7 @@ impl AppView {
                         .child(
                             div()
                                 .id("more-sub-linked-backlinks")
-                                .h(px(28.0))
+                                .h(px(MENU_ITEM_HEIGHT))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -1215,7 +1215,7 @@ impl AppView {
                                 .child(icons::icon(icons::ICON_LINK, 13.0, theme.text_secondary))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(MENU_ITEM_FONT_SIZE))
                                         .text_color(theme.text_primary)
                                         .child(self.t("app.more_options.backlinks")),
                                 )
@@ -1230,7 +1230,7 @@ impl AppView {
                         .child(
                             div()
                                 .id("more-sub-linked-outgoing")
-                                .h(px(28.0))
+                                .h(px(MENU_ITEM_HEIGHT))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -1242,7 +1242,7 @@ impl AppView {
                                 .child(icons::icon(icons::ICON_EXTERNAL_LINK, 13.0, theme.text_secondary))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(MENU_ITEM_FONT_SIZE))
                                         .text_color(theme.text_primary)
                                         .child(self.t("app.more_options.outgoing_links")),
                                 )

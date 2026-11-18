@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::{div, prelude::*, px, Context, IntoElement, MouseButton, Styled, Window};
 
 use crate::icons;
-use crate::theme::Theme;
+use crate::theme::{Theme, MENU_ITEM_FONT_SIZE, MENU_ITEM_HEIGHT};
 use crate::views::app_view::AppView;
 
 /// State for the Obsidian-style editor tab context menu.
@@ -242,7 +242,7 @@ impl AppView {
     ) -> impl IntoElement {
         div()
             .id(id)
-            .h(px(30.0))
+            .h(px(MENU_ITEM_HEIGHT))
             .flex()
             .flex_row()
             .items_center()
@@ -257,7 +257,7 @@ impl AppView {
                     .items_center()
                     .gap_2p5()
                     .child(icons::icon(icon_path, 14.0, theme.text_secondary))
-                    .child(div().text_sm().text_color(theme.text_primary).child(label)),
+                    .child(div().text_size(px(MENU_ITEM_FONT_SIZE)).text_color(theme.text_primary).child(label)),
             )
             .on_click(cx.listener(move |this, _, window, cx| {
                 on_click(this, window, cx);
@@ -275,9 +275,9 @@ impl AppView {
         let window_h: f32 = window_size.height.into();
         let window_w: f32 = window_size.width.into();
 
-        // 9 rows x 30px + 3 dividers (~9px each) + panel padding (~8px).
+        // 9 rows x 28px + 3 dividers (9px each) + panel padding (12px).
         let menu_w = 270.0;
-        let menu_h = 312.0;
+        let menu_h = 291.0;
 
         let click_y = self.tab_context_menu.position_y;
         let menu_y = if click_y + menu_h + 36.0 > window_h {

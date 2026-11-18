@@ -1,7 +1,7 @@
 use gpui::{px, Pixels, Rgba, SharedString};
 
 /// Height of a single row (px). The keyboard navigation relies on it.
-pub const ROW_HEIGHT: f32 = 28.0;
+pub const ROW_HEIGHT: f32 = crate::theme::MENU_ITEM_HEIGHT;
 
 /// Dead zone at the top and bottom edge, as a fraction of the list height...
 pub(crate) const EDGE_PAD_FRACTION: f32 = 0.10;

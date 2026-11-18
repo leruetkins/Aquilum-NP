@@ -4,7 +4,7 @@ use gpui::{
     Styled, Window,
 };
 use crate::icons;
-use crate::theme::Theme;
+use crate::theme::{Theme, MENU_ITEM_FONT_SIZE, MENU_ITEM_HEIGHT};
 use crate::views::app_view::AppView;
 use crate::views::sidebar::folder_actions;
 
@@ -108,15 +108,15 @@ impl AppView {
         // Item 8 ("Copy path") vertical position inside menu container:
         // Precise vertical coordinate calculation for the submenu:
         // - Top internal padding of the menu panel: p_1() = 4px
-        // - 8 menu items preceding Item 8 (indices 0..7), each with fixed height h(px(26.0)):
-        //   8 * 26px = 208px
+        // - 8 menu items preceding Item 8 (indices 0..7), each with fixed height h(px(MENU_ITEM_HEIGHT)):
+        //   8 * 28px = 224px
         // - 2 section dividers (Divider 1 & Divider 2): each takes ~8px in Taffy flexbox (h_px + my_1):
         //   2 * 8px = 16px
-        // Total offset of Item 8 top edge: 4px + 208px + 16px = 228px.
-        // Because the submenu container also has identical top padding p_1() (4px) and 26px item height,
-        // submenu_y = menu_y + 228px aligns the first submenu item ("Relative path")
+        // Total offset of Item 8 top edge: 4px + 224px + 16px = 244px.
+        // Because the submenu container also has identical top padding p_1() (4px) and 28px item height,
+        // submenu_y = menu_y + 244px aligns the first submenu item ("Relative path")
         // pixel-perfect horizontally with the parent item ("Copy path").
-        let submenu_y = menu_y + 228.0;
+        let submenu_y = menu_y + 244.0;
 
         let is_submenu_open = self.folder_context_menu.hovered_item == Some(8);
         let target_path = self.folder_context_menu.folder_path.clone();
@@ -141,7 +141,7 @@ impl AppView {
 
             div()
                 .id(id)
-                .h(px(26.0))
+                .h(px(MENU_ITEM_HEIGHT))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -166,7 +166,7 @@ impl AppView {
                         .child(icons::icon(icon_path, 13.0, icon_color))
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(px(MENU_ITEM_FONT_SIZE))
                                 .text_color(text_color)
                                 .child(label),
                         ),
@@ -409,7 +409,7 @@ impl AppView {
                     .child(
                         div()
                             .id("menu-item-copy-path-parent")
-                            .h(px(26.0))
+                            .h(px(MENU_ITEM_HEIGHT))
                             .flex()
                             .flex_row()
                             .items_center()
@@ -434,7 +434,7 @@ impl AppView {
                                     .child(icons::icon(icons::ICON_COPY, 13.0, theme.text_secondary))
                                     .child(
                                         div()
-                                            .text_xs()
+                                            .text_size(px(MENU_ITEM_FONT_SIZE))
                                             .text_color(theme.text_primary)
                                             .child(self.t("sidebar.copy_path")),
                                     ),
@@ -632,7 +632,7 @@ impl AppView {
                         .child(
                             div()
                                 .id("submenu-copy-rel-path")
-                                .h(px(26.0))
+                                .h(px(MENU_ITEM_HEIGHT))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -643,7 +643,7 @@ impl AppView {
                                 .hover(|h| h.bg(theme.bg_hover))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(MENU_ITEM_FONT_SIZE))
                                         .text_color(theme.text_primary)
                                         .child(self.t("sidebar.copy_relative_path")),
                                 )
@@ -661,7 +661,7 @@ impl AppView {
                         .child(
                             div()
                                 .id("submenu-copy-abs-path")
-                                .h(px(26.0))
+                                .h(px(MENU_ITEM_HEIGHT))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -672,7 +672,7 @@ impl AppView {
                                 .hover(|h| h.bg(theme.bg_hover))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(MENU_ITEM_FONT_SIZE))
                                         .text_color(theme.text_primary)
                                         .child(self.t("sidebar.copy_absolute_path")),
                                 )

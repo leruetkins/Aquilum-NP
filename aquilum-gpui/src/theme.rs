@@ -1,5 +1,11 @@
 use gpui::{rgb, rgba, Rgba, WindowAppearance};
 
+/// Font size of a context-menu item label, in pixels.
+pub const MENU_ITEM_FONT_SIZE: f32 = 13.0;
+
+/// Height of a context-menu item row, in pixels.
+pub const MENU_ITEM_HEIGHT: f32 = 28.0;
+
 /// A selectable theme preset: a stable id persisted in the config and the
 /// display name shown in the interface settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

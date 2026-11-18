@@ -6,7 +6,7 @@ use gpui::{
 
 use crate::icons;
 use crate::plugins::api::HostEvent;
-use crate::theme::Theme;
+use crate::theme::{Theme, MENU_ITEM_FONT_SIZE, MENU_ITEM_HEIGHT};
 use crate::views::app_view::AppView;
 
 /// Represents an item or section header inside a context menu.
@@ -1093,7 +1093,7 @@ impl AppView {
 
             let row = div()
                 .id(gpui::ElementId::from(gpui::SharedString::from(format!("ctx-item-{:?}", item_path))))
-                .h(px(28.0))
+                .h(px(MENU_ITEM_HEIGHT))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -1141,7 +1141,7 @@ impl AppView {
                         })
                         .child(
                             div()
-                                .text_sm()
+                                .text_size(px(MENU_ITEM_FONT_SIZE))
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis()

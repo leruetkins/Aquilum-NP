@@ -31,11 +31,13 @@ use crate::views::scrollbar::{overlay_scrollbar, ScrollbarGeometry, ScrollbarSty
 /// exact, so the scrollbar still reflects the full list.
 ///
 /// The value reproduces the row stride used before virtualization: the label line box
-/// (`text_xs` = 12px at gpui's default `phi()` line height -> 19px) plus 8px of vertical
-/// padding (`py_1`), plus the 2px the container gap used to add. Text rhythm and total
-/// content height are therefore unchanged, while the explicit height makes the geometry
-/// exact instead of relying on text metrics.
+/// (`SIDEBAR_LABEL_FONT_SIZE` = 13px at gpui's default `phi()` line height -> 21px) plus
+/// 8px of vertical padding. Text rhythm and total content height are therefore unchanged,
+/// while the explicit height makes the geometry exact instead of relying on text metrics.
 const SIDEBAR_ROW_H: f32 = 29.0;
+
+/// Font size of a sidebar tree label, in pixels.
+const SIDEBAR_LABEL_FONT_SIZE: f32 = 13.0;
 
 /// Pixels of rows rendered above and below the viewport, so fast scrolling does not
 /// expose blank edges before the next frame catches up.
@@ -1139,7 +1141,7 @@ impl AppView {
                     self.render_bookmark_rename_input(theme, window, cx)
                 } else {
                     div()
-                        .text_xs()
+                        .text_size(px(SIDEBAR_LABEL_FONT_SIZE))
                         .text_color(label_color)
                         .truncate()
                         .child(label)
@@ -1302,7 +1304,7 @@ impl AppView {
                     self.render_bookmark_rename_input(theme, window, cx)
                 } else {
                     div()
-                        .text_xs()
+                        .text_size(px(SIDEBAR_LABEL_FONT_SIZE))
                         .truncate()
                         .child(label)
                         .into_any_element()
