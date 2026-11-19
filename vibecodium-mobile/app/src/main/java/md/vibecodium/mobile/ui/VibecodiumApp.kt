@@ -1047,6 +1047,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
         val navbarEnabled = state.settings.navbarEnabled
         val focusManager = LocalFocusManager.current
         var chromeHidden by remember { mutableStateOf(false) }
+        var formatMenuOpen by remember { mutableStateOf(false) }
         val lastAnchor = remember { floatArrayOf(0f) }
         val lastScrollVal = remember { floatArrayOf(0f) }
         val chromeProgress = animateFloatAsState(
@@ -1055,7 +1056,11 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             label = "chrome",
         )
         val navProgress = animateFloatAsState(
-            targetValue = if (navbarEnabled && !imeVisible && !chromeHidden) 1f else 0f,
+            targetValue = if (navbarEnabled && !imeVisible && !chromeHidden && !formatMenuOpen) {
+                1f
+            } else {
+                0f
+            },
             animationSpec = tween(160),
             label = "navbar",
         )
@@ -1129,6 +1134,8 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 // Drawers are full-screen browsing surfaces; the keyboard
                 // must not cover them.
                 state.drawer != null,
+                formatMenuOpen,
+                { formatMenuOpen = it },
                 onEditorScroll,
             )
 
@@ -1167,28 +1174,32 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 )
             }
 
-            Box(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .graphicsLayer {
-                        alpha = navProgress.value
-                        translationY =
-                            (NavbarHeight.toPx() + 24.dp.toPx()) * (1f - navProgress.value)
-                    }
-                    .semantics {
-                        if (!navbarEnabled || imeVisible || navProgress.value < 0.05f) {
-                            invisibleToUser()
-                        }
-                    },
-            ) {
-                MobileNavbar(
-                    state,
-                    controller,
+            // The formatting sheet lives inside the editor subtree and draws
+            // under this bottom bar, so keep the bar out of its way entirely.
+            if (!formatMenuOpen) {
+                Box(
                     Modifier
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                        .fillMaxWidth()
-                        .widthIn(max = 316.dp),
-                )
+                        .align(Alignment.BottomCenter)
+                        .graphicsLayer {
+                            alpha = navProgress.value
+                            translationY =
+                                (NavbarHeight.toPx() + 24.dp.toPx()) * (1f - navProgress.value)
+                        }
+                        .semantics {
+                            if (!navbarEnabled || imeVisible || navProgress.value < 0.05f) {
+                                invisibleToUser()
+                            }
+                        },
+                ) {
+                    MobileNavbar(
+                        state,
+                        controller,
+                        Modifier
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .fillMaxWidth()
+                            .widthIn(max = 316.dp),
+                    )
+                }
             }
 
             if (state.drawer == Drawer.Left) {
@@ -1261,6 +1272,8 @@ private fun EditorArea(
     navbarEnabled: Boolean,
     chromeProgress: State<Float>,
     keyboardHidden: Boolean,
+    formatMenuOpen: Boolean,
+    onFormatMenuOpenChange: (Boolean) -> Unit,
     onEditorScroll: (Float, Float, Boolean) -> Unit,
 ) {
     val density = LocalDensity.current
@@ -1299,6 +1312,8 @@ private fun EditorArea(
             bottomInsetPx,
             chromeProgress,
             keyboardHidden,
+            formatMenuOpen,
+            onFormatMenuOpenChange,
             onEditorScroll,
             editor.highlightCurrentLine,
             editor.highlightWrappedLineInGutter,
@@ -1352,6 +1367,8 @@ private fun EditorScreen(
     bottomInsetPx: Float,
     chromeProgress: State<Float>,
     keyboardHidden: Boolean,
+    formatMenuOpen: Boolean,
+    onFormatMenuOpenChange: (Boolean) -> Unit,
     onEditorScroll: (Float, Float, Boolean) -> Unit,
     highlightCurrentLine: Boolean,
     highlightWrappedLineInGutter: Boolean,
@@ -1370,6 +1387,9 @@ private fun EditorScreen(
     var keyboardPrompt by remember { mutableStateOf(!preview) }
     val onViewReady: (NativeEditorView) -> Unit = remember { { editorView = it } }
     val onCaretPlaced: () -> Unit = remember { { keyboardPrompt = true } }
+    LaunchedEffect(tab.path, preview) {
+        onFormatMenuOpenChange(false)
+    }
     LaunchedEffect(editorView, tab.path, state.activeTab, preview, state.focusRequestId) {
         val view = editorView ?: return@LaunchedEffect
         view.recalculateScrollMetrics()
@@ -1450,6 +1470,11 @@ private fun EditorScreen(
             onEditorScroll,
             onViewReady,
             onCaretPlaced,
+            onFormatMenuRequest = {
+                // The sheet takes most of the screen; free that room now.
+                editorView?.hideKeyboard()
+                onFormatMenuOpenChange(true)
+            },
             highlightCurrentLine,
             highlightWrappedLineInGutter,
         )
@@ -1523,6 +1548,15 @@ private fun EditorScreen(
                 },
         ) {
             ViewHeader(state, tab, controller, onHideKeyboard = { editorView?.hideKeyboard() })
+        }
+        if (formatMenuOpen) {
+            FormattingMenuSheet(
+                onDismiss = { onFormatMenuOpenChange(false) },
+                onAction = { action ->
+                    onFormatMenuOpenChange(false)
+                    editorView?.applyFormatting(action)
+                },
+            )
         }
     }
 }
@@ -2119,6 +2153,7 @@ private fun SourceEditor(
     onScroll: (Float, Float, Boolean) -> Unit,
     onViewReady: (NativeEditorView) -> Unit,
     onCaretPlaced: () -> Unit,
+    onFormatMenuRequest: () -> Unit,
     highlightCurrentLine: Boolean,
     highlightWrappedLineInGutter: Boolean,
 ) {
@@ -2136,6 +2171,7 @@ private fun SourceEditor(
                 view.setOnHistoryChanged { canUndo, canRedo ->
                     controller.setEditorHistoryState(canUndo, canRedo)
                 }
+                view.setOnFormatMenuRequest(onFormatMenuRequest)
                 onViewReady(view)
             }
         },

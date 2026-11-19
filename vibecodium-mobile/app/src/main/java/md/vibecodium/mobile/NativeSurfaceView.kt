@@ -1155,6 +1155,7 @@ class NativeEditorView(
         const val MENU_CUT = 2
         const val MENU_PASTE = 3
         const val MENU_SELECT_ALL = 4
+        const val MENU_MORE = 5
     }
 
     private var mirrorText = ""
@@ -1213,6 +1214,7 @@ class NativeEditorView(
     /** Whether the gutter wash follows every wrapped row; off by default. */
     private var gutterWrappedLineHighlight = false
     private var onHistoryChanged: ((Boolean, Boolean) -> Unit)? = null
+    private var onFormatMenuRequest: (() -> Unit)? = null
     private var reportedCanUndo = false
     private var reportedCanRedo = false
     private var caretVisible = true
@@ -1308,6 +1310,9 @@ class NativeEditorView(
                 menu.add(Menu.NONE, MENU_PASTE, 2, "Paste")
             }
             menu.add(Menu.NONE, MENU_SELECT_ALL, 3, "Select all")
+            if (!inPreview) {
+                menu.add(Menu.NONE, MENU_MORE, 4, "⋮")
+            }
             return true
         }
 
@@ -1325,6 +1330,11 @@ class NativeEditorView(
                     selectNative(0, mirrorText.length)
                     mode.invalidate()
                     mode.invalidateContentRect()
+                    return true
+                }
+                MENU_MORE -> {
+                    onFormatMenuRequest?.invoke()
+                    mode.finish()
                     return true
                 }
             }
@@ -1360,6 +1370,7 @@ class NativeEditorView(
                 menu.add(Menu.NONE, MENU_PASTE, 0, "Paste")
             }
             menu.add(Menu.NONE, MENU_SELECT_ALL, 1, "Select all")
+            menu.add(Menu.NONE, MENU_MORE, 2, "⋮")
             return true
         }
 
@@ -1372,6 +1383,11 @@ class NativeEditorView(
                     selectNative(0, mirrorText.length)
                     mode.finish()
                     showSelectionActions()
+                    return true
+                }
+                MENU_MORE -> {
+                    onFormatMenuRequest?.invoke()
+                    mode.finish()
                     return true
                 }
             }
@@ -3272,6 +3288,11 @@ class NativeEditorView(
         reportHistoryState()
     }
 
+    /** Receives the "⋮" tap in the selection and insertion toolbars. */
+    fun setOnFormatMenuRequest(listener: (() -> Unit)?) {
+        onFormatMenuRequest = listener
+    }
+
     fun undo() = applyHistory(undo = true)
 
     fun redo() = applyHistory(undo = false)
@@ -3339,6 +3360,27 @@ class NativeEditorView(
         if (showHandle) applyInsertionHandleVisible(true)
         notifySelectionChanged()
         requestRender()
+    }
+
+    /**
+     * Applies a formatting command to the current selection or caret and keeps
+     * the touched text selected, so markers can be removed or extended without
+     * selecting the range again.
+     */
+    fun applyFormatting(action: FormattingAction) {
+        if (inPreview) return
+        val edit = MarkdownFormatting.apply(mirrorText, mirrorAnchor, mirrorSelection, action)
+        if (edit.start == edit.end && edit.replacement.isEmpty()) return
+        applyReplace(edit.start, edit.end, edit.replacement)
+        val start = (edit.start + edit.selectStart).coerceIn(0, mirrorText.length)
+        val end = (edit.start + edit.selectEnd).coerceIn(0, mirrorText.length)
+        selectNative(start, end)
+        if (start == end) {
+            applyInsertionHandleVisible(true)
+        }
+        // Keep the tab's stored selection in sync with the range kept after
+        // formatting; applyReplace reported the plain end-of-edit caret.
+        onTextChanged(mirrorText, mirrorSelection)
     }
 
     private fun applyReplace(start: Int, end: Int, text: String) {
