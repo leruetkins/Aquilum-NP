@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "Pesquisa rápida no cofre...",
+    "middle_scroll_hint": "⇅ Rolagem com botão do meio — mova o mouse e solte o botão",
+    "middle_scroll_hint_short": "⇅ Rolagem com botão do meio",
     "more_options": {
       "property_added": "Propriedade adicionada à nota",
       "show_backlinks": "Mostrar backlinks",

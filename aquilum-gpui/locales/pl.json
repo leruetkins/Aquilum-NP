@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "Szybkie przeszukiwanie skarbca...",
+    "middle_scroll_hint": "⇅ Przewijanie środkowym przyciskiem — przesuwaj mysz, puść przycisk",
+    "middle_scroll_hint_short": "⇅ Przewijanie środkowym przyciskiem",
     "more_options": {
       "property_added": "Nieruchomość dodana do notatki",
       "show_backlinks": "Pokaż linki zwrotne",

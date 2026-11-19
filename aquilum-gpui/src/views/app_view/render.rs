@@ -1913,7 +1913,10 @@ if let Some(new_scroll) = new_active_scroll {
                             .border_color(theme.border)
                             .text_xs()
                             .text_color(theme.text_muted)
-                            .child("⇅ СКМ-скролл — двигайте мышь, отпустите СКМ"),
+                            .child(crate::i18n::t(
+                                "app.middle_scroll_hint",
+                                &self.config.ui.language,
+                            )),
                     )
                     .with_priority(1000),
                 )

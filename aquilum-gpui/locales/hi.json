@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "त्वरित तिजोरी खोज...",
+    "middle_scroll_hint": "⇅ मध्य बटन से स्क्रॉल — माउस घुमाएँ, बटन छोड़ें",
+    "middle_scroll_hint_short": "⇅ मध्य बटन से स्क्रॉल",
     "more_options": {
       "property_added": "संपत्ति नोट में जोड़ी गई",
       "show_backlinks": "बैकलिंक दिखाएँ",

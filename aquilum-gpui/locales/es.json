@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "Búsqueda rápida de bóveda...",
+    "middle_scroll_hint": "⇅ Desplazamiento con botón central — mueva el ratón y suelte el botón",
+    "middle_scroll_hint_short": "⇅ Desplazamiento con botón central",
     "more_options": {
       "property_added": "Propiedad agregada a la nota",
       "show_backlinks": "Mostrar vínculos de retroceso",

@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "Tìm kiếm kho nhanh...",
+    "middle_scroll_hint": "⇅ Cuộn bằng nút giữa — di chuyển chuột, thả nút",
+    "middle_scroll_hint_short": "⇅ Cuộn bằng nút giữa",
     "more_options": {
       "property_added": "Tài sản được thêm vào ghi chú",
       "show_backlinks": "Hiển thị liên kết ngược",

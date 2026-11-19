@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "بحث سريع في الخزنة...",
+    "middle_scroll_hint": "⇅ تمرير بزر الفأرة الأوسط — حرّك الفأرة ثم أفلت الزر",
+    "middle_scroll_hint_short": "⇅ تمرير بزر الفأرة الأوسط",
     "more_options": {
       "property_added": "تمت إضافة الخاصية إلى الملاحظة",
       "show_backlinks": "إظهار الروابط الخلفية",

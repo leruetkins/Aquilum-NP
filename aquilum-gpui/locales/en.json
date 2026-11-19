@@ -981,6 +981,8 @@
   },
   "app": {
     "search_placeholder": "Quick vault search...",
+    "middle_scroll_hint": "⇅ Middle-button scroll — move the mouse, release the button",
+    "middle_scroll_hint_short": "⇅ Middle-button scroll",
     "more_options": {
       "property_added": "Property added to note",
       "show_backlinks": "Show backlinks",

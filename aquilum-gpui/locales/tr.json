@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "Hızlı kasa araması...",
+    "middle_scroll_hint": "⇅ Orta tuşla kaydırma — fareyi hareket ettirin, tuşu bırakın",
+    "middle_scroll_hint_short": "⇅ Orta tuşla kaydırma",
     "more_options": {
       "property_added": "Nota özellik eklendi",
       "show_backlinks": "Geri bağlantıları göster",

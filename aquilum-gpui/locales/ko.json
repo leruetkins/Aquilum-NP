@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "빠른 금고 검색...",
+    "middle_scroll_hint": "⇅ 휠 버튼 스크롤 — 마우스를 움직이고 버튼을 놓으세요",
+    "middle_scroll_hint_short": "⇅ 휠 버튼 스크롤",
     "more_options": {
       "property_added": "메모에 속성이 추가됨",
       "show_backlinks": "백링크 표시",

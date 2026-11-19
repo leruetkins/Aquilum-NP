@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "Швидкий пошук у сховищі...",
+    "middle_scroll_hint": "⇅ СКМ-скрол — рухайте мишею, відпустіть СКМ",
+    "middle_scroll_hint_short": "⇅ СКМ-скрол",
     "more_options": {
       "property_added": "Властивість додано до примітки",
       "show_backlinks": "Показати зворотні посилання",

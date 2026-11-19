@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "Rychlé hledání trezoru...",
+    "middle_scroll_hint": "⇅ Rolování prostředním tlačítkem — pohybujte myší, tlačítko uvolněte",
+    "middle_scroll_hint_short": "⇅ Rolování prostředním tlačítkem",
     "more_options": {
       "property_added": "Nemovitost přidána do poznámky",
       "show_backlinks": "Zobrazit zpětné odkazy",

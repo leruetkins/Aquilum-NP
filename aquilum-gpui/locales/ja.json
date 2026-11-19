@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "クイック保管庫検索...",
+    "middle_scroll_hint": "⇅ 中ボタンでスクロール — マウスを動かし、ボタンを離します",
+    "middle_scroll_hint_short": "⇅ 中ボタンでスクロール",
     "more_options": {
       "property_added": "物件をメモに追加しました",
       "show_backlinks": "バックリンクを表示する",

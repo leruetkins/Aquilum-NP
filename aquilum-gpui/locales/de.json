@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "Schnelle Tresorsuche...",
+    "middle_scroll_hint": "⇅ Scrollen mit mittlerer Maustaste — Maus bewegen, Taste loslassen",
+    "middle_scroll_hint_short": "⇅ Scrollen mit mittlerer Maustaste",
     "more_options": {
       "property_added": "Eigenschaft zur Notiz hinzugefügt",
       "show_backlinks": "Backlinks anzeigen",

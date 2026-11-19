@@ -306,6 +306,7 @@ impl AppView {
             scrollbar_drag_active: self.plugin_modal_scrollbar_drag.active,
             middle_scroll_active: self.plugin_modal_middle_active,
             smart_bounds: Some(self.plugin_modal_smart_bounds.clone()),
+            language: Some(self.config.ui.language.as_str()),
         };
 
         let rendered_modal = crate::plugins::ui::render_ui_node(

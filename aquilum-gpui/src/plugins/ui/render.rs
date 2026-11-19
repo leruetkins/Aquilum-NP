@@ -165,6 +165,8 @@ pub struct PluginScrollContext<'a> {
     pub scrollbar_drag_active: bool,
     pub middle_scroll_active: bool,
     pub smart_bounds: Option<std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
+    /// Host UI language for chrome strings the plugin payload does not carry.
+    pub language: Option<&'a str>,
 }
 
 /// Renders a declarative UI node into GPUI elements using application theme tokens.
@@ -438,7 +440,10 @@ fn render_ui_node_inner<V: UiSink>(
                                     .border_color(theme.border)
                                     .text_xs()
                                     .text_color(theme.text_muted)
-                                    .child("⇅ СКМ-скролл"),
+                                    .child(crate::i18n::t(
+                                        "app.middle_scroll_hint_short",
+                                        ctx.language.unwrap_or("en"),
+                                    )),
                             );
                         }
 

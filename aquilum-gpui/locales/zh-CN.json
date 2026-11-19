@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "快速库搜索...",
+    "middle_scroll_hint": "⇅ 中键滚动 — 移动鼠标，松开中键",
+    "middle_scroll_hint_short": "⇅ 中键滚动",
     "more_options": {
       "property_added": "添加到注释的属性",
       "show_backlinks": "显示反向链接",

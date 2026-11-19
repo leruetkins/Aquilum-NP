@@ -981,6 +981,8 @@
   },
   "app": {
     "search_placeholder": "Быстрый поиск по базе знаний...",
+    "middle_scroll_hint": "⇅ СКМ-скролл — двигайте мышь, отпустите СКМ",
+    "middle_scroll_hint_short": "⇅ СКМ-скролл",
     "more_options": {
       "property_added": "Свойство добавлено в заметку",
       "show_backlinks": "Показывать обратные ссылки",

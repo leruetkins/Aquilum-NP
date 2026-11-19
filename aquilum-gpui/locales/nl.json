@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "Snel kluis zoeken...",
+    "middle_scroll_hint": "⇅ Scrollen met middelste muisknop — muis bewegen, knop loslaten",
+    "middle_scroll_hint_short": "⇅ Scrollen met middelste muisknop",
     "more_options": {
       "property_added": "Eigendom toegevoegd aan notitie",
       "show_backlinks": "Toon backlinks",

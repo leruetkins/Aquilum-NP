@@ -622,7 +622,10 @@ impl AppView {
                     .border_color(theme.border)
                     .text_xs()
                     .text_color(theme.text_muted)
-                    .child("⇅ СКМ-скролл"),
+                    .child(crate::i18n::t(
+                        "app.middle_scroll_hint_short",
+                        &self.config.ui.language,
+                    )),
             );
         }
 

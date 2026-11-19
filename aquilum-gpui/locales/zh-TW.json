@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "快速庫搜尋...",
+    "middle_scroll_hint": "⇅ 中鍵捲動 — 移動滑鼠，放開中鍵",
+    "middle_scroll_hint_short": "⇅ 中鍵捲動",
     "more_options": {
       "property_added": "新增到註釋的屬性",
       "show_backlinks": "顯示反向連結",

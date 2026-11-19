@@ -995,6 +995,8 @@
   },
   "app": {
     "search_placeholder": "Snabbsökning i valv...",
+    "middle_scroll_hint": "⇅ Rulla med mittenknappen — flytta musen, släpp knappen",
+    "middle_scroll_hint_short": "⇅ Rulla med mittenknappen",
     "more_options": {
       "property_added": "Egendomen har lagts till i anteckningen",
       "show_backlinks": "Visa bakåtlänkar",
