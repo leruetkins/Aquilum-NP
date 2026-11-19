@@ -133,6 +133,16 @@ impl NotificationRegistry {
         self.items.lock().unwrap().clone()
     }
 
+    /// Returns the oldest notification: the one whose timer is running.
+    pub fn head(&self) -> Option<NotificationItem> {
+        self.items.lock().unwrap().first().cloned()
+    }
+
+    /// Returns the id of the oldest notification, if any.
+    pub fn head_id(&self) -> Option<String> {
+        self.items.lock().unwrap().first().map(|item| item.id.clone())
+    }
+
     /// Dismiss all notifications.
     pub fn clear(&self) {
         self.items.lock().unwrap().clear();
@@ -163,7 +173,11 @@ impl AppView {
             owner: None,
         };
         self.state.notifications.push(item);
-        self.spawn_notification_auto_dismiss(id.clone(), timeout_ms, cx);
+        // Only the newest notification starts a timer when it is the only one:
+        // queued toasts wait for the ones in front of them.
+        if self.state.notifications.head_id().as_deref() == Some(id.as_str()) {
+            self.spawn_notification_auto_dismiss(id.clone(), timeout_ms, cx);
+        }
         cx.notify();
         id
     }
@@ -194,15 +208,24 @@ impl AppView {
             owner,
         };
         self.state.notifications.push(item);
-        self.spawn_notification_auto_dismiss(final_id.clone(), timeout_ms, cx);
+        if self.state.notifications.head_id().as_deref() == Some(final_id.as_str()) {
+            self.spawn_notification_auto_dismiss(final_id.clone(), timeout_ms, cx);
+        }
         cx.notify();
         final_id
     }
 
-    /// Dismiss a notification by ID.
+    /// Dismiss a notification by ID. When the oldest one goes, the next in
+    /// the queue starts its own countdown.
     pub fn dismiss_notification(&mut self, id: &str, cx: &mut Context<Self>) {
+        let was_head = self.state.notifications.head_id().as_deref() == Some(id);
         if self.state.notifications.dismiss(id) {
             cx.notify();
+            if was_head {
+                if let Some(next) = self.state.notifications.head() {
+                    self.spawn_notification_auto_dismiss(next.id, next.timeout_ms, cx);
+                }
+            }
         }
     }
 
@@ -224,6 +247,11 @@ impl AppView {
         cx.foreground_executor().spawn(async move {
             background.timer(wait_dur).await;
             let _ = entity.update(&mut async_cx, |this, cx| {
+                // A head that was dismissed or pushed back by hand leaves a
+                // stale timer behind; it must not touch the next notification.
+                if this.state.notifications.head_id().as_deref() != Some(id.as_str()) {
+                    return;
+                }
                 if !this.state.notifications.is_hovered(&id) {
                     this.dismiss_notification(&id, cx);
                 } else {
@@ -412,5 +440,37 @@ mod tests {
         // Unregister plugin
         registry.unregister_all_of("test-plugin");
         assert!(registry.all().is_empty());
+    }
+
+    #[test]
+    fn test_notification_queue_keeps_creation_order() {
+        let registry = NotificationRegistry::new();
+        let make = |id: &str, timeout_ms: Option<u64>| NotificationItem {
+            id: id.into(),
+            notif_type: NotificationType::Info,
+            title: None,
+            message: id.into(),
+            timeout_ms,
+            created_at: Instant::now(),
+            is_hovered: false,
+            owner: None,
+        };
+
+        assert_eq!(registry.head_id(), None);
+
+        registry.push(make("toast-1", Some(5000)));
+        registry.push(make("toast-2", Some(3000)));
+        registry.push(make("toast-3", Some(1000)));
+
+        // Only the oldest notification is due first; the rest wait their turn.
+        assert_eq!(registry.head_id().as_deref(), Some("toast-1"));
+        assert_eq!(registry.head().map(|item| item.timeout_ms), Some(Some(5000)));
+
+        assert!(registry.dismiss("toast-1"));
+        assert_eq!(registry.head_id().as_deref(), Some("toast-2"));
+
+        // Closing a queued item does not change the head.
+        assert!(registry.dismiss("toast-3"));
+        assert_eq!(registry.head_id().as_deref(), Some("toast-2"));
     }
 }
