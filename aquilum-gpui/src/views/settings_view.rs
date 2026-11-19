@@ -406,6 +406,21 @@ pub enum ThemeSlot {
     Dark,
 }
 
+/// Ready-made daily-note file name formats, the same presets the mobile app
+/// offers.
+pub const DAILY_FORMAT_PRESETS: &[&str] = &[
+    "{{YYYY}}-{{MM}}-{{DD}}",
+    "{{DD}}-{{MM}}-{{YYYY}}",
+    "{{DD}}.{{MM}}.{{YYYY}}",
+    "{{DD}}/{{MM}}/{{YYYY}}",
+    "{{YYYY}}.{{MM}}.{{DD}}",
+    "{{YYYY}} {{MM}} {{DD}}",
+    "{{D}} {{MMMM}} {{YYYY}}",
+    "{{D}} {{MMM}} {{YYYY}}",
+    "{{MMMM}} {{D}}, {{YYYY}}",
+    "{{MMM}} {{D}}, {{YYYY}}",
+];
+
 /// Independent view entity hosting all settings tabs in a standalone OS window.
 pub struct SettingsView {
     pub model: Entity<SettingsModel>,
@@ -445,6 +460,10 @@ pub struct SettingsView {
     pub ui_font_popup_subscription: Option<Subscription>,
     pub theme_popup: Option<(ThemeSlot, gpui::Entity<TabListPopup>)>,
     pub theme_popup_subscription: Option<Subscription>,
+    pub daily_format_popup: Option<gpui::Entity<TabListPopup>>,
+    pub daily_format_popup_subscription: Option<Subscription>,
+    pub daily_folder_popup: Option<gpui::Entity<TabListPopup>>,
+    pub daily_folder_popup_subscription: Option<Subscription>,
     pub active_plugin_input: Option<PluginInputFocusState>,
     pub plugin_input_blink: BlinkManager,
     pub plugin_input_focus_handle: FocusHandle,
@@ -496,10 +515,11 @@ pub struct SettingsView {
     pub daily_format_focus_handle: FocusHandle,
     pub daily_format_edit_origin: String,
     pub daily_format_editing: bool,
-    pub daily_folder_input: crate::views::text_input::TextInput,
-    pub daily_folder_focus_handle: FocusHandle,
-    pub daily_folder_edit_origin: String,
-    pub daily_folder_editing: bool,
+    /// Inline editor for the daily-note template path.
+    pub daily_template_input: crate::views::text_input::TextInput,
+    pub daily_template_focus_handle: FocusHandle,
+    pub daily_template_edit_origin: String,
+    pub daily_template_editing: bool,
 }
 
 /// Encapsulates the complete state of the settings search input (based on quick_filter.rs).

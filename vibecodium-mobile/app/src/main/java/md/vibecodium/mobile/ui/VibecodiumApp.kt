@@ -112,6 +112,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -263,10 +264,10 @@ private val ViewHeaderHeight = 44.dp
 private val ViewHeaderTopPadding = 0.dp
 
 /** Second floating action in the header gutter, right under the explorer toggle. */
-private val NoteActionTop = 48.dp
+private val NoteActionTop = 46.dp
 
-/** Pitch between stacked floating actions: 44 dp button plus a 4 dp gap. */
-private val NoteActionStep = 48.dp
+/** Pitch between stacked floating actions, matching the explorer rail's tiles. */
+private val NoteActionStep = 46.dp
 
 /** `lucide-folder-plus`, Obsidian's new-folder nav action. */
 private val NewFolderIcon: ImageVector = ImageVector.Builder(
@@ -673,6 +674,47 @@ private val SidebarToggleIcon: ImageVector = ImageVector.Builder(
     }
 }.build()
 
+/**
+ * Obsidian's sidebar toggle while the drawer is open: the same rounded square
+ * as [SidebarToggleIcon], with the inner bar grown to 24% of the viewBox.
+ */
+private val SidebarCloseIcon: ImageVector = ImageVector.Builder(
+    name = "sidebar-close",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(
+        fill = null,
+        stroke = SolidColor(Color.Black),
+        strokeLineWidth = 1.75f,
+    ) {
+        moveTo(5f, 2f)
+        lineTo(19f, 2f)
+        quadTo(23f, 2f, 23f, 6f)
+        lineTo(23f, 18f)
+        quadTo(23f, 22f, 19f, 22f)
+        lineTo(5f, 22f)
+        quadTo(1f, 22f, 1f, 18f)
+        lineTo(1f, 6f)
+        quadTo(1f, 2f, 5f, 2f)
+        close()
+    }
+    path(fill = SolidColor(Color.Black)) {
+        moveTo(6f, 5f)
+        lineTo(7.76f, 5f)
+        quadTo(9.76f, 5f, 9.76f, 7f)
+        lineTo(9.76f, 17f)
+        quadTo(9.76f, 19f, 7.76f, 19f)
+        lineTo(6f, 19f)
+        quadTo(4f, 19f, 4f, 17f)
+        lineTo(4f, 7f)
+        quadTo(4f, 5f, 6f, 5f)
+        close()
+    }
+}.build()
+
 /** `lucide-sun`, shown in dark mode to switch to light. */
 private val SunIcon: ImageVector = ImageVector.Builder(
     name = "sun",
@@ -1002,7 +1044,6 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
     ) {
         val drawerWidth = phoneDrawerWidth(maxWidth)
         val leftDrawerWidth = leftDrawerWidth(maxWidth)
-        val closeButtonX = leftDrawerWidth.coerceAtMost((maxWidth - CloseButtonSlot).coerceAtLeast(0.dp))
         val navbarEnabled = state.settings.navbarEnabled
         val focusManager = LocalFocusManager.current
         var chromeHidden by remember { mutableStateOf(false) }
@@ -1111,7 +1152,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                         MaterialTheme.colorScheme.onSurface
                     },
                     modifier = Modifier
-                        .padding(start = 12.dp, top = ViewHeaderTopPadding)
+                        .padding(start = 6.dp, top = ViewHeaderTopPadding)
                         .size(44.dp),
                 ) { controller.toggleDrawer(Drawer.Left) }
             }
@@ -1177,68 +1218,6 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                         },
                     ),
             )
-            // The close button sits outside the drawer's right edge, in the
-            // strip the drawer width reserves for it. Its top edge lines up
-            // with the top of the drawer and of the note header, so it reads
-            // as part of the same toolbar row.
-            Box(
-                Modifier
-                    .align(Alignment.TopStart)
-                    .offset(x = closeButtonX)
-                    .size(CloseButtonSlot, CloseButtonSize)
-                    .then(
-                        if (state.drawer == Drawer.Left) {
-                            Modifier
-                        } else {
-                            Modifier.semantics { invisibleToUser() }
-                        },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (state.drawer == Drawer.Left) {
-                    FloatingIconButton(
-                        icon = Icons.Default.Close,
-                        description = "Close explorer",
-                        modifier = Modifier.size(CloseButtonSize),
-                    ) {
-                        focusManager.clearFocus()
-                        controller.closeOverlays()
-                    }
-                }
-            }
-
-            if (state.drawer == Drawer.Left) {
-                // Theme and settings live in the same right-side strip as the
-                // close button, but at the bottom: theme above settings.
-                Column(
-                    Modifier
-                        .align(Alignment.CenterStart)
-                        .offset(x = closeButtonX)
-                        .fillMaxHeight()
-                        .width(CloseButtonSlot),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
-                ) {
-                    FloatingIconButton(
-                        icon = if (palette.dark) SunIcon else MoonIcon,
-                        description = if (palette.dark) {
-                            "Switch to light theme"
-                        } else {
-                            "Switch to dark theme"
-                        },
-                        modifier = Modifier.size(CloseButtonSize),
-                    ) { controller.toggleThemeMode() }
-                    FloatingIconButton(
-                        icon = Icons.Default.Settings,
-                        description = "Settings",
-                        modifier = Modifier.size(CloseButtonSize),
-                    ) {
-                        focusManager.clearFocus()
-                        controller.openSettings()
-                    }
-                }
-            }
-
             if (state.drawer == Drawer.Right) {
                 DrawerBackdrop(alpha = 1f) {
                     focusManager.clearFocus()
@@ -1333,14 +1312,17 @@ private fun phoneDrawerWidth(maxWidth: Dp): Dp {
     return (maxWidth * 0.84f).coerceIn(300.dp, minOf(420.dp, maxWidth))
 }
 
-/** Width of the strip right of the left drawer that holds its close button. */
+/** Gutter kept free to the right of the left drawer, outside its panel. */
 private val CloseButtonSlot = 56.dp
+
+/** Width of the vertical action rail on the left edge of the explorer drawer. */
+private val DrawerRailWidth = 56.dp
+
+/** Icon tile in the rail: the same 44 dp touch target as the header actions. */
+private val DrawerRailTile = 44.dp
 
 /** Height of the drawer's top section bar, matching the note header actions. */
 private val DrawerTopBarHeight = 44.dp
-
-/** Same 44 dp circle as the open note's header actions. */
-private val CloseButtonSize = DrawerTopBarHeight
 
 /** Panel corners, curved like the note header pills: half the 44 dp header. */
 private val PanelCornerRadius = ViewHeaderHeight / 2
@@ -1658,7 +1640,7 @@ private fun TabsDropdown(
                 tint = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(start = 12.dp, top = NoteActionTop)
+                    .padding(start = 6.dp, top = NoteActionTop)
                     .size(44.dp),
             ) {
                 onDismiss()
@@ -1671,7 +1653,7 @@ private fun TabsDropdown(
                     tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(start = 12.dp, top = NoteActionTop + NoteActionStep)
+                        .padding(start = 6.dp, top = NoteActionTop + NoteActionStep)
                         .size(44.dp),
                 ) {
                     onDismiss()
@@ -2963,51 +2945,104 @@ private fun LeftDrawer(
         color = palette.surfaceAlt,
         tonalElevation = 0.dp,
     ) {
-        Column(Modifier.fillMaxSize().padding(bottom = contentBottom)) {
-            // The bar is toolbar height, but the tiles stay inset from its
-            // edges so their rounded highlight never touches the dividers.
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(DrawerTopBarHeight)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                for (mode in DrawerMode.entries) {
-                    val active = state.drawerMode == mode
-                    Box(
-                        Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(
-                                if (active) {
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                                } else {
-                                    Color.Transparent
-                                },
-                            )
-                            .clickable {
-                                focusManager.clearFocus()
-                                controller.setDrawerMode(mode)
-                            },
-                        contentAlignment = Alignment.Center,
+        Box(Modifier.fillMaxSize().padding(bottom = contentBottom)) {
+            Row(Modifier.fillMaxSize()) {
+                // Vertical action rail: note creation stays in reach in every
+                // section and is independent of the selected panel.
+                Column(
+                    Modifier
+                        .fillMaxHeight()
+                        .width(DrawerRailWidth)
+                        .padding(bottom = 6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    // Same spot as the editor's explorer toggle: opening the
+                    // drawer swaps that button for this one.
+                    CompactToolbarButton(
+                        SidebarCloseIcon,
+                        "Close explorer",
+                        modifier = Modifier.size(DrawerRailTile),
                     ) {
-                        Icon(
-                            drawerModeIcon(mode),
-                            contentDescription = drawerModeLabel(mode),
-                            modifier = Modifier.size(26.dp),
-                            tint = if (active) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
+                        focusManager.clearFocus()
+                        controller.closeOverlays()
+                    }
+                    CompactToolbarButton(
+                        NewNoteIcon,
+                        "New note",
+                        modifier = Modifier.size(DrawerRailTile),
+                    ) { controller.newNote() }
+                    if (state.settings.dailyNotes.enabled) {
+                        CompactToolbarButton(
+                            CalendarIcon,
+                            "Daily note",
+                            modifier = Modifier.size(DrawerRailTile),
+                        ) { controller.openDailyNote() }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    CompactToolbarButton(
+                        if (palette.dark) SunIcon else MoonIcon,
+                        if (palette.dark) {
+                            "Switch to light theme"
+                        } else {
+                            "Switch to dark theme"
+                        },
+                        modifier = Modifier.size(DrawerRailTile),
+                    ) { controller.toggleThemeMode() }
+                    CompactToolbarButton(
+                        Icons.Default.Settings,
+                        "Settings",
+                        modifier = Modifier.size(DrawerRailTile),
+                    ) {
+                        focusManager.clearFocus()
+                        controller.openSettings()
                     }
                 }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+                VerticalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    // Sections: the drawer's browsing surfaces across the top.
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(DrawerTopBarHeight)
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                    for (mode in DrawerMode.entries) {
+                        val active = state.drawerMode == mode
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (active) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                    } else {
+                                        Color.Transparent
+                                    },
+                                )
+                                .clickable {
+                                    focusManager.clearFocus()
+                                    controller.setDrawerMode(mode)
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                drawerModeIcon(mode),
+                                contentDescription = drawerModeLabel(mode),
+                                modifier = Modifier.size(26.dp),
+                                tint = if (active) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                    }
+                }
+                Box(Modifier.weight(1f).fillMaxWidth()) {
                 // Keep the native tree composed while another section is open.
                 // Recreating its SurfaceView on every tab switch tore the
                 // surface down and flashed the editor through the drawer.
@@ -3044,48 +3079,59 @@ private fun LeftDrawer(
                     }
                 }
             }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 58.dp)
-                    .padding(start = 16.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(Modifier.weight(1f)) {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable { controller.openVaultChooser() }
-                            .padding(vertical = 6.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 58.dp)
+                        .padding(start = 16.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.weight(1f)) {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { controller.openVaultChooser() }
+                                .padding(vertical = 6.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    state.vaultName ?: "Vault",
+                                    fontSize = 15.sp,
+                                    lineHeight = 20.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Icon(
+                                    Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Choose vault",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                             Text(
-                                state.vaultName ?: "Vault",
-                                fontSize = 15.sp,
-                                lineHeight = 20.sp,
-                                fontWeight = FontWeight.SemiBold,
+                                syncSubtitle(state),
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            Icon(
-                                Icons.Default.KeyboardArrowDown,
-                                contentDescription = "Choose vault",
-                                modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
                         }
-                        Text(
-                            syncSubtitle(state),
-                            fontSize = 11.sp,
-                            lineHeight = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
                     }
+                    DrawerSyncButton(state, controller)
                 }
-                DrawerSyncButton(state, controller)
             }
+            }
+            // The divider under the top bar spans the whole sidebar, rail
+            // included.
+            HorizontalDivider(
+                Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopStart)
+                    .offset(y = DrawerTopBarHeight),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+            )
         }
     }
 }
@@ -3581,31 +3627,19 @@ private fun ExplorerToolbar(state: UiState, controller: VibecodiumController) {
             .fillMaxWidth()
             .height(48.dp)
             .padding(horizontal = 8.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CompactToolbarButton(
-            NewNoteIcon,
-            "New note",
-            modifier = Modifier.weight(1f).fillMaxHeight(),
-        ) { controller.newNote() }
-        if (state.settings.dailyNotes.enabled) {
-            CompactToolbarButton(
-                CalendarIcon,
-                "Daily note",
-                modifier = Modifier.weight(1f).fillMaxHeight(),
-            ) { controller.openDailyNote() }
-        }
-        CompactToolbarButton(
             NewFolderIcon,
             "New folder",
-            modifier = Modifier.weight(1f).fillMaxHeight(),
+            modifier = Modifier.width(44.dp).fillMaxHeight(),
         ) { controller.beginNewFolder() }
         CompactToolbarButton(
             CollapseAllIcon,
             if (allCollapsed) "Expand all folders" else "Collapse all folders",
             enabled = state.folders.isNotEmpty(),
-            modifier = Modifier.weight(1f).fillMaxHeight(),
+            modifier = Modifier.width(44.dp).fillMaxHeight(),
         ) { controller.toggleAllFolders() }
     }
 }

@@ -71,6 +71,9 @@ impl AppView {
         ];
 
         for (id, icon) in builtins {
+            if id == "ribbon-calendar" && !self.config.daily_notes.enabled {
+                continue;
+            }
             let is_visible = !hidden.iter().any(|h| h == id);
             items.push(RibbonItem {
                 id: id.to_string(),

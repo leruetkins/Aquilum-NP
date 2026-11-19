@@ -177,7 +177,18 @@
       "daily_format": "Format du nom de fichier",
       "daily_format_desc": "Variables : {{YYYY}} année, {{YY}} année courte, {{MM}}/{{M}} mois, {{DD}}/{{D}} jour, {{HH}}/{{H}} heure, {{mm}}/{{m}} minute, {{ss}}/{{s}} seconde. Le reste du texte est repris tel quel.",
       "daily_folder": "Dossier des notes quotidiennes",
-      "daily_folder_desc": "Relatif à la racine du coffre ; vide utilise la racine"
+      "daily_folder_desc": "Relatif à la racine du coffre ; vide utilise la racine",
+      "daily_enabled": "Activer les notes quotidiennes",
+      "daily_enabled_desc": "Afficher le bouton de note quotidienne dans la barre latérale",
+      "daily_template": "Modèle de note quotidienne",
+      "daily_template_desc": "Note Markdown du coffre copiée dans une nouvelle note quotidienne",
+      "daily_presets": "Format de date",
+      "daily_presets_desc": "Exemples prédéfinis ; le champ du nom de fichier ci-dessous reste modifiable",
+      "daily_folder_pick": "Dossier",
+      "daily_folder_pick_desc": "Choisissez un dossier du coffre ou saisissez un nouveau chemin dans le filtre",
+      "daily_folder_root": "Racine du coffre",
+      "daily_folder_search": "Rechercher ou saisir un chemin de dossier",
+      "daily_folder_use": "Utiliser le chemin saisi"
     },
     "files": {
       "title": "Fichiers et médias",

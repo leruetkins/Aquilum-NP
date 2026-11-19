@@ -177,7 +177,18 @@
       "daily_format": "Dateinamenformat",
       "daily_format_desc": "Platzhalter: {{YYYY}} Jahr, {{YY}} kurzes Jahr, {{MM}}/{{M}} Monat, {{DD}}/{{D}} Tag, {{HH}}/{{H}} Stunde, {{mm}}/{{m}} Minute, {{ss}}/{{s}} Sekunde. Übriger Text wird unverändert übernommen.",
       "daily_folder": "Ordner für tägliche Notizen",
-      "daily_folder_desc": "Relativ zum Stammverzeichnis; leer lässt das Stammverzeichnis verwenden"
+      "daily_folder_desc": "Relativ zum Stammverzeichnis; leer lässt das Stammverzeichnis verwenden",
+      "daily_enabled": "Tägliche Notizen aktivieren",
+      "daily_enabled_desc": "Schaltfläche für tägliche Notizen in der Seitenleiste anzeigen",
+      "daily_template": "Vorlage für tägliche Notizen",
+      "daily_template_desc": "Markdown-Notiz im Tresor, die in eine neue tägliche Notiz kopiert wird",
+      "daily_presets": "Datumsformat",
+      "daily_presets_desc": "Fertige Beispiele; das Dateinamenfeld unten bleibt bearbeitbar",
+      "daily_folder_pick": "Ordner",
+      "daily_folder_pick_desc": "Wählen Sie einen Ordner aus dem Tresor oder geben Sie im Filter einen neuen Pfad ein",
+      "daily_folder_root": "Tresorwurzel",
+      "daily_folder_search": "Suchen oder Ordnerpfad eingeben",
+      "daily_folder_use": "Eingegebenen Pfad verwenden"
     },
     "files": {
       "title": "Dateien und Medien",

@@ -433,20 +433,57 @@ impl Default for TemplateSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DailyNoteSettings {
+    /// Whether the daily-note action is offered in the UI.
+    pub enabled: bool,
     /// File name format. `{{TOKEN}}` placeholders are replaced with the
     /// current date and time; everything else is used literally.
     pub format: String,
     /// Folder relative to the vault root. Empty means the vault root.
     pub folder: String,
+    /// Vault-relative path of the note copied into a new daily note.
+    pub template: String,
 }
 
 impl Default for DailyNoteSettings {
     fn default() -> Self {
         Self {
+            enabled: true,
             format: "{{YYYY}}-{{MM}}-{{DD}}".to_string(),
             folder: String::new(),
+            template: String::new(),
         }
     }
+}
+
+/// Normalizes a vault-relative path to forward slashes, skipping `.`, `..`,
+/// empty segments and anything that is not a plain name, so the result can
+/// never leave the vault root.
+pub fn normalize_vault_relative(relative: &str) -> String {
+    relative
+        .split(['/', '\\'])
+        .map(str::trim)
+        .filter(|part| {
+            !part.is_empty()
+                && *part != "."
+                && *part != ".."
+                && matches!(
+                    Path::new(*part).components().next(),
+                    Some(std::path::Component::Normal(_))
+                )
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Joins a vault-relative path onto the vault root.
+pub fn vault_relative_path(root: &Path, relative: &str) -> PathBuf {
+    let mut path = root.to_path_buf();
+    for part in normalize_vault_relative(relative).split('/') {
+        if !part.is_empty() {
+            path.push(part);
+        }
+    }
+    path
 }
 
 /// Expands `{{TOKEN}}` date/time placeholders in the daily-note name format.
@@ -1384,6 +1421,24 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         desc_key: "settings.templates.daily_folder_desc",
         keywords: &["daily", "note", "folder", "path", "ежедневная", "заметка", "папка", "путь"],
         aliases: &["dailyNote.folder"],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "dailyNotes.enabled",
+        tab_id: "templates",
+        title_key: "settings.templates.daily_enabled",
+        desc_key: "settings.templates.daily_enabled_desc",
+        keywords: &["daily", "note", "enable", "ribbon", "ежедневная", "заметка", "включить"],
+        aliases: &["dailyNote.enabled"],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "dailyNotes.template",
+        tab_id: "templates",
+        title_key: "settings.templates.daily_template",
+        desc_key: "settings.templates.daily_template_desc",
+        keywords: &["daily", "note", "template", "ежедневная", "заметка", "шаблон"],
+        aliases: &["dailyNote.template"],
         setting_type: SettingType::String,
     },
     SettingDescriptor {

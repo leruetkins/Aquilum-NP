@@ -177,7 +177,18 @@
       "daily_format": "Formato del nome file",
       "daily_format_desc": "Segnaposto: {{YYYY}} anno, {{YY}} anno breve, {{MM}}/{{M}} mese, {{DD}}/{{D}} giorno, {{HH}}/{{H}} ora, {{mm}}/{{m}} minuto, {{ss}}/{{s}} secondo. Il resto del testo viene usato così com'è.",
       "daily_folder": "Cartella delle note quotidiane",
-      "daily_folder_desc": "Relativa alla radice dell'archivio; vuota usa la radice"
+      "daily_folder_desc": "Relativa alla radice dell'archivio; vuota usa la radice",
+      "daily_enabled": "Abilita note giornaliere",
+      "daily_enabled_desc": "Mostra il pulsante della nota giornaliera nella barra laterale",
+      "daily_template": "Modello di nota giornaliera",
+      "daily_template_desc": "Nota Markdown del vault copiata in una nuova nota giornaliera",
+      "daily_presets": "Formato data",
+      "daily_presets_desc": "Esempi predefiniti; il campo del nome file sotto resta modificabile",
+      "daily_folder_pick": "Cartella",
+      "daily_folder_pick_desc": "Scegli una cartella dal vault o digita un nuovo percorso nel filtro",
+      "daily_folder_root": "Radice del vault",
+      "daily_folder_search": "Cerca o digita un percorso di cartella",
+      "daily_folder_use": "Usa il percorso digitato"
     },
     "files": {
       "title": "File e contenuti multimediali",

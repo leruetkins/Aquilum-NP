@@ -159,21 +159,14 @@ impl AppView {
     pub(crate) fn open_daily_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(root) = self.state.workspace_path.clone() else { return };
         let settings = self.config.daily_notes.clone();
+        if !settings.enabled {
+            return;
+        }
         let now = time::OffsetDateTime::now_local()
             .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
         let stem = crate::settings::daily_note_file_stem(&settings.format, now);
 
-        // Skip `.`, `..` and empty segments so the note can never land
-        // outside the vault.
-        let mut dir = root.clone();
-        for part in settings.folder.split(['/', '\\']) {
-            let part = part.trim();
-            if part.is_empty() || part == "." || part == ".." {
-                continue;
-            }
-            dir.push(part);
-        }
-
+        let dir = crate::settings::vault_relative_path(&root, &settings.folder);
         if let Err(error) = std::fs::create_dir_all(&dir) {
             eprintln!("[daily-note] не удалось создать папку {}: {error}", dir.display());
             return;
@@ -181,7 +174,23 @@ impl AppView {
 
         let path = dir.join(format!("{stem}.md"));
         if !path.exists() {
-            if let Err(error) = std::fs::write(&path, "") {
+            let template = settings.template.trim();
+            let content = if template.is_empty() {
+                String::new()
+            } else {
+                let template_path = crate::settings::vault_relative_path(&root, template);
+                match std::fs::read_to_string(&template_path) {
+                    Ok(text) => text,
+                    Err(error) => {
+                        eprintln!(
+                            "[daily-note] не удалось прочитать шаблон {}: {error}",
+                            template_path.display()
+                        );
+                        String::new()
+                    }
+                }
+            };
+            if let Err(error) = std::fs::write(&path, content) {
                 eprintln!("[daily-note] не удалось создать {}: {error}", path.display());
                 return;
             }

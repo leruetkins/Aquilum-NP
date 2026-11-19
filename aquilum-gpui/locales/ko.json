@@ -177,7 +177,18 @@
       "daily_format": "파일 이름 형식",
       "daily_format_desc": "자리 표시자: {{YYYY}} 년, {{YY}} 짧은 연도, {{MM}}/{{M}} 월, {{DD}}/{{D}} 일, {{HH}}/{{H}} 시, {{mm}}/{{m}} 분, {{ss}}/{{s}} 초. 나머지 텍스트는 그대로 사용됩니다.",
       "daily_folder": "일일 노트 폴더",
-      "daily_folder_desc": "보관소 루트 기준; 비어 있으면 루트 사용"
+      "daily_folder_desc": "보관소 루트 기준; 비어 있으면 루트 사용",
+      "daily_enabled": "일일 노트 사용",
+      "daily_enabled_desc": "사이드바에 일일 노트 버튼 표시",
+      "daily_template": "일일 노트 템플릿",
+      "daily_template_desc": "새 일일 노트에 복사할 보관소의 Markdown 노트",
+      "daily_presets": "날짜 형식",
+      "daily_presets_desc": "미리 설정된 예시; 아래 파일 이름 필드는 계속 편집할 수 있습니다",
+      "daily_folder_pick": "폴더",
+      "daily_folder_pick_desc": "보관소에서 폴더를 선택하거나 필터에 새 경로를 입력하세요",
+      "daily_folder_root": "보관소 루트",
+      "daily_folder_search": "검색하거나 폴더 경로 입력",
+      "daily_folder_use": "입력한 경로 사용"
     },
     "files": {
       "title": "파일 및 미디어",

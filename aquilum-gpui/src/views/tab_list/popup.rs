@@ -47,6 +47,9 @@ pub struct TabListPopup {
     search_placeholder: SharedString,
     search_query: String,
     no_matches_label: SharedString,
+    /// When set, the typed search text is offered as an extra row under this
+    /// label and selected like any other entry (id `tabs.len()`).
+    custom_entry_label: Option<SharedString>,
     filtered_indices: Vec<usize>,
     cursor_filtered_ix: Option<usize>,
     search_cursor_pos: usize,
@@ -119,6 +122,7 @@ impl TabListPopup {
             search_placeholder: SharedString::from("Поиск..."),
             search_query: String::new(),
             no_matches_label: SharedString::from("Ничего не найдено"),
+            custom_entry_label: None,
             filtered_indices,
             cursor_filtered_ix: None,
             search_cursor_pos: 0,
@@ -238,6 +242,19 @@ impl TabListPopup {
         self
     }
 
+    /// Offers the typed search text as a selectable row. The row is appended
+    /// to the filtered list and emits `Activate(tabs.len())`; the parent reads
+    /// the text back through [`Self::search_query`].
+    pub fn with_custom_entry(mut self, label: impl Into<SharedString>) -> Self {
+        self.custom_entry_label = Some(label.into());
+        self
+    }
+
+    /// Current text of the search bar.
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
     /// Updates filtered tab indices based on current search query.
     fn update_filter(&mut self) {
         if !self.search_enabled || self.search_query.trim().is_empty() {
@@ -262,6 +279,19 @@ impl TabListPopup {
                     }
                 })
                 .collect();
+        }
+        if self.custom_entry_label.is_some() {
+            let query = self.search_query.trim();
+            let exact_match = self.tabs.iter().any(|tab| {
+                tab.title.eq_ignore_ascii_case(query)
+                    || tab
+                        .subtitle
+                        .as_ref()
+                        .is_some_and(|subtitle| subtitle.eq_ignore_ascii_case(query))
+            });
+            if !query.is_empty() && !exact_match {
+                self.filtered_indices.push(self.tabs.len());
+            }
         }
         self.cursor_filtered_ix = if self.filtered_indices.is_empty() {
             None
@@ -513,7 +543,23 @@ impl TabListPopup {
     /// Renders a single row: icon, title, optional subtitle, and a check mark
     /// for the active row only.
     fn render_row(&self, ix: usize, hovered: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let tab = &self.tabs[ix];
+        let custom_entry = if ix >= self.tabs.len() {
+            Some(TabEntry {
+                id: ix,
+                title: SharedString::from(self.search_query.trim().to_owned()),
+                subtitle: self.custom_entry_label.clone(),
+                icon: icons::ICON_PLUS,
+                font_family: None,
+                dot_color: None,
+                trailing_icon: None,
+            })
+        } else {
+            None
+        };
+        let tab = match &custom_entry {
+            Some(entry) => entry,
+            None => &self.tabs[ix],
+        };
         let id = tab.id;
         let title = tab.title.clone();
         let subtitle = tab.subtitle.clone();
@@ -1085,15 +1131,19 @@ impl Render for TabListPopup {
                     }
                     "enter" => {
                         cx.stop_propagation();
-                        let target_tab = if this.search_enabled {
+                        let target_ix = if this.search_enabled {
                             this.cursor_filtered_ix
                                 .and_then(|c_ix| this.filtered_indices.get(c_ix))
-                                .and_then(|&tab_ix| this.tabs.get(tab_ix))
+                                .copied()
                         } else {
-                            this.active_ix.and_then(|ix| this.tabs.get(ix))
+                            this.active_ix
                         };
-                        if let Some(tab) = target_tab {
-                            cx.emit(TabListEvent::Activate(tab.id));
+                        if let Some(ix) = target_ix {
+                            if ix >= this.tabs.len() && this.custom_entry_label.is_some() {
+                                cx.emit(TabListEvent::Activate(ix));
+                            } else if let Some(tab) = this.tabs.get(ix) {
+                                cx.emit(TabListEvent::Activate(tab.id));
+                            }
                         }
                         return;
                     }

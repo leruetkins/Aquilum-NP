@@ -177,7 +177,18 @@
       "daily_format": "Formato del nombre de archivo",
       "daily_format_desc": "Marcadores: {{YYYY}} año, {{YY}} año corto, {{MM}}/{{M}} mes, {{DD}}/{{D}} día, {{HH}}/{{H}} hora, {{mm}}/{{m}} minuto, {{ss}}/{{s}} segundo. El resto del texto se usa tal cual.",
       "daily_folder": "Carpeta de notas diarias",
-      "daily_folder_desc": "Relativa a la raíz del almacén; vacía usa la raíz"
+      "daily_folder_desc": "Relativa a la raíz del almacén; vacía usa la raíz",
+      "daily_enabled": "Activar notas diarias",
+      "daily_enabled_desc": "Mostrar el botón de nota diaria en la barra lateral",
+      "daily_template": "Plantilla de nota diaria",
+      "daily_template_desc": "Nota Markdown del almacén que se copia en una nueva nota diaria",
+      "daily_presets": "Formato de fecha",
+      "daily_presets_desc": "Ejemplos predefinidos; el campo de nombre de archivo de abajo sigue siendo editable",
+      "daily_folder_pick": "Carpeta",
+      "daily_folder_pick_desc": "Elige una carpeta del almacén o escribe una ruta nueva en el filtro",
+      "daily_folder_root": "Raíz del almacén",
+      "daily_folder_search": "Buscar o escribir una ruta de carpeta",
+      "daily_folder_use": "Usar la ruta escrita"
     },
     "files": {
       "title": "Archivos y medios",

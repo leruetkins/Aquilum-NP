@@ -103,9 +103,9 @@ impl SettingsView {
                         this.daily_format_input
                             .set_text(this.config.daily_notes.format.clone());
                     }
-                    if !this.daily_folder_editing {
-                        this.daily_folder_input
-                            .set_text(this.config.daily_notes.folder.clone());
+                    if !this.daily_template_editing {
+                        this.daily_template_input
+                            .set_text(this.config.daily_notes.template.clone());
                     }
                     cx.notify();
                 }
@@ -131,10 +131,10 @@ impl SettingsView {
         let mut daily_format_input =
             crate::views::text_input::TextInput::new(daily_format_focus_handle.clone());
         daily_format_input.set_text(config.daily_notes.format.clone());
-        let daily_folder_focus_handle = cx.focus_handle();
-        let mut daily_folder_input =
-            crate::views::text_input::TextInput::new(daily_folder_focus_handle.clone());
-        daily_folder_input.set_text(config.daily_notes.folder.clone());
+        let daily_template_focus_handle = cx.focus_handle();
+        let mut daily_template_input =
+            crate::views::text_input::TextInput::new(daily_template_focus_handle.clone());
+        daily_template_input.set_text(config.daily_notes.template.clone());
         let sync_custom_focus_handle = cx.focus_handle();
         let mut sync_custom_input =
             crate::views::text_input::TextInput::new(sync_custom_focus_handle.clone());
@@ -176,6 +176,10 @@ impl SettingsView {
             ui_font_popup_subscription: None,
             theme_popup: None,
             theme_popup_subscription: None,
+            daily_format_popup: None,
+            daily_format_popup_subscription: None,
+            daily_folder_popup: None,
+            daily_folder_popup_subscription: None,
             active_plugin_input: None,
             plugin_input_blink: BlinkManager::new(),
             plugin_input_focus_handle: cx.focus_handle(),
@@ -221,10 +225,10 @@ impl SettingsView {
             daily_format_focus_handle,
             daily_format_edit_origin: String::new(),
             daily_format_editing: false,
-            daily_folder_input,
-            daily_folder_focus_handle,
-            daily_folder_edit_origin: String::new(),
-            daily_folder_editing: false,
+            daily_template_input,
+            daily_template_focus_handle,
+            daily_template_edit_origin: String::new(),
+            daily_template_editing: false,
         };
         // Sync status lives in a background service; keep the tab fresh while
         // the Settings window is open.
@@ -407,6 +411,14 @@ impl SettingsView {
     }
 
     pub fn handle_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.daily_format_popup.is_some() {
+            self.close_daily_format_popup(cx);
+            return true;
+        }
+        if self.daily_folder_popup.is_some() {
+            self.close_daily_folder_popup(cx);
+            return true;
+        }
         if self.locale_popup.is_some() {
             self.close_locale_popup(cx);
             return true;
@@ -1194,6 +1206,217 @@ impl SettingsView {
             .is_some_and(|(open_slot, _)| *open_slot == slot)
     }
 
+    /// Opens the list of ready-made daily-note date formats.
+    pub fn open_daily_format_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_daily_folder_popup(cx);
+        let now = time::OffsetDateTime::now_local()
+            .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        let current = self.config.daily_notes.format.clone();
+        let tabs: Vec<TabEntry> = DAILY_FORMAT_PRESETS
+            .iter()
+            .enumerate()
+            .map(|(id, format)| TabEntry {
+                id,
+                title: SharedString::from(crate::settings::expand_daily_note_format(format, now)),
+                subtitle: Some(SharedString::from(*format)),
+                icon: icons::ICON_CALENDAR,
+                font_family: None,
+                dot_color: None,
+                trailing_icon: None,
+            })
+            .collect();
+        let active_ix = DAILY_FORMAT_PRESETS
+            .iter()
+            .position(|format| *format == current);
+        let theme = self.theme.clone();
+        let max_rows = DAILY_FORMAT_PRESETS.len().clamp(1, 10) as f32;
+
+        let popup = cx.new(|cx| {
+            TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                Some(px(ROW_HEIGHT * max_rows)),
+                Some(50.0),
+                cx,
+            )
+        });
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(format) = DAILY_FORMAT_PRESETS.get(*id) {
+                            this.config.daily_notes.format = (*format).to_string();
+                            this.daily_format_editing = false;
+                            this.daily_format_input
+                                .set_text(this.config.daily_notes.format.clone());
+                            this.save_settings(cx);
+                        }
+                        this.close_daily_format_popup(cx);
+                    }
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_daily_format_popup(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.daily_format_popup = Some(popup);
+        self.daily_format_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_daily_format_popup(&mut self, cx: &mut Context<Self>) {
+        if self.daily_format_popup.take().is_none() {
+            return;
+        }
+        self.daily_format_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn daily_format_popup_is_open(&self) -> bool {
+        self.daily_format_popup.is_some()
+    }
+
+    /// Opens the vault folder list for the daily-note folder setting.
+    pub fn open_daily_folder_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_daily_format_popup(cx);
+        let Some(app) = self.weak_app.upgrade() else {
+            return;
+        };
+        let root = {
+            let app = app.read(cx);
+            app.state.workspace_path.clone()
+        };
+        let Some(root) = root else { return };
+
+        fn collect_folders(
+            nodes: &[crate::state::FileNode],
+            root: &Path,
+            out: &mut Vec<String>,
+        ) {
+            for node in nodes {
+                if let crate::state::FileNode::Folder { path, children, .. } = node {
+                    if let Ok(relative) = path.strip_prefix(root) {
+                        let relative = relative.to_string_lossy().replace('\\', "/");
+                        if !relative.is_empty() {
+                            out.push(relative);
+                        }
+                    }
+                    collect_folders(children, root, out);
+                }
+            }
+        }
+
+        let mut folders = Vec::new();
+        {
+            let app = app.read(cx);
+            collect_folders(&app.state.file_tree, &root, &mut folders);
+        }
+        folders.sort_by_key(|folder| folder.to_lowercase());
+        folders.dedup();
+
+        let current = self.config.daily_notes.folder.clone();
+        let mut options: Vec<(String, String)> = Vec::with_capacity(folders.len() + 2);
+        options.push((
+            self.t("settings.templates.daily_folder_root"),
+            String::new(),
+        ));
+        for folder in folders {
+            options.push((folder.clone(), folder));
+        }
+        if !current.is_empty() && !options.iter().any(|(_, value)| *value == current) {
+            options.push((current.clone(), current.clone()));
+        }
+
+        let tabs: Vec<TabEntry> = options
+            .iter()
+            .enumerate()
+            .map(|(id, (label, _))| TabEntry {
+                id,
+                title: SharedString::from(label.clone()),
+                subtitle: None,
+                icon: icons::ICON_FOLDER,
+                font_family: None,
+                dot_color: None,
+                trailing_icon: None,
+            })
+            .collect();
+        let active_ix = options.iter().position(|(_, value)| *value == current);
+        let theme = self.theme.clone();
+        // One extra row is reserved for the typed-path entry.
+        let max_rows = (options.len() + 1).clamp(1, 10) as f32;
+        let search_placeholder = self.t("settings.templates.daily_folder_search");
+        let custom_entry_label = self.t("settings.templates.daily_folder_use");
+
+        let popup = cx.new(|cx| {
+            TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                Some(px(ROW_HEIGHT * max_rows)),
+                Some(50.0),
+                cx,
+            )
+            .with_search(search_placeholder)
+            .with_custom_entry(custom_entry_label)
+        });
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            move |this, popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        let folder = options
+                            .get(*id)
+                            .map(|(_, value)| value.clone())
+                            .or_else(|| {
+                                if *id == options.len() {
+                                    Some(crate::settings::normalize_vault_relative(
+                                        popup.read(cx).search_query(),
+                                    ))
+                                } else {
+                                    None
+                                }
+                            });
+                        if let Some(folder) = folder {
+                            this.config.daily_notes.folder = folder;
+                            this.save_settings(cx);
+                        }
+                        this.close_daily_folder_popup(cx);
+                    }
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_daily_folder_popup(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.daily_folder_popup = Some(popup);
+        self.daily_folder_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_daily_folder_popup(&mut self, cx: &mut Context<Self>) {
+        if self.daily_folder_popup.take().is_none() {
+            return;
+        }
+        self.daily_folder_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn daily_folder_popup_is_open(&self) -> bool {
+        self.daily_folder_popup.is_some()
+    }
+
     pub fn open_plugin_select(
         &mut self,
         plugin_id: String,
@@ -1550,8 +1773,8 @@ impl SettingsView {
                     cx,
                 );
                 moved |= SettingsView::drag_text_input(
-                    &mut this.daily_folder_input,
-                    |s: &mut SettingsView| &mut s.daily_folder_input.blink,
+                    &mut this.daily_template_input,
+                    |s: &mut SettingsView| &mut s.daily_template_input.blink,
                     event,
                     window,
                     cx,
@@ -1565,7 +1788,7 @@ impl SettingsView {
                 for input in [
                     &mut this.files_folder_input,
                     &mut this.daily_format_input,
-                    &mut this.daily_folder_input,
+                    &mut this.daily_template_input,
                 ] {
                     if input.is_mouse_selecting {
                         input.handle_mouse_up();
@@ -1581,7 +1804,7 @@ impl SettingsView {
                 for input in [
                     &mut this.files_folder_input,
                     &mut this.daily_format_input,
-                    &mut this.daily_folder_input,
+                    &mut this.daily_template_input,
                 ] {
                     if input.is_mouse_selecting {
                         input.handle_mouse_up();
@@ -2946,27 +3169,27 @@ impl SettingsView {
         )
     }
 
-    /// Renders the daily-note folder field.
-    pub(super) fn render_daily_folder_input(
+    /// Renders the daily-note template path field.
+    pub(super) fn render_daily_template_input(
         &self,
         window: &Window,
         cx: &Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         self.render_inline_text_input(
-            "daily-folder-input",
-            &self.daily_folder_input,
-            &self.daily_folder_focus_handle,
+            "daily-template-input",
+            &self.daily_template_input,
+            &self.daily_template_focus_handle,
             240.0,
             window,
             cx,
-            |s| &mut s.daily_folder_input,
-            |s| &mut s.daily_folder_input.blink,
+            |s| &mut s.daily_template_input,
+            |s| &mut s.daily_template_input.blink,
             |s: &mut SettingsView, _cx: &mut Context<SettingsView>| {
-                s.daily_folder_editing = true;
-                s.daily_folder_edit_origin = s.config.daily_notes.folder.clone();
+                s.daily_template_editing = true;
+                s.daily_template_edit_origin = s.config.daily_notes.template.clone();
             },
-            |s: &mut SettingsView, cx: &mut Context<SettingsView>| s.commit_daily_folder(cx),
-            |s: &mut SettingsView, cx: &mut Context<SettingsView>| s.cancel_daily_folder(cx),
+            |s: &mut SettingsView, cx: &mut Context<SettingsView>| s.commit_daily_template(cx),
+            |s: &mut SettingsView, cx: &mut Context<SettingsView>| s.cancel_daily_template(cx),
         )
     }
 
@@ -2987,8 +3210,8 @@ impl SettingsView {
         if self.daily_format_editing {
             self.commit_daily_format(cx);
         }
-        if self.daily_folder_editing {
-            self.commit_daily_folder(cx);
+        if self.daily_template_editing {
+            self.commit_daily_template(cx);
         }
     }
 
@@ -3041,31 +3264,31 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Commits the daily-note folder. Empty means the vault root.
-    pub(super) fn commit_daily_folder(&mut self, cx: &mut Context<Self>) {
-        self.daily_folder_editing = false;
-        self.daily_folder_input.selection_anchor = None;
-        self.daily_folder_input.is_mouse_selecting = false;
-        self.daily_folder_input.disable_blink(cx);
-        let folder = self.daily_folder_input.text().trim().to_string();
+    /// Commits the daily-note template path. Empty clears the template.
+    pub(super) fn commit_daily_template(&mut self, cx: &mut Context<Self>) {
+        self.daily_template_editing = false;
+        self.daily_template_input.selection_anchor = None;
+        self.daily_template_input.is_mouse_selecting = false;
+        self.daily_template_input.disable_blink(cx);
+        let template = self.daily_template_input.text().trim().to_string();
 
-        if self.config.daily_notes.folder != folder {
-            self.config.daily_notes.folder = folder.clone();
+        if self.config.daily_notes.template != template {
+            self.config.daily_notes.template = template.clone();
             self.save_settings(cx);
         }
-        self.daily_folder_input.set_text(folder);
+        self.daily_template_input.set_text(template);
         cx.notify();
     }
 
-    /// Restores the daily-note folder saved before editing started.
-    pub(super) fn cancel_daily_folder(&mut self, cx: &mut Context<Self>) {
-        let origin = self.daily_folder_edit_origin.clone();
-        self.config.daily_notes.folder = origin.clone();
-        self.daily_folder_input.set_text(origin);
-        self.daily_folder_input.selection_anchor = None;
-        self.daily_folder_input.is_mouse_selecting = false;
-        self.daily_folder_input.disable_blink(cx);
-        self.daily_folder_editing = false;
+    /// Restores the daily-note template saved before editing started.
+    pub(super) fn cancel_daily_template(&mut self, cx: &mut Context<Self>) {
+        let origin = self.daily_template_edit_origin.clone();
+        self.config.daily_notes.template = origin.clone();
+        self.daily_template_input.set_text(origin);
+        self.daily_template_input.selection_anchor = None;
+        self.daily_template_input.is_mouse_selecting = false;
+        self.daily_template_input.disable_blink(cx);
+        self.daily_template_editing = false;
         self.save_settings(cx);
         cx.notify();
     }

@@ -177,7 +177,18 @@
       "daily_format": "檔案名稱格式",
       "daily_format_desc": "佔位符：{{YYYY}} 年、{{YY}} 簡短年份、{{MM}}/{{M}} 月、{{DD}}/{{D}} 日、{{HH}}/{{H}} 時、{{mm}}/{{m}} 分、{{ss}}/{{s}} 秒。其他文字依原樣使用。",
       "daily_folder": "每日筆記資料夾",
-      "daily_folder_desc": "相對於儲存庫根目錄；留空則使用根目錄"
+      "daily_folder_desc": "相對於儲存庫根目錄；留空則使用根目錄",
+      "daily_enabled": "啟用每日筆記",
+      "daily_enabled_desc": "在側邊欄顯示每日筆記按鈕",
+      "daily_template": "每日筆記範本",
+      "daily_template_desc": "複製到新每日筆記中的儲存庫 Markdown 筆記",
+      "daily_presets": "日期格式",
+      "daily_presets_desc": "預設範例；下方的檔案名稱欄仍可編輯",
+      "daily_folder_pick": "資料夾",
+      "daily_folder_pick_desc": "從儲存庫中選擇資料夾，或在篩選框中輸入新路徑",
+      "daily_folder_root": "儲存庫根目錄",
+      "daily_folder_search": "搜尋或輸入資料夾路徑",
+      "daily_folder_use": "使用輸入的路徑"
     },
     "files": {
       "title": "文件和媒體",

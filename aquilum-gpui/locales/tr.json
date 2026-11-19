@@ -177,7 +177,18 @@
       "daily_format": "Dosya adı biçimi",
       "daily_format_desc": "Yer tutucular: {{YYYY}} yıl, {{YY}} kısa yıl, {{MM}}/{{M}} ay, {{DD}}/{{D}} gün, {{HH}}/{{H}} saat, {{mm}}/{{m}} dakika, {{ss}}/{{s}} saniye. Diğer metin olduğu gibi kullanılır.",
       "daily_folder": "Günlük notlar klasörü",
-      "daily_folder_desc": "Kasa köküne göre; boşsa kök kullanılır"
+      "daily_folder_desc": "Kasa köküne göre; boşsa kök kullanılır",
+      "daily_enabled": "Günlük notları etkinleştir",
+      "daily_enabled_desc": "Kenar çubuğunda günlük not düğmesini göster",
+      "daily_template": "Günlük not şablonu",
+      "daily_template_desc": "Kasada bulunan ve yeni günlük nota kopyalanan Markdown notu",
+      "daily_presets": "Tarih biçimi",
+      "daily_presets_desc": "Hazır örnekler; aşağıdaki dosya adı alanı düzenlenebilir kalır",
+      "daily_folder_pick": "Klasör",
+      "daily_folder_pick_desc": "Kasadan bir klasör seçin veya filtreye yeni bir yol yazın",
+      "daily_folder_root": "Kasa kökü",
+      "daily_folder_search": "Ara veya klasör yolu yaz",
+      "daily_folder_use": "Yazılan yolu kullan"
     },
     "files": {
       "title": "Dosyalar ve Medya",

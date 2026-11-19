@@ -1435,7 +1435,62 @@ impl SettingsView {
             ),
         ];
 
+        let now = time::OffsetDateTime::now_local()
+            .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
         let daily_rows = vec![
+            self.render_setting_row_with_id(
+                Some("dailyNotes.enabled"),
+                &self.t("settings.templates.daily_enabled"),
+                Some(&self.t("settings.templates.daily_enabled_desc")),
+                div()
+                    .id("row-daily-notes-enabled")
+                    .cursor_pointer()
+                    .child(self.render_toggle_switch(config.daily_notes.enabled))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.daily_notes.enabled = !this.config.daily_notes.enabled;
+                        this.save_settings(cx);
+                        cx.notify();
+                    })),
+                cx,
+            ),
+            self.render_setting_row(
+                &self.t("settings.templates.daily_presets"),
+                Some(&self.t("settings.templates.daily_presets_desc")),
+                div()
+                    .relative()
+                    .child(
+                        div()
+                            .id("select-daily-format-btn")
+                            .cursor_pointer()
+                            .child(self.render_select_pill(
+                                &crate::settings::daily_note_file_stem(
+                                    &config.daily_notes.format,
+                                    now,
+                                ),
+                            ))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.daily_format_popup_is_open() {
+                                    this.close_daily_format_popup(cx);
+                                } else {
+                                    this.open_daily_format_popup(window, cx);
+                                }
+                            })),
+                    )
+                    .when_some(self.daily_format_popup.clone(), |parent, popup| {
+                        parent.child(
+                            gpui::deferred(
+                                div()
+                                    .id("daily-format-dropdown-menu")
+                                    .absolute()
+                                    .top_full()
+                                    .right_0()
+                                    .mt_1()
+                                    .child(popup),
+                            )
+                            .with_priority(999),
+                        )
+                    }),
+            ),
             self.render_setting_row_with_id(
                 Some("dailyNotes.format"),
                 &self.t("settings.templates.daily_format"),
@@ -1445,9 +1500,51 @@ impl SettingsView {
             ),
             self.render_setting_row_with_id(
                 Some("dailyNotes.folder"),
-                &self.t("settings.templates.daily_folder"),
-                Some(&self.t("settings.templates.daily_folder_desc")),
-                self.render_daily_folder_input(window, cx),
+                &self.t("settings.templates.daily_folder_pick"),
+                Some(&self.t("settings.templates.daily_folder_pick_desc")),
+                {
+                    let folder_label = if config.daily_notes.folder.is_empty() {
+                        self.t("settings.templates.daily_folder_root")
+                    } else {
+                        config.daily_notes.folder.clone()
+                    };
+                    div()
+                        .relative()
+                        .child(
+                            div()
+                                .id("select-daily-folder-btn")
+                                .cursor_pointer()
+                                .child(self.render_select_pill(&folder_label))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if this.daily_folder_popup_is_open() {
+                                        this.close_daily_folder_popup(cx);
+                                    } else {
+                                        this.open_daily_folder_popup(window, cx);
+                                    }
+                                })),
+                        )
+                        .when_some(self.daily_folder_popup.clone(), |parent, popup| {
+                            parent.child(
+                                gpui::deferred(
+                                    div()
+                                        .id("daily-folder-dropdown-menu")
+                                        .absolute()
+                                        .top_full()
+                                        .right_0()
+                                        .mt_1()
+                                        .child(popup),
+                                )
+                                .with_priority(999),
+                            )
+                        })
+                },
+                cx,
+            ),
+            self.render_setting_row_with_id(
+                Some("dailyNotes.template"),
+                &self.t("settings.templates.daily_template"),
+                Some(&self.t("settings.templates.daily_template_desc")),
+                self.render_daily_template_input(window, cx),
                 cx,
             ),
         ];

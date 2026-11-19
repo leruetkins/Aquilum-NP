@@ -177,7 +177,18 @@
       "daily_format": "Filnamnsformat",
       "daily_format_desc": "Platshållare: {{YYYY}} år, {{YY}} kort år, {{MM}}/{{M}} månad, {{DD}}/{{D}} dag, {{HH}}/{{H}} timme, {{mm}}/{{m}} minut, {{ss}}/{{s}} sekund. Övrig text används som den är.",
       "daily_folder": "Mapp för dagliga anteckningar",
-      "daily_folder_desc": "Relativt valvets rot; tom använder roten"
+      "daily_folder_desc": "Relativt valvets rot; tom använder roten",
+      "daily_enabled": "Aktivera dagliga anteckningar",
+      "daily_enabled_desc": "Visa knappen för daglig anteckning i sidofältet",
+      "daily_template": "Mall för daglig anteckning",
+      "daily_template_desc": "Markdown-anteckning i valvet som kopieras till en ny daglig anteckning",
+      "daily_presets": "Datumformat",
+      "daily_presets_desc": "Färdiga exempel; filnamnsfältet nedan är fortfarande redigerbart",
+      "daily_folder_pick": "Mapp",
+      "daily_folder_pick_desc": "Välj en mapp från valvet eller skriv en ny sökväg i filtret",
+      "daily_folder_root": "Valvets rot",
+      "daily_folder_search": "Sök eller skriv en mappsökväg",
+      "daily_folder_use": "Använd angiven sökväg"
     },
     "files": {
       "title": "Filer och media",

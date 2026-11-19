@@ -177,7 +177,18 @@
       "daily_format": "Định dạng tên tệp",
       "daily_format_desc": "Biến: {{YYYY}} năm, {{YY}} năm rút gọn, {{MM}}/{{M}} tháng, {{DD}}/{{D}} ngày, {{HH}}/{{H}} giờ, {{mm}}/{{m}} phút, {{ss}}/{{s}} giây. Phần văn bản khác được dùng nguyên văn.",
       "daily_folder": "Thư mục ghi chú hằng ngày",
-      "daily_folder_desc": "Tương đối với thư mục gốc của kho; để trống dùng thư mục gốc"
+      "daily_folder_desc": "Tương đối với thư mục gốc của kho; để trống dùng thư mục gốc",
+      "daily_enabled": "Bật ghi chú hàng ngày",
+      "daily_enabled_desc": "Hiển thị nút ghi chú hàng ngày trên thanh bên",
+      "daily_template": "Mẫu ghi chú hàng ngày",
+      "daily_template_desc": "Ghi chú Markdown trong kho được sao chép vào ghi chú hàng ngày mới",
+      "daily_presets": "Định dạng ngày",
+      "daily_presets_desc": "Ví dụ có sẵn; trường tên tệp bên dưới vẫn có thể chỉnh sửa",
+      "daily_folder_pick": "Thư mục",
+      "daily_folder_pick_desc": "Chọn thư mục từ kho hoặc nhập đường dẫn mới vào bộ lọc",
+      "daily_folder_root": "Thư mục gốc của kho",
+      "daily_folder_search": "Tìm hoặc nhập đường dẫn thư mục",
+      "daily_folder_use": "Dùng đường dẫn đã nhập"
     },
     "files": {
       "title": "Tập tin & Phương tiện",

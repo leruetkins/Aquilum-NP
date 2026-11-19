@@ -177,7 +177,18 @@
       "daily_format": "Bestandsnaamformaat",
       "daily_format_desc": "Plaatsaanduidingen: {{YYYY}} jaar, {{YY}} kort jaar, {{MM}}/{{M}} maand, {{DD}}/{{D}} dag, {{HH}}/{{H}} uur, {{mm}}/{{m}} minuut, {{ss}}/{{s}} seconde. Overige tekst wordt ongewijzigd gebruikt.",
       "daily_folder": "Map voor dagelijkse notities",
-      "daily_folder_desc": "Relatief aan de kluisroot; leeg gebruikt de root"
+      "daily_folder_desc": "Relatief aan de kluisroot; leeg gebruikt de root",
+      "daily_enabled": "Dagelijkse notities inschakelen",
+      "daily_enabled_desc": "Toon de knop voor dagelijkse notities in de zijbalk",
+      "daily_template": "Sjabloon voor dagelijkse notities",
+      "daily_template_desc": "Markdown-notitie in de kluis die naar een nieuwe dagelijkse notitie wordt gekopieerd",
+      "daily_presets": "Datumnotatie",
+      "daily_presets_desc": "Voorbeeldpresets; het bestandsnaamveld hieronder blijft bewerkbaar",
+      "daily_folder_pick": "Map",
+      "daily_folder_pick_desc": "Kies een map uit de kluis of typ een nieuw pad in het filter",
+      "daily_folder_root": "Kluisroot",
+      "daily_folder_search": "Zoeken of een mappad typen",
+      "daily_folder_use": "Getikt pad gebruiken"
     },
     "files": {
       "title": "Bestanden en media",

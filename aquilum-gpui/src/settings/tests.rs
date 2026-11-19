@@ -245,19 +245,42 @@
     #[test]
     fn test_daily_note_settings_default_and_serde() {
         let default_settings = DailyNoteSettings::default();
+        assert!(default_settings.enabled);
         assert_eq!(default_settings.format, "{{YYYY}}-{{MM}}-{{DD}}");
         assert!(default_settings.folder.is_empty());
+        assert!(default_settings.template.is_empty());
 
         let parsed: DailyNoteSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(parsed, default_settings);
 
-        let parsed: DailyNoteSettings =
-            serde_json::from_str(r#"{"format":"{{DD}}.{{MM}}","folder":"Journal"}"#).unwrap();
+        let parsed: DailyNoteSettings = serde_json::from_str(
+            r#"{"enabled":false,"format":"{{DD}}.{{MM}}","folder":"Journal","template":"Templates/Daily.md"}"#,
+        )
+        .unwrap();
+        assert!(!parsed.enabled);
         assert_eq!(parsed.format, "{{DD}}.{{MM}}");
         assert_eq!(parsed.folder, "Journal");
+        assert_eq!(parsed.template, "Templates/Daily.md");
 
         let serialized = serde_json::to_string(&parsed).unwrap();
         assert!(serialized.contains(r#""folder":"Journal""#));
+        assert!(serialized.contains(r#""enabled":false"#));
+        assert!(serialized.contains(r#""template":"Templates/Daily.md""#));
+    }
+
+    #[test]
+    fn test_vault_relative_path_stays_inside_the_vault() {
+        let root = Path::new("/vault");
+        assert_eq!(vault_relative_path(root, "Journal/Daily"), Path::new("/vault/Journal/Daily"));
+        assert_eq!(vault_relative_path(root, " /a/../b// "), Path::new("/vault/a/b"));
+        assert_eq!(vault_relative_path(root, ".."), root);
+        assert_eq!(vault_relative_path(root, ""), root);
+        assert_eq!(vault_relative_path(root, "/etc/passwd"), Path::new("/vault/etc/passwd"));
+        assert_eq!(vault_relative_path(root, r"Notes\today.md"), Path::new("/vault/Notes/today.md"));
+
+        assert_eq!(normalize_vault_relative(r" Notes\today "), "Notes/today");
+        assert_eq!(normalize_vault_relative("/a/../b//"), "a/b");
+        assert_eq!(normalize_vault_relative(""), "");
     }
 
     #[test]

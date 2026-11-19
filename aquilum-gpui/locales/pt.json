@@ -177,7 +177,18 @@
       "daily_format": "Formato do nome do arquivo",
       "daily_format_desc": "Marcadores: {{YYYY}} ano, {{YY}} ano curto, {{MM}}/{{M}} mês, {{DD}}/{{D}} dia, {{HH}}/{{H}} hora, {{mm}}/{{m}} minuto, {{ss}}/{{s}} segundo. O restante do texto é usado como está.",
       "daily_folder": "Pasta das notas diárias",
-      "daily_folder_desc": "Relativa à raiz do cofre; vazia usa a raiz"
+      "daily_folder_desc": "Relativa à raiz do cofre; vazia usa a raiz",
+      "daily_enabled": "Ativar notas diárias",
+      "daily_enabled_desc": "Mostrar o botão de nota diária na barra lateral",
+      "daily_template": "Modelo de nota diária",
+      "daily_template_desc": "Nota Markdown do cofre copiada para uma nova nota diária",
+      "daily_presets": "Formato da data",
+      "daily_presets_desc": "Exemplos predefinidos; o campo de nome do arquivo abaixo continua editável",
+      "daily_folder_pick": "Pasta",
+      "daily_folder_pick_desc": "Escolha uma pasta do cofre ou digite um novo caminho no filtro",
+      "daily_folder_root": "Raiz do cofre",
+      "daily_folder_search": "Pesquisar ou digitar um caminho de pasta",
+      "daily_folder_use": "Usar o caminho digitado"
     },
     "files": {
       "title": "Arquivos e mídia",

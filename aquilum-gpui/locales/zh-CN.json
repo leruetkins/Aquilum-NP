@@ -177,7 +177,18 @@
       "daily_format": "文件名格式",
       "daily_format_desc": "占位符：{{YYYY}} 年、{{YY}} 短年份、{{MM}}/{{M}} 月、{{DD}}/{{D}} 日、{{HH}}/{{H}} 时、{{mm}}/{{m}} 分、{{ss}}/{{s}} 秒。其他文本按原样使用。",
       "daily_folder": "每日笔记文件夹",
-      "daily_folder_desc": "相对于仓库根目录；留空则使用根目录"
+      "daily_folder_desc": "相对于仓库根目录；留空则使用根目录",
+      "daily_enabled": "启用每日笔记",
+      "daily_enabled_desc": "在侧边栏显示每日笔记按钮",
+      "daily_template": "每日笔记模板",
+      "daily_template_desc": "复制到新每日笔记中的库内 Markdown 笔记",
+      "daily_presets": "日期格式",
+      "daily_presets_desc": "预设示例；下方的文件名栏仍可编辑",
+      "daily_folder_pick": "文件夹",
+      "daily_folder_pick_desc": "从库中选择文件夹，或在筛选框中输入新路径",
+      "daily_folder_root": "仓库根目录",
+      "daily_folder_search": "搜索或输入文件夹路径",
+      "daily_folder_use": "使用输入的路径"
     },
     "files": {
       "title": "文件和媒体",
