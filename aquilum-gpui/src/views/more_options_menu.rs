@@ -256,7 +256,7 @@ impl AppView {
 
         let menu_w = 270.0;
         let submenu_w = 240.0;
-        let submenu_gap = 4.0;
+        let submenu_overlap = 4.0;
 
         let click_x = self.more_options_menu.position_x;
         let click_y = self.more_options_menu.position_y;
@@ -270,11 +270,11 @@ impl AppView {
         let menu_y = (click_y + 14.0).max(8.0);
 
         // Submenu coordinates: open to the left if near right screen edge
-        let submenu_on_left = menu_x + menu_w + submenu_w + submenu_gap + 12.0 > window_w;
+        let submenu_on_left = menu_x + menu_w + submenu_w - submenu_overlap + 12.0 > window_w;
         let submenu_x = if submenu_on_left {
-            (menu_x - submenu_w - submenu_gap).max(8.0)
+            (menu_x - submenu_w + submenu_overlap).max(8.0)
         } else {
-            menu_x + menu_w + submenu_gap
+            menu_x + menu_w - submenu_overlap
         };
 
         let target_path = self.more_options_menu.target_path.clone();
@@ -993,21 +993,6 @@ impl AppView {
                         .on_mouse_down(MouseButton::Right, |_, _, cx| {
                             cx.stop_propagation();
                         })
-                        // Hover bridge
-                        .child(
-                            div()
-                                .id("more-sub-copy-bridge")
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .when(!submenu_on_left, |d| d.left(px(-10.0)).w(px(12.0)))
-                                .when(submenu_on_left, |d| d.right(px(-10.0)).w(px(12.0)))
-                                .on_hover(cx.listener(|this, is_hovered: &bool, _, _cx| {
-                                    if *is_hovered {
-                                        this.more_options_menu.active_submenu = ActiveSubmenu::CopyPath;
-                                    }
-                                })),
-                        )
                         // Subitem 1: Relative path
                         .child({
                             let p = target_for_copy.clone();
@@ -1152,21 +1137,6 @@ impl AppView {
                         .on_mouse_down(MouseButton::Right, |_, _, cx| {
                             cx.stop_propagation();
                         })
-                        // Hover bridge
-                        .child(
-                            div()
-                                .id("more-sub-linked-bridge")
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .when(!submenu_on_left, |d| d.left(px(-10.0)).w(px(12.0)))
-                                .when(submenu_on_left, |d| d.right(px(-10.0)).w(px(12.0)))
-                                .on_hover(cx.listener(|this, is_hovered: &bool, _, _cx| {
-                                    if *is_hovered {
-                                        this.more_options_menu.active_submenu = ActiveSubmenu::LinkedView;
-                                    }
-                                })),
-                        )
                         // Subitem 1: Linked preview area
                         .child({
                             let p = target_for_linked.clone();

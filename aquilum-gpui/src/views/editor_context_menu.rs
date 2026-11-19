@@ -988,6 +988,16 @@ impl AppView {
         content_h + 8.0 // 4px top + 4px bottom padding (.p_1())
     }
 
+    /// Panel width for a slice of menu items. Rendering and left-side submenu
+    /// placement must share it: a wider estimate would leave a gap between the
+    /// parent panel and a submenu opened to the left.
+    fn calculate_menu_width(items: &[ContextMenuItem]) -> f32 {
+        let max_chars = items.iter().map(|it| it.title.chars().count()).max().unwrap_or(20);
+        let has_sub = items.iter().any(|it| it.submenu.as_ref().map(|s| !s.is_empty()).unwrap_or(false));
+        let min_w = if has_sub { 280.0 } else { 190.0 };
+        (max_chars as f32 * 8.2 + 54.0).max(min_w).min(420.0)
+    }
+
     /// Recursively renders a menu panel and its open submenu child panel (if any).
     fn render_menu_panel(
         &self,
@@ -1005,10 +1015,7 @@ impl AppView {
         let vp_h: f32 = vp_size.height.into();
 
         // Calculate dynamic width based on the longest item title
-        let max_chars = items.iter().map(|it| it.title.chars().count()).max().unwrap_or(20);
-        let has_sub = items.iter().any(|it| it.submenu.as_ref().map(|s| !s.is_empty()).unwrap_or(false));
-        let min_w = if has_sub { 280.0 } else { 190.0 };
-        let menu_w: f32 = (max_chars as f32 * 8.2 + 54.0).max(min_w).min(420.0);
+        let menu_w = Self::calculate_menu_width(items);
         let panel_h = Self::calculate_menu_items_height(items);
 
         let clamped_x = panel_x.min(vp_w - menu_w - 12.0).max(8.0);
@@ -1188,8 +1195,7 @@ impl AppView {
             if let Some(child_item) = items.get(child_idx) {
                 if let Some(ref sub_items) = child_item.submenu {
                     if !sub_items.is_empty() {
-                        let child_max_chars = sub_items.iter().map(|it| it.title.chars().count()).max().unwrap_or(18);
-                        let child_w = (child_max_chars as f32 * 8.2 + 76.0).max(260.0).min(400.0);
+                        let child_w = Self::calculate_menu_width(sub_items);
                         let child_h = Self::calculate_menu_items_height(sub_items);
 
                         // Vertical position of hovered parent item inside panel
@@ -1211,38 +1217,18 @@ impl AppView {
                             ideal_sub_y.max(8.0)
                         };
 
-                        let submenu_gap = 6.0;
-                        let submenu_on_left = clamped_x + menu_w + child_w + submenu_gap + 12.0 > vp_w;
+                        // The submenu overlaps the parent panel's 4px padding, so its
+                        // edge sits flush against the hovered row instead of a gap.
+                        let submenu_overlap = 4.0;
+                        let submenu_on_left = clamped_x + menu_w + child_w - submenu_overlap + 12.0 > vp_w;
                         let sub_x = if submenu_on_left {
-                            (clamped_x - child_w - submenu_gap).max(8.0)
+                            (clamped_x - child_w + submenu_overlap).max(8.0)
                         } else {
-                            clamped_x + menu_w + submenu_gap
+                            clamped_x + menu_w - submenu_overlap
                         };
 
                         let mut next_path = current_path.clone();
                         next_path.push(child_idx);
-
-                        // Invisible bridge connecting parent item and submenu across the gap
-                        let bridge = div()
-                            .id(gpui::ElementId::from(gpui::SharedString::from(format!("ctx-bridge-{:?}", next_path))))
-                            .absolute()
-                            .top(px(ideal_sub_y.min(sub_y)))
-                            .h(px((child_h + (sub_y - ideal_sub_y).abs()).max(28.0)))
-                            .when(!submenu_on_left, |d| {
-                                d.left(px(clamped_x + menu_w - 2.0)).w(px(submenu_gap + 4.0))
-                            })
-                            .when(submenu_on_left, |d| {
-                                d.left(px(sub_x + child_w - 2.0)).w(px(submenu_gap + 4.0))
-                            })
-                            .on_hover(cx.listener({
-                                let p = next_path.clone();
-                                move |this, hovered: &bool, _, cx| {
-                                    if *hovered {
-                                        this.editor_context_menu.active_path = p.clone();
-                                        cx.notify();
-                                    }
-                                }
-                            }));
 
                         let sub_panel = self.render_menu_panel(
                             sub_items,
@@ -1255,7 +1241,7 @@ impl AppView {
                             cx,
                         );
 
-                        root_container = root_container.child(bridge).child(sub_panel);
+                        root_container = root_container.child(sub_panel);
                     }
                 }
             }

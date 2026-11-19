@@ -76,7 +76,7 @@ impl AppView {
         let menu_w = 265.0;
         let menu_h = 500.0;
         let submenu_w = 210.0;
-        let submenu_gap = 6.0;
+        let submenu_overlap = 4.0;
 
         // Upward or downward placement:
         // Status bar is 28px + 8px margin = 36px bottom margin.
@@ -96,11 +96,11 @@ impl AppView {
         }
 
         // Submenu orientation: if not enough space on right for submenu, open to left
-        let submenu_on_left = menu_x + menu_w + submenu_w + submenu_gap + 12.0 > window_w;
+        let submenu_on_left = menu_x + menu_w + submenu_w - submenu_overlap + 12.0 > window_w;
         let submenu_x = if submenu_on_left {
-            menu_x - submenu_w - submenu_gap
+            menu_x - submenu_w + submenu_overlap
         } else {
-            menu_x + menu_w + submenu_gap
+            menu_x + menu_w - submenu_overlap
         };
 
         // Item 8 ("Copy path") vertical position inside menu container:
@@ -587,21 +587,6 @@ impl AppView {
                         .on_scroll_wheel(|_, _, cx| {
                             cx.stop_propagation();
                         })
-                        // Invisible bridge connecting parent item and submenu across the 6px gap
-                        .child(
-                            div()
-                                .id("file-submenu-hover-bridge")
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .when(!submenu_on_left, |this| this.left(px(-10.0)).w(px(12.0)))
-                                .when(submenu_on_left, |this| this.right(px(-10.0)).w(px(12.0)))
-                                .on_hover(cx.listener(|this, is_hovered: &bool, _, _cx| {
-                                    if *is_hovered {
-                                        this.file_context_menu.hovered_item = Some(8);
-                                    }
-                                })),
-                        )
                         // Submenu item 1: as Obsidian URL
                         .child(
                             div()
