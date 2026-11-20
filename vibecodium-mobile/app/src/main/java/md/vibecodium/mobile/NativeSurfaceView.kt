@@ -2071,6 +2071,24 @@ class NativeEditorView(
     override fun onCheckIsTextEditor(): Boolean = true
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> { moveCaretBy(-1, event.isShiftPressed); return true }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> { moveCaretBy(1, event.isShiftPressed); return true }
+            KeyEvent.KEYCODE_DPAD_UP -> { moveCaretVertically(-1, event.isShiftPressed); return true }
+            KeyEvent.KEYCODE_DPAD_DOWN -> { moveCaretVertically(1, event.isShiftPressed); return true }
+            KeyEvent.KEYCODE_MOVE_HOME -> {
+                if (event.isCtrlPressed) moveCaretDocumentEdge(false, event.isShiftPressed)
+                else moveCaretLineEdge(false, event.isShiftPressed)
+                return true
+            }
+            KeyEvent.KEYCODE_MOVE_END -> {
+                if (event.isCtrlPressed) moveCaretDocumentEdge(true, event.isShiftPressed)
+                else moveCaretLineEdge(true, event.isShiftPressed)
+                return true
+            }
+            KeyEvent.KEYCODE_PAGE_UP -> { moveCaretVertically(-10, event.isShiftPressed); return true }
+            KeyEvent.KEYCODE_PAGE_DOWN -> { moveCaretVertically(10, event.isShiftPressed); return true }
+        }
         if (event.isCtrlPressed) {
             when (keyCode) {
                 KeyEvent.KEYCODE_A -> {
@@ -2283,6 +2301,30 @@ class NativeEditorView(
             if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_MULTIPLE) {
                 return true
             }
+            val repeat = if (event.action == KeyEvent.ACTION_MULTIPLE) maxOf(1, event.repeatCount) else 1
+            val shift = event.isShiftPressed
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> { moveCaretBy(-repeat, shift); return true }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> { moveCaretBy(repeat, shift); return true }
+                KeyEvent.KEYCODE_DPAD_UP -> { moveCaretVertically(-repeat, shift); return true }
+                KeyEvent.KEYCODE_DPAD_DOWN -> { moveCaretVertically(repeat, shift); return true }
+                KeyEvent.KEYCODE_MOVE_HOME -> {
+                    if (event.isCtrlPressed) moveCaretDocumentEdge(false, shift)
+                    else moveCaretLineEdge(false, shift)
+                    return true
+                }
+                KeyEvent.KEYCODE_MOVE_END -> {
+                    if (event.isCtrlPressed) moveCaretDocumentEdge(true, shift)
+                    else moveCaretLineEdge(true, shift)
+                    return true
+                }
+                KeyEvent.KEYCODE_PAGE_UP -> { moveCaretVertically(-10 * repeat, shift); return true }
+                KeyEvent.KEYCODE_PAGE_DOWN -> { moveCaretVertically(10 * repeat, shift); return true }
+                KeyEvent.KEYCODE_A -> if (event.isCtrlPressed) { selectAllText(); return true }
+                KeyEvent.KEYCODE_C -> if (event.isCtrlPressed) { copySelectionToClipboard(); return true }
+                KeyEvent.KEYCODE_X -> if (event.isCtrlPressed) { cutSelectionToClipboard(); return true }
+                KeyEvent.KEYCODE_V -> if (event.isCtrlPressed) { pasteFromClipboard(); return true }
+            }
             return when (event.keyCode) {
                 KeyEvent.KEYCODE_DEL -> {
                     if (selectionNonEmpty()) {
@@ -2320,6 +2362,16 @@ class NativeEditorView(
                 }
                 else -> super.sendKeyEvent(event)
             }
+        }
+
+        override fun performContextMenuAction(id: Int): Boolean {
+            when (id) {
+                android.R.id.selectAll -> { selectAllText(); return true }
+                android.R.id.copy -> { copySelectionToClipboard(); return true }
+                android.R.id.cut -> { cutSelectionToClipboard(); return true }
+                android.R.id.paste -> { pasteFromClipboard(); return true }
+            }
+            return super.performContextMenuAction(id)
         }
 
         override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence {
@@ -2586,6 +2638,64 @@ class NativeEditorView(
         notifySelectionChanged()
         requestRender()
         helper.invalidateRoot()
+    }
+
+    fun setSelectionRange(start: Int, end: Int) {
+        selectNative(start, end)
+    }
+
+    private fun lineIndexAt(offset: Int): Int {
+        if (lineStarts.isEmpty()) return 0
+        val index = lineStarts.binarySearch(offset)
+        return if (index >= 0) index else (-index - 2).coerceIn(0, lineStarts.lastIndex)
+    }
+
+    private fun lineEndOffset(line: Int): Int {
+        val start = lineStarts.getOrElse(line) { 0 }.coerceIn(0, mirrorText.length)
+        return if (line + 1 < lineStarts.size) {
+            (lineStarts[line + 1] - 1).coerceIn(start, mirrorText.length)
+        } else {
+            mirrorText.length
+        }
+    }
+
+    private fun moveCaretTo(target: Int, extend: Boolean) {
+        val clamped = target.coerceIn(0, mirrorText.length)
+        hideSelectionToolbar()
+        if (extend) selectNative(mirrorAnchor, clamped) else selectNative(clamped, clamped)
+        CoreBridge.nativeEditorScrollToCursor(surfaceId)
+        requestRender()
+    }
+
+    fun moveCaretBy(delta: Int, extend: Boolean) {
+        if (inPreview || delta == 0) return
+        val head = mirrorSelection.coerceIn(0, mirrorText.length)
+        val target = runCatching { Character.offsetByCodePoints(mirrorText, head, delta) }
+            .getOrDefault(head + delta)
+        moveCaretTo(target, extend)
+    }
+
+    fun moveCaretVertically(lines: Int, extend: Boolean) {
+        if (inPreview || lines == 0 || lineStarts.isEmpty()) return
+        val head = mirrorSelection.coerceIn(0, mirrorText.length)
+        val line = lineIndexAt(head)
+        val targetLine = (line + lines).coerceIn(0, lineStarts.lastIndex)
+        val column = head - lineStarts[line].coerceIn(0, mirrorText.length)
+        val start = lineStarts[targetLine].coerceIn(0, mirrorText.length)
+        val target = (start + column).coerceIn(start, lineEndOffset(targetLine))
+        moveCaretTo(target, extend)
+    }
+
+    fun moveCaretLineEdge(toEnd: Boolean, extend: Boolean) {
+        if (inPreview || lineStarts.isEmpty()) return
+        val head = mirrorSelection.coerceIn(0, mirrorText.length)
+        val line = lineIndexAt(head)
+        moveCaretTo(if (toEnd) lineEndOffset(line) else lineStarts[line], extend)
+    }
+
+    fun moveCaretDocumentEdge(toEnd: Boolean, extend: Boolean) {
+        if (inPreview) return
+        moveCaretTo(if (toEnd) mirrorText.length else 0, extend)
     }
 
     override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
