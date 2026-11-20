@@ -1,6 +1,11 @@
 package md.vibecodium.mobile.ui
 
+import android.app.Activity
+import android.content.ClipData
+import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
+import androidx.core.content.FileProvider
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -250,6 +255,7 @@ import md.vibecodium.mobile.flattenExplorerTree
 import md.vibecodium.mobile.indentAtCursor
 import md.vibecodium.mobile.outdentAtCursor
 import kotlinx.coroutines.flow.collect
+import java.io.File
 import java.text.SimpleDateFormat
 import java.time.LocalDateTime
 import java.util.Date
@@ -2068,6 +2074,7 @@ private fun NoteActionItems(
     controller: VibecodiumController,
     onDismiss: () -> Unit,
 ) {
+    val context = LocalContext.current
     DropdownMenuItem(
         text = { Text(if (editorMode == EditorMode.Source) "Reading view" else "Edit view") },
         onClick = {
@@ -2084,6 +2091,13 @@ private fun NoteActionItems(
     DropdownMenuItem(
         text = { Text("Save note") },
         onClick = { onDismiss(); controller.saveActiveNow() },
+    )
+    DropdownMenuItem(
+        text = { Text("Share note") },
+        onClick = {
+            onDismiss()
+            shareNote(context, tab)
+        },
     )
     DropdownMenuItem(
         text = { Text("Rename note") },
@@ -2127,6 +2141,30 @@ private fun NoteActionItems(
             controller.showMessage("Vibecodium · Rust core 0.1.0")
         },
     )
+}
+
+private fun shareNote(context: Context, tab: Tab) {
+    val dir = File(context.cacheDir, "shared").apply { mkdirs() }
+    val rawName = tab.title.substringAfterLast('/').ifBlank { "note" }
+    val base = rawName.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "note" }
+    val fileName = if (base.endsWith(".md", ignoreCase = true)) base else "$base.md"
+    val file = File(dir, fileName)
+    file.writeText(tab.text)
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/markdown"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_SUBJECT, tab.title)
+        putExtra(Intent.EXTRA_TITLE, fileName)
+        clipData = ClipData.newUri(context.contentResolver, fileName, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    val chooser = Intent.createChooser(intent, "Share note")
+    chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    if (context !is Activity) {
+        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    context.startActivity(chooser)
 }
 
 // --------------------------------------------------------------------- source

@@ -2906,10 +2906,10 @@ class NativeEditorView(
                     if (selectionNonEmpty()) {
                         showSelectionActions()
                     } else {
-                        if (!wasDragged && releasedHandle == 2) {
-                            showInsertionActions()
-                        }
+                        // A tap on the droplet must not cover it with a toolbar;
+                        // the caret toolbar is available via long-press.
                         applyInsertionHandleVisible(true)
+                        post { syncHandles() }
                     }
                     return true
                 }
@@ -2973,6 +2973,7 @@ class NativeEditorView(
                                 requestFocus()
                                 startCaretBlink()
                                 applyInsertionHandleVisible(true)
+                                post { syncHandles() }
                                 onTextChanged(mirrorText, mirrorSelection)
                                 onCaretPlaced?.invoke()
                             } else {
@@ -3052,11 +3053,17 @@ class NativeEditorView(
             }
         } else {
             val ins = insertionHandle ?: return -1
-            val left = ins.x - handleSize / 2f - reach
-            val right = ins.x + handleSize / 2f + reach
-            val top = ins.y - 4f * resources.displayMetrics.density
-            val bottom = ins.y + handleSize + reach
-            return if (x in left..right && y in top..bottom) 2 else -1
+            val density = resources.displayMetrics.density
+            // The teardrop hangs below the caret row. Keep the grab zone below
+            // the caret line and as tall as one full text row, so the drop is
+            // easy to catch without stealing taps in the line above it.
+            val halfWidth = 26f * density
+            val top = ins.y - 1f * density
+            val bottom = ins.y + maxOf(handleRowHeight, 24f * density)
+            return if (
+                x in (ins.x - halfWidth)..(ins.x + halfWidth) &&
+                y in top..bottom
+            ) 2 else -1
         }
     }
 
@@ -3347,6 +3354,9 @@ class NativeEditorView(
         scheduleBandRender(target, force = true)
         scrollbarOverlay.update(knownScroll, scrollMaxY)
         onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
+        if (insertionHandle != null && !selectionNonEmpty()) {
+            syncHandles()
+        }
     }
 
     private fun syncAfterEdit() {

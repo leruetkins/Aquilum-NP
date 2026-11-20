@@ -164,7 +164,42 @@ impl AppView {
 
         let mut items = Vec::new();
 
-        // 1. Link Group
+        // 1. Clipboard Group
+        items.push(item(
+            "editor-copy",
+            self.t("editor.context.copy"),
+            "copy",
+            !has_selection,
+        ));
+        items.push(item(
+            "editor-cut",
+            self.t("editor.context.cut"),
+            "scissors",
+            !has_selection,
+        ));
+        items.push(item(
+            "editor-paste",
+            self.t("editor.context.paste"),
+            "clipboard-check",
+            false,
+        ));
+        items.push(item(
+            "editor-paste-plain",
+            self.t("editor.context.paste_plain"),
+            "clipboard-type",
+            false,
+        ));
+        items.push(item(
+            "editor-select-all",
+            self.t("editor.context.select_all"),
+            "box-select",
+            false,
+        ));
+
+        // Separator
+        items.push(separator("sep-clipboard"));
+
+        // 2. Link Group
         items.push(item(
             "editor-insert-link",
             self.t("editor.context.insert_link"),
@@ -181,7 +216,7 @@ impl AppView {
         // Separator
         items.push(separator("sep-links"));
 
-        // 2. Search & Formatting Group
+        // 3. Search & Formatting Group
         let search_title = if has_selection {
             let snippet = if selected_text.chars().count() > 20 {
                 format!("{}...", selected_text.chars().take(20).collect::<String>())
@@ -270,41 +305,6 @@ impl AppView {
             self.t("editor.context.insert"),
             "plus",
             insert_items,
-        ));
-
-        // Separator
-        items.push(separator("sep-clipboard"));
-
-        // 3. Clipboard Group
-        items.push(item(
-            "editor-cut",
-            self.t("editor.context.cut"),
-            "scissors",
-            !has_selection,
-        ));
-        items.push(item(
-            "editor-copy",
-            self.t("editor.context.copy"),
-            "copy",
-            !has_selection,
-        ));
-        items.push(item(
-            "editor-paste",
-            self.t("editor.context.paste"),
-            "clipboard",
-            false,
-        ));
-        items.push(item(
-            "editor-paste-plain",
-            self.t("editor.context.paste_plain"),
-            "clipboard-list",
-            false,
-        ));
-        items.push(item(
-            "editor-select-all",
-            self.t("editor.context.select_all"),
-            "check",
-            false,
         ));
 
         // Separator
