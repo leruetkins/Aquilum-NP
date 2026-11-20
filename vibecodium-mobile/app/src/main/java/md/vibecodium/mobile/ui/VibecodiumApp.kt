@@ -1503,6 +1503,7 @@ private fun EditorScreen(
                 Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
+                    .padding(end = 8.dp)
                     .height(with(edgeDensity) { topBandPx.toDp() })
                     .background(
                         Brush.verticalGradient(
@@ -1518,6 +1519,7 @@ private fun EditorScreen(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
+                    .padding(end = 8.dp)
                     .height(with(edgeDensity) { bottomBandPx.toDp() })
                     .background(
                         Brush.verticalGradient(
