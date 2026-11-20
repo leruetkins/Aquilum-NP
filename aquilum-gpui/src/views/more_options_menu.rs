@@ -24,8 +24,10 @@ pub struct MoreOptionsMenuState {
     pub is_open: bool,
     pub target_path: Option<PathBuf>,
     pub leaf_id: Option<crate::workspace::LeafId>,
-    pub position_x: f32,
-    pub position_y: f32,
+    /// Right edge of the 3-dots button in window coordinates; the panel is right-aligned to it.
+    pub anchor_right: f32,
+    /// Bottom edge of the 3-dots button in window coordinates; the panel opens just below it.
+    pub anchor_bottom: f32,
     pub hovered_item: Option<&'static str>,
     pub active_submenu: ActiveSubmenu,
 }
@@ -36,8 +38,8 @@ impl Default for MoreOptionsMenuState {
             is_open: false,
             target_path: None,
             leaf_id: None,
-            position_x: 0.0,
-            position_y: 0.0,
+            anchor_right: 0.0,
+            anchor_bottom: 0.0,
             hovered_item: None,
             active_submenu: ActiveSubmenu::None,
         }
@@ -45,13 +47,13 @@ impl Default for MoreOptionsMenuState {
 }
 
 impl AppView {
-    /// Opens the more options context menu at coordinates `(x, y)` for the current note.
+    /// Opens the more options context menu anchored to the 3-dots button's bottom-right corner.
     pub fn open_more_options_menu(
         &mut self,
         target_path: Option<PathBuf>,
         leaf_id: Option<crate::workspace::LeafId>,
-        x: f32,
-        y: f32,
+        anchor_right: f32,
+        anchor_bottom: f32,
         cx: &mut Context<Self>,
     ) {
         self.file_context_menu.is_open = false;
@@ -64,8 +66,8 @@ impl AppView {
             is_open: true,
             target_path,
             leaf_id,
-            position_x: x,
-            position_y: y,
+            anchor_right,
+            anchor_bottom,
             hovered_item: None,
             active_submenu: ActiveSubmenu::None,
         };
@@ -258,16 +260,16 @@ impl AppView {
         let submenu_w = 240.0;
         let submenu_overlap = 4.0;
 
-        let click_x = self.more_options_menu.position_x;
-        let click_y = self.more_options_menu.position_y;
+        let anchor_right = self.more_options_menu.anchor_right;
+        let anchor_bottom = self.more_options_menu.anchor_bottom;
 
         // Position menu directly below the 3-dots button, right-aligned with button
-        let mut menu_x = (click_x + 14.0 - menu_w).max(8.0);
+        let mut menu_x = (anchor_right - menu_w).max(8.0);
         if menu_x + menu_w > window_w - 12.0 {
             menu_x = (window_w - menu_w - 12.0).max(8.0);
         }
 
-        let menu_y = (click_y + 14.0).max(8.0);
+        let menu_y = (anchor_bottom + 4.0).max(8.0);
 
         // Submenu coordinates: open to the left if near right screen edge
         let submenu_on_left = menu_x + menu_w + submenu_w - submenu_overlap + 12.0 > window_w;

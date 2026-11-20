@@ -1380,38 +1380,65 @@ impl AppView {
                         let target_path_left = full_path_opt.clone();
                         let target_path_right = full_path_opt.clone();
                         let target_leaf_for_click = leaf_id;
+                        // Prepaint fills this with the button's window rect, so the
+                        // menu attaches to the button rather than the cursor.
+                        let button_bounds: Rc<Cell<Bounds<Pixels>>> =
+                            Rc::new(Cell::new(Bounds::default()));
+                        let bounds_for_paint = button_bounds.clone();
+                        let bounds_for_left = button_bounds.clone();
+                        let bounds_for_right = button_bounds.clone();
                         div()
-                            .id("btn-more-options")
                             .flex()
-                            .items_center()
-                            .justify_center()
-                            .w(px(28.0))
-                            .h(px(28.0))
-                            .rounded_md()
-                            .cursor_pointer()
-                            .when(is_menu_open, |d| d.bg(theme.bg_hover))
-                            .hover(|h| h.bg(theme.bg_hover))
-                            .child(icons::icon(
-                                icons::ICON_MORE_VERTICAL,
-                                16.0,
-                                if is_menu_open { theme.text_primary } else { theme.text_muted },
-                            ))
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                cx.stop_propagation();
-                                let x: f32 = event.position.x.into();
-                                let y: f32 = event.position.y.into();
-                                if this.more_options_menu.is_open {
-                                    this.close_more_options_menu(cx);
-                                } else {
-                                    this.open_more_options_menu(target_path_left.clone(), target_leaf_for_click, x, y, cx);
+                            .flex_shrink_0()
+                            .on_children_prepainted(move |children, _, _| {
+                                if let Some(b) = children.first() {
+                                    bounds_for_paint.set(*b);
                                 }
-                            }))
-                            .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                cx.stop_propagation();
-                                let x: f32 = event.position.x.into();
-                                let y: f32 = event.position.y.into();
-                                this.open_more_options_menu(target_path_right.clone(), target_leaf_for_click, x, y, cx);
-                            }))
+                            })
+                            .child(
+                                div()
+                                    .id("btn-more-options")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(28.0))
+                                    .h(px(28.0))
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .when(is_menu_open, |d| d.bg(theme.bg_hover))
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(
+                                        icons::ICON_MORE_VERTICAL,
+                                        16.0,
+                                        if is_menu_open { theme.text_primary } else { theme.text_muted },
+                                    ))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        if this.more_options_menu.is_open {
+                                            this.close_more_options_menu(cx);
+                                        } else {
+                                            let b = bounds_for_left.get();
+                                            this.open_more_options_menu(
+                                                target_path_left.clone(),
+                                                target_leaf_for_click,
+                                                f32::from(b.origin.x + b.size.width),
+                                                f32::from(b.origin.y + b.size.height),
+                                                cx,
+                                            );
+                                        }
+                                    }))
+                                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        let b = bounds_for_right.get();
+                                        this.open_more_options_menu(
+                                            target_path_right.clone(),
+                                            target_leaf_for_click,
+                                            f32::from(b.origin.x + b.size.width),
+                                            f32::from(b.origin.y + b.size.height),
+                                            cx,
+                                        );
+                                    })),
+                            )
                     }),
             )
     }
