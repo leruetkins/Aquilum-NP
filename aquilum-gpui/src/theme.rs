@@ -89,6 +89,25 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// Returns the inline-code chip background. In dark themes the chip uses
+    /// the selected-item surface: lighter than the current line (`bg_hover`),
+    /// but darker than a bright white overlay. In light themes the code
+    /// background is darkened slightly so the chip has some body.
+    pub fn inline_code_bg(&self) -> Rgba {
+        if self.is_dark {
+            self.bg_selected
+        } else {
+            let base = self.code_bg;
+            const DARKEN: f32 = 0.04;
+            Rgba {
+                r: base.r * (1.0 - DARKEN),
+                g: base.g * (1.0 - DARKEN),
+                b: base.b * (1.0 - DARKEN),
+                a: 1.0,
+            }
+        }
+    }
+
     /// Returns pale green background color for preview/Ctrl-selected text.
     pub fn preview_selection_bg(&self) -> Rgba {
         if self.is_dark {
@@ -358,5 +377,38 @@ mod tests {
         let theme = Theme::from_ui(&ui, None);
         assert!(!theme.is_dark);
         assert_eq!(theme.accent, Theme::light().accent);
+    }
+}
+
+#[cfg(test)]
+mod inline_code_bg_tests {
+    use super::*;
+
+    fn luminance(color: Rgba) -> f32 {
+        0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b
+    }
+
+    #[test]
+    fn light_inline_code_chip_is_darker_than_the_code_background() {
+        for theme in [Theme::light(), Theme::obsidian_light()] {
+            assert!(
+                luminance(theme.inline_code_bg()) < luminance(theme.code_bg),
+                "light inline-code chip must be darker than code_bg"
+            );
+        }
+    }
+
+    #[test]
+    fn dark_inline_code_chip_is_lighter_than_the_current_line() {
+        for theme in [Theme::dark(), Theme::obsidian_dark()] {
+            let line = theme.bg_hover;
+            let chip = theme.inline_code_bg();
+            assert!(
+                luminance(chip) > luminance(line),
+                "inline-code chip must stand out on the current line: chip {:?}, line {:?}",
+                chip,
+                line
+            );
+        }
     }
 }

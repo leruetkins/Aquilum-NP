@@ -260,7 +260,7 @@ impl AppView {
                             .top(px(edge_top + line_top + chip_inset))
                             .h(px((chip_cell_h - 2.0 * chip_inset).max(1.0)))
                             .w(px(chip_w))
-                            .bg(theme.code_bg)
+                            .bg(theme.inline_code_bg())
                             .rounded_sm()
                             .into_any_element(),
                     );

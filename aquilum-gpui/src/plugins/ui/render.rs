@@ -677,7 +677,7 @@ fn render_ui_node_inner<V: UiSink>(
                     TextStyle::Code => div()
                         .flex_shrink_0()
                         .text_xs()
-                        .bg(theme.code_bg)
+                        .bg(theme.inline_code_bg())
                         .text_color(theme.success)
                         .px(px(4.0))
                         .py(px(2.0))

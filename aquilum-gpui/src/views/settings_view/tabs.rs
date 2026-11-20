@@ -2486,7 +2486,7 @@ impl SettingsView {
                         len,
                         font: code_font.clone(),
                         color: theme.accent.into(),
-                        background_color: Some(theme.code_bg.into()),
+                        background_color: Some(theme.inline_code_bg().into()),
                         underline: None,
                         strikethrough: None,
                     });

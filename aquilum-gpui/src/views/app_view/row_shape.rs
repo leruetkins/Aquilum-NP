@@ -276,9 +276,7 @@ pub(crate) fn shape_row(
     let mut runs = Vec::new();
     let color = rgba(0x000000ff).into();
     for segment in &painted.segments {
-        let weight = if segment.code {
-            inline_code_weight(if segment.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL })
-        } else if segment.bold {
+        let weight = if segment.bold {
             gpui::FontWeight::BOLD
         } else {
             gpui::FontWeight::NORMAL

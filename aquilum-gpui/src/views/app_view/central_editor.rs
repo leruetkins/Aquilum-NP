@@ -1397,7 +1397,7 @@ impl AppView {
                                     .top(px(chip_top))
                                     .h(px(chip_h))
                                     .w(px(chip_w))
-                                    .bg(theme.code_bg)
+                                    .bg(theme.inline_code_bg())
                                     .rounded_sm(),
                             );
                         }

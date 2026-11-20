@@ -648,18 +648,6 @@
         assert!(same(active_delim, theme.text_muted), "an active delimiter is muted: {:?}", comps(gpui::Rgba::from(active_delim)));
     }
 
-    /// Inline code is painted one step heavier than the body text, and the row's shaped
-    /// layout has to ask for the same face — otherwise the chip and the caret would be
-    /// measured with the wrong advances.
-    #[test]
-    fn inline_code_is_heavier_than_its_body_but_never_lighter_than_a_bold_one() {
-        assert_eq!(inline_code_weight(gpui::FontWeight::NORMAL).0, INLINE_CODE_WEIGHT.0);
-        assert!(INLINE_CODE_WEIGHT.0 > gpui::FontWeight::NORMAL.0);
-        // A bold row keeps its bold: there is no heavier bundled face to move up to.
-        assert_eq!(inline_code_weight(gpui::FontWeight::BOLD).0, gpui::FontWeight::BOLD.0);
-        assert!(inline_code_weight(gpui::FontWeight::LIGHT).0 >= INLINE_CODE_WEIGHT.0);
-    }
-
     /// A saved restore is clamped against the document, never against gpui's
     /// `max_offset`: the list paints a slice, so the handle no longer describes
     /// the content and its max is meaningless.
@@ -1743,7 +1731,7 @@
                                         code_start = Some(text.len());
                                     }
                                     let (weight, style) = if delim {
-                                        (inline_code_weight(base_weight), base_style)
+                                        (base_weight, base_style)
                                     } else {
                                         (base_weight, base_style)
                                     };
@@ -1759,7 +1747,7 @@
                                 crate::markdown::SyntaxSpan::Bold(t) => push_run(&mut text, &mut runs, &font_family, t, gpui::FontWeight::BOLD, base_style),
                                 crate::markdown::SyntaxSpan::Italic(t) => push_run(&mut text, &mut runs, &font_family, t, base_weight, gpui::FontStyle::Italic),
                                 crate::markdown::SyntaxSpan::BoldItalic(t) => push_run(&mut text, &mut runs, &font_family, t, gpui::FontWeight::BOLD, gpui::FontStyle::Italic),
-                                crate::markdown::SyntaxSpan::InlineCode(t) => push_run(&mut text, &mut runs, &font_family, t, inline_code_weight(base_weight), base_style),
+                                crate::markdown::SyntaxSpan::InlineCode(t) => push_run(&mut text, &mut runs, &font_family, t, base_weight, base_style),
                                 _ => {}
                             }
                         }

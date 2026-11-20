@@ -1,25 +1,14 @@
 use super::super::*;
 use super::grammar::GRAMMAR_LINE_DEVICE_WIDTH;
 
-/// Weight inline code is painted at.
-///
-/// Roboto Mono is bundled here in Regular and Bold only, and a request for a weight in
-/// between resolves to whichever face the platform deems closest — so the one step up
-/// that is guaranteed to show is Bold. `markdown::PaintedSegment::code` carries the same
-/// trait into the row's shaped layout, so geometry and paint stay in parity.
-pub(crate) const INLINE_CODE_WEIGHT: gpui::FontWeight = gpui::FontWeight::BOLD;
+// Inline code keeps the row's weight: it must not get heavier than the text
+// around it. The shaped layout asks for the same face, so geometry and paint
+// stay in parity.
 
 /// Fraction of the row height left as a gap above and below the inline-code chip, i.e.
 /// the chip is `1 - 2 * CODE_CHIP_INSET_RATIO` of the row. Scaled with the row so that a
 /// heading's chip keeps the proportions of a paragraph's.
 pub(crate) const CODE_CHIP_INSET_RATIO: f32 = 1.0 / 12.0;
-
-/// Weight the inline-code face takes in a row whose base weight is `base`: the heavier
-/// of the two, so that code is never lighter than the text around it and a bold heading
-/// keeps its bold.
-pub(crate) fn inline_code_weight(base: gpui::FontWeight) -> gpui::FontWeight {
-    if base.0 > INLINE_CODE_WEIGHT.0 { base } else { INLINE_CODE_WEIGHT }
-}
 
 /// Body of a code block: the `InsideCode` lines that follow the opening fence.
 /// Called only when the copy button is clicked, never while building a frame.
@@ -130,12 +119,12 @@ pub(crate) fn render_syntax_spans(
         features: Default::default(),
         fallbacks: None,
     };
-    // Inline code is set one weight step heavier than the body it sits in. The chip
-    // background is painted by the editor as part of the row's backdrop, not by this run,
-    // only thing that marks code out here is this face plus the row's chip rectangle.
+    // Inline code keeps the row's weight. The chip background is painted by the
+    // editor as part of the row's backdrop, so code is marked by that rectangle
+    // rather than by a heavier face.
     let code_font = gpui::Font {
         family: font_family.clone(),
-        weight: inline_code_weight(base_weight),
+        weight: base_weight,
         style: base_style,
         features: Default::default(),
         fallbacks: None,

@@ -653,13 +653,7 @@ pub(crate) fn shape_table_row(
                         .take(e - s)
                         .collect();
                     if !part.is_empty() {
-                        let weight = if seg.code {
-                            inline_code_weight(if seg.bold || is_header {
-                                gpui::FontWeight::BOLD
-                            } else {
-                                gpui::FontWeight::NORMAL
-                            })
-                        } else if seg.bold || is_header {
+                        let weight = if seg.bold || is_header {
                             gpui::FontWeight::BOLD
                         } else {
                             gpui::FontWeight::NORMAL
