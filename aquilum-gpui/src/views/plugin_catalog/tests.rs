@@ -93,3 +93,23 @@
         state.selection_anchor = Some(8);
         assert_eq!(state.selection_range(), Some((2, 8)));
     }
+
+#[test]
+fn readme_images_parse_markdown_wiki_and_html() {
+    let markdown = super::readme::readme_image("![Logo](assets/logo.png)").expect("markdown");
+    assert_eq!(markdown, ("Logo".to_string(), "assets/logo.png".to_string()));
+
+    let remote = super::readme::readme_image("![badge](https://img.example/b.svg)").expect("remote");
+    assert_eq!(remote.1, "https://img.example/b.svg");
+
+    let wiki = super::readme::readme_image("![[photo.png|300]]").expect("wiki");
+    assert_eq!(wiki.1, "photo.png");
+
+    let html = super::readme::readme_image(
+        "<p align=\"center\"><img src=\"img/a.png\" alt=\"A logo\"></p>",
+    )
+    .expect("html");
+    assert_eq!(html, ("A logo".to_string(), "img/a.png".to_string()));
+
+    assert!(super::readme::readme_image("text ![x](y.png)").is_none());
+}

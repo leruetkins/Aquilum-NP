@@ -73,6 +73,10 @@ pub struct PluginCatalogState {
     pub downloading_plugin_id: Option<String>,
     pub download_step: Option<String>,
     pub readme_cache: std::collections::HashMap<String, String>,
+    /// README image URL -> downloaded local file.
+    pub readme_images: std::collections::HashMap<String, PathBuf>,
+    pub readme_images_loading: std::collections::HashSet<String>,
+    pub readme_images_failed: std::collections::HashSet<String>,
     pub is_loading_readme: bool,
 }
 
@@ -98,6 +102,9 @@ impl Default for PluginCatalogState {
             downloading_plugin_id: None,
             download_step: None,
             readme_cache: std::collections::HashMap::new(),
+            readme_images: std::collections::HashMap::new(),
+            readme_images_loading: std::collections::HashSet::new(),
+            readme_images_failed: std::collections::HashSet::new(),
             is_loading_readme: false,
         }
     }
@@ -448,6 +455,8 @@ impl CatalogWindowManager {
         vault_name: String,
         vault_root: Option<PathBuf>,
         theme: Theme,
+        editor_typography: crate::settings::EditorTypography,
+        editor_font: gpui::SharedString,
         language: String,
         app_data_dir: &Path,
         cx: &mut App,
@@ -492,7 +501,16 @@ impl CatalogWindowManager {
         let save_path = state_path.clone();
         let handle_res = cx.open_window(options, |window, cx| {
             let view = cx.new(|cx| {
-                let v = PluginCatalogView::new(app_view, vault_name, vault_root, theme, is_ru, cx);
+                let v = PluginCatalogView::new(
+                    app_view,
+                    vault_name,
+                    vault_root,
+                    theme,
+                    editor_typography,
+                    editor_font,
+                    is_ru,
+                    cx,
+                );
                 window.focus(&v.focus_handle);
                 v
             });

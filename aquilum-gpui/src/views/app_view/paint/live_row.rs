@@ -42,7 +42,8 @@ pub(crate) fn render_live_styled_row(
     hovered_link_id: Option<&str>,
     hovered_link_missing: bool,
     window: &Window,
-    cx: &Context<AppView>,
+    cx: Option<&Context<AppView>>,
+    link_opener: Option<&std::rc::Rc<dyn Fn(&str, &mut gpui::App)>>,
     // `cell_w` is the width of one character cell of this row in logical px;
     // `guide_columns` is the list guide columns for this row, in cells
     // (see `markdown::list_block_guide_columns`). Only the block decorations
@@ -180,14 +181,18 @@ pub(crate) fn render_live_styled_row(
                 .when(is_last_row && is_last_col, |d| d.rounded_br_sm())
                 .cursor(gpui::CursorStyle::IBeam)
                 .when(allow_table_editing, |d| {
-                    d.on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        cx.stop_propagation();
-                        window.focus(&this.focus_handle);
-                        this.state.active_set_cursor_line_col(line_idx, cell_start_col);
-                        let click_x: f32 = event.position.x.into();
-                        let click_y: f32 = event.position.y.into();
-                        this.open_table_context_menu(tbl_block.clone(), row_idx, c_idx, click_x, click_y, cx);
-                    }))
+                    if let Some(cx) = cx {
+                        d.on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            window.focus(&this.focus_handle);
+                            this.state.active_set_cursor_line_col(line_idx, cell_start_col);
+                            let click_x: f32 = event.position.x.into();
+                            let click_y: f32 = event.position.y.into();
+                            this.open_table_context_menu(tbl_block.clone(), row_idx, c_idx, click_x, click_y, cx);
+                        }))
+                    } else {
+                        d
+                    }
                 });
             let cell_key = format!("{}-tbl-cell-{}-{}-{}", id_prefix, line_idx, c_idx, sub_idx);
             let mut lines_col = div().w_full().flex().flex_col();
@@ -223,13 +228,15 @@ pub(crate) fn render_live_styled_row(
                     window.scale_factor(),
                     true,
                     cx,
+                    link_opener,
                 ));
                 lines_col = lines_col.child(line_div);
             }
             cell_div = cell_div.child(lines_col);
 
             let col_widths_clone = table_layout.col_widths.clone();
-            cell_div = cell_div.when(allow_table_editing, |d| {
+            cell_div = cell_div.when(allow_table_editing && cx.is_some(), |d| {
+                let cx = cx.unwrap();
                 d.child(
                     div()
                         .id(gpui::ElementId::Name(format!("{}-tbl-rsz-{}-{}-{}", id_prefix, tbl_first_line, line_idx, c_idx).into()))
@@ -276,6 +283,7 @@ pub(crate) fn render_live_styled_row(
             scale,
             false,
             cx,
+            link_opener,
         )
     };
 
@@ -1157,7 +1165,7 @@ pub(crate) fn render_live_styled_row(
             }
         }
         crate::markdown::LineKind::CodeLine(_) => {
-            if !show_fences && !is_active_line && custom_ui_node.is_some() {
+            if !show_fences && !is_active_line && custom_ui_node.is_some() && cx.is_some() {
                 if is_first_code_line {
                     let tree = custom_ui_node.unwrap();
                     let pid = custom_plugin_id.unwrap_or("plugin");
@@ -1175,7 +1183,7 @@ pub(crate) fn render_live_styled_row(
                             plugin_select_popup,
                             plugin_input_blink_visible,
                             window,
-                            cx,
+                            cx.unwrap(),
                             None,
                         ))
                 } else {

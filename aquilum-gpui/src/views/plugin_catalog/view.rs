@@ -12,6 +12,9 @@ pub struct PluginCatalogView {
     pub caret_epoch: usize,
     pub weak_app: WeakEntity<AppView>,
     pub theme: Theme,
+    /// Editor metrics used to render the README through the live row renderer.
+    pub editor_typography: crate::settings::EditorTypography,
+    pub editor_font: gpui::SharedString,
     pub vault_name: String,
     pub vault_root: Option<PathBuf>,
     pub is_ru: bool,
@@ -28,6 +31,8 @@ impl PluginCatalogView {
         vault_name: String,
         vault_root: Option<PathBuf>,
         theme: Theme,
+        editor_typography: crate::settings::EditorTypography,
+        editor_font: gpui::SharedString,
         is_ru: bool,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -47,6 +52,8 @@ impl PluginCatalogView {
             caret_epoch: 0,
             weak_app,
             theme,
+            editor_typography,
+            editor_font,
             vault_name,
             vault_root,
             is_ru,
@@ -575,7 +582,8 @@ impl PluginCatalogView {
     }
 
     pub fn ensure_readme_loaded(&mut self, plugin_id: &str, cx: &mut Context<Self>) {
-        if self.state.readme_cache.contains_key(plugin_id) {
+        if let Some(text) = self.state.readme_cache.get(plugin_id).cloned() {
+            self.prefetch_readme_images(plugin_id, &text, cx);
             return;
         }
 
@@ -586,6 +594,7 @@ impl PluginCatalogView {
                 let file = p_dir.join(name);
                 if file.is_file() {
                     if let Ok(content) = std::fs::read_to_string(&file) {
+                        self.prefetch_readme_images(plugin_id, &content, cx);
                         self.state.readme_cache.insert(plugin_id.to_string(), content);
                         return;
                     }
@@ -616,6 +625,7 @@ impl PluginCatalogView {
                     view.state.is_loading_readme = false;
                     match res {
                         Ok(content) => {
+                            view.prefetch_readme_images(&p_id, &content, cx);
                             view.state.readme_cache.insert(p_id, content);
                         }
                         Err(_) => {
@@ -1609,6 +1619,7 @@ impl PluginCatalogView {
     pub(super) fn render_details(
         &self,
         entry_opt: Option<&CatalogPluginEntry>,
+        window: &Window,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let theme = &self.theme;
@@ -2055,7 +2066,8 @@ impl PluginCatalogView {
                         .child(if is_ru { "Загрузка README.md из GitHub..." } else { "Loading README.md from GitHub..." }),
                 )
         } else if let Some(text) = readme_text {
-            let rendered_markdown_lines = self.render_markdown_content(&text, cx);
+            let rendered_readme =
+                self.render_readme_editor(&text, &entry.id, plugin_dir.as_deref(), window, cx);
             div()
                 .flex()
                 .flex_col()
@@ -2074,7 +2086,7 @@ impl PluginCatalogView {
                         .text_color(theme.text_secondary)
                         .child("README.MD"),
                 )
-                .children(rendered_markdown_lines)
+                .child(rendered_readme)
         } else {
             div()
                 .flex()
@@ -2148,261 +2160,6 @@ impl PluginCatalogView {
 
         viewport.into_any_element()
     }
-
-    pub(super) fn render_markdown_content(&self, text: &str, cx: &Context<Self>) -> Vec<Div> {
-        let theme = &self.theme;
-        let mut rendered_markdown_lines: Vec<Div> = Vec::new();
-        let mut lines_iter = text.lines().peekable();
-        let mut line_counter = 0usize;
-
-        while let Some(line) = lines_iter.next() {
-            let trimmed = line.trim();
-
-            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-                let fence = if trimmed.starts_with("```") { "```" } else { "~~~" };
-                let lang = trimmed.trim_start_matches(fence).trim().to_string();
-                let lang_opt = if !lang.is_empty() { Some(lang) } else { None };
-
-                let mut code_lines = Vec::new();
-                while let Some(next_line) = lines_iter.peek() {
-                    let trimmed_peek = next_line.trim();
-                    if trimmed_peek.starts_with(fence) {
-                        lines_iter.next();
-                        break;
-                    }
-                    code_lines.push(lines_iter.next().unwrap());
-                }
-
-                let code_str = code_lines.join("\n");
-                rendered_markdown_lines.push(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .my_1p5()
-                        .rounded_md()
-                        .bg(theme.bg_editor)
-                        .border_1()
-                        .border_color(theme.border_subtle)
-                        .overflow_x_hidden()
-                        .when(lang_opt.is_some(), |parent| {
-                            parent.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .px_3()
-                                    .py_1()
-                                    .bg(theme.bg_sidebar)
-                                    .border_b_1()
-                                    .border_color(theme.border_subtle)
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .text_color(theme.text_muted)
-                                            .child(lang_opt.unwrap()),
-                                    ),
-                            )
-                        })
-                        .child(
-                            div()
-                                .p_3()
-                                .font_family("Consolas")
-                                .text_xs()
-                                .line_height(px(18.0))
-                                .text_color(theme.text_primary)
-                                .child(code_str),
-                        ),
-                );
-                continue;
-            }
-
-            if trimmed.is_empty() {
-                rendered_markdown_lines.push(div().h(px(8.0)));
-                continue;
-            }
-
-            if let Some(rest) = trimmed.strip_prefix("### ") {
-                rendered_markdown_lines.push(
-                    div()
-                        .text_base()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(theme.text_primary)
-                        .mt_3()
-                        .mb_1()
-                        .child(rest.to_string()),
-                );
-                continue;
-            }
-            if let Some(rest) = trimmed.strip_prefix("## ") {
-                rendered_markdown_lines.push(
-                    div()
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(theme.text_primary)
-                        .mt_4()
-                        .mb_1p5()
-                        .child(rest.to_string()),
-                );
-                continue;
-            }
-            if let Some(rest) = trimmed.strip_prefix("# ") {
-                rendered_markdown_lines.push(
-                    div()
-                        .text_xl()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(theme.text_primary)
-                        .mt_4()
-                        .mb_2()
-                        .child(rest.to_string()),
-                );
-                continue;
-            }
-
-            if trimmed.starts_with("- [ ] ") || trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
-                let checked = !trimmed.starts_with("- [ ] ");
-                let item_text = &trimmed[6..];
-                let spans = crate::markdown::parse_inline_spans(item_text);
-                let span_elements: Vec<AnyElement> = spans
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, s)| self.render_markdown_inline_span(s, i, cx))
-                    .collect();
-
-                let checkbox = div()
-                    .w(px(14.0))
-                    .h(px(14.0))
-                    .mt(px(2.0))
-                    .rounded_xs()
-                    .border_1()
-                    .border_color(if checked { theme.accent } else { theme.border })
-                    .bg(if checked { theme.accent } else { theme.bg_editor })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(checked, |c| c.child(icons::icon(icons::ICON_CHECK, 10.0, theme.text_on_accent)));
-
-                rendered_markdown_lines.push(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_start()
-                        .gap_2()
-                        .my_0p5()
-                        .child(checkbox)
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .flex_wrap()
-                                .flex_1()
-                                .min_w_0()
-                                .items_center()
-                                .text_sm()
-                                .children(span_elements),
-                        ),
-                );
-                continue;
-            }
-
-            if let Some(bullet) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")).or_else(|| trimmed.strip_prefix("+ ")) {
-                let spans = crate::markdown::parse_inline_spans(bullet);
-                let span_elements: Vec<AnyElement> = spans
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, s)| self.render_markdown_inline_span(s, i, cx))
-                    .collect();
-
-                rendered_markdown_lines.push(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_start()
-                        .gap_2()
-                        .my_0p5()
-                        .child(div().text_color(theme.accent).child("•"))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .flex_wrap()
-                                .flex_1()
-                                .min_w_0()
-                                .items_center()
-                                .text_sm()
-                                .children(span_elements),
-                        ),
-                );
-                continue;
-            }
-
-            let spans = crate::markdown::parse_inline_spans(line);
-            line_counter += 1;
-            let span_elements: Vec<AnyElement> = spans
-                .into_iter()
-                .enumerate()
-                .map(|(i, s)| self.render_markdown_inline_span(s, line_counter * 100 + i, cx))
-                .collect();
-
-            rendered_markdown_lines.push(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .w_full()
-                    .min_w_0()
-                    .items_center()
-                    .text_sm()
-                    .line_height(gpui::relative(1.4))
-                    .children(span_elements),
-            );
-        }
-
-        rendered_markdown_lines
-    }
-
-    pub(super) fn render_markdown_inline_span(
-        &self,
-        span: InlineSpan,
-        _idx: usize,
-        _cx: &Context<Self>,
-    ) -> AnyElement {
-        let theme = &self.theme;
-        match span {
-            InlineSpan::Text(t) => div().text_color(theme.text_secondary).child(t).into_any_element(),
-            InlineSpan::Bold(t) => div().font_weight(gpui::FontWeight::BOLD).text_color(theme.text_primary).child(t).into_any_element(),
-            InlineSpan::Italic(t) => div().italic().text_color(theme.text_secondary).child(t).into_any_element(),
-            InlineSpan::BoldItalic(t) => div().font_weight(gpui::FontWeight::BOLD).italic().text_color(theme.text_primary).child(t).into_any_element(),
-            InlineSpan::InlineCode(t) => div()
-                .px_1p5()
-                .py_0p5()
-                .mx_0p5()
-                .rounded_xs()
-                .bg(theme.bg_editor)
-                .border_1()
-                .border_color(theme.border_subtle)
-                .font_family("Consolas")
-                .text_xs()
-                .text_color(theme.accent)
-                .child(t)
-                .into_any_element(),
-            InlineSpan::Link { label, url } => {
-                let click_url = url.clone();
-                div()
-                    .id(ElementId::Name(format!("cat-md-link-{}", _idx).into()))
-                    .text_color(theme.accent)
-                    .cursor_pointer()
-                    .hover(|h| h.underline())
-                    .child(if label.is_empty() { url } else { label })
-                    .on_click(move |_, _, cx| {
-                        cx.open_url(&click_url);
-                    })
-                    .into_any_element()
-            }
-            InlineSpan::Strikethrough(t) => div().line_through().text_color(theme.text_muted).child(t).into_any_element(),
-        }
-    }
-
     pub(super) fn render_footer_status(&self, _cx: &Context<Self>) -> Div {
         let theme = &self.theme;
         let total = self.state.entries.len();
@@ -2518,7 +2275,7 @@ impl Render for PluginCatalogView {
                     .min_h_0()
                     .w_full()
                     .child(self.render_list(&entries, cx))
-                    .child(self.render_details(selected_entry, cx)),
+                    .child(self.render_details(selected_entry, window, cx)),
             )
             .child(self.render_footer_status(cx))
     }

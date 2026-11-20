@@ -23,6 +23,7 @@ use crate::views::scrollbar::{
 pub use crate::plugins::registry::CatalogPluginEntry;
 
 mod actions;
+mod readme;
 mod state;
 mod view;
 

@@ -260,6 +260,8 @@ impl AppView {
         let vault_name = self.state.vault.as_ref().map(|v| v.name.clone()).unwrap_or_else(|| "Vault".to_string());
         let vault_root = self.state.vault.as_ref().map(|v| v.root.clone());
         let theme = self.theme.clone();
+        let editor_typography = self.editor_typography();
+        let editor_font = self.editor_font_family();
         let language = self.config.ui.language.clone();
         let app_data_dir = crate::state::app_data_dir();
         let weak_self = cx.weak_entity();
@@ -272,6 +274,8 @@ impl AppView {
                     vault_name,
                     vault_root,
                     theme,
+                    editor_typography,
+                    editor_font,
                     language,
                     &app_data_dir,
                     cx,

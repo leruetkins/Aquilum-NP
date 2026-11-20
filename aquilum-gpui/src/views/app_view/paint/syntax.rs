@@ -95,7 +95,8 @@ pub(crate) fn render_syntax_spans(
     hovered_link_missing: bool,
     scale: f32,
     paint_native_solid: bool,
-    cx: &Context<AppView>,
+    cx: Option<&Context<AppView>>,
+    link_opener: Option<&std::rc::Rc<dyn Fn(&str, &mut gpui::App)>>,
 ) -> gpui::AnyElement {
     let main_color = text_color_override.unwrap_or(theme.text_primary);
     let base_weight = base_weight.unwrap_or(gpui::FontWeight::NORMAL);
@@ -506,7 +507,7 @@ pub(crate) fn render_syntax_spans(
 
                     let link_id = format!("{}-link-{}", row_key, link_idx);
                     link_idx += 1;
-                    let is_hovered = hovered_link_id == Some(&link_id);
+                    let is_hovered = cx.is_some() && hovered_link_id == Some(&link_id);
                     let show_icon = ctrl_held && is_hovered;
 
                     let link_label = if text.is_empty() { "link".to_string() } else { text };
@@ -528,50 +529,61 @@ pub(crate) fn render_syntax_spans(
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap(px(3.0))
-                        .when(ctrl_held, |d| d.cursor(gpui::CursorStyle::PointingHand))
-                        .on_hover(cx.listener({
-                            let lid = link_id.clone();
-                            let u = url.clone();
-                            move |this, is_h: &bool, _window, cx| {
-                                if *is_h {
-                                    let missing = !this.link_target_exists(&u);
-                                    if this.hovered_link_id.as_deref() != Some(&lid)
-                                        || this.hovered_link_missing != missing
-                                    {
-                                        this.hovered_link_id = Some(lid.clone());
-                                        this.hovered_link_missing = missing;
+                        .gap(px(3.0));
+
+                    if let Some(cx) = cx {
+                        link_div = link_div
+                            .when(ctrl_held, |d| d.cursor(gpui::CursorStyle::PointingHand))
+                            .on_hover(cx.listener({
+                                let lid = link_id.clone();
+                                let u = url.clone();
+                                move |this, is_h: &bool, _window, cx| {
+                                    if *is_h {
+                                        let missing = !this.link_target_exists(&u);
+                                        if this.hovered_link_id.as_deref() != Some(&lid)
+                                            || this.hovered_link_missing != missing
+                                        {
+                                            this.hovered_link_id = Some(lid.clone());
+                                            this.hovered_link_missing = missing;
+                                            cx.notify();
+                                        }
+                                    } else if this.hovered_link_id.as_deref() == Some(&lid) {
+                                        this.hovered_link_id = None;
+                                        this.hovered_link_missing = false;
                                         cx.notify();
                                     }
-                                } else if this.hovered_link_id.as_deref() == Some(&lid) {
-                                    this.hovered_link_id = None;
-                                    this.hovered_link_missing = false;
-                                    cx.notify();
                                 }
-                            }
-                        }))
-                        .on_mouse_down(MouseButton::Left, cx.listener({
-                            let u = url.clone();
-                            move |this, event: &MouseDownEvent, window, cx| {
-                                if this.note_preview.is_some() {
-                                    // In the card a plain press starts a text
-                                    // selection; Ctrl+click follows the link.
-                                    if event.modifiers.control || event.modifiers.platform {
+                            }))
+                            .on_mouse_down(MouseButton::Left, cx.listener({
+                                let u = url.clone();
+                                move |this, event: &MouseDownEvent, window, cx| {
+                                    if this.note_preview.is_some() {
+                                        // In the card a plain press starts a text
+                                        // selection; Ctrl+click follows the link.
+                                        if event.modifiers.control || event.modifiers.platform {
+                                            cx.stop_propagation();
+                                            this.handle_note_preview_link(&u, cx);
+                                        }
+                                    } else if (event.modifiers.control || event.modifiers.platform)
+                                        && event.modifiers.shift
+                                        && this.open_note_preview(&u, window, cx)
+                                    {
                                         cx.stop_propagation();
-                                        this.handle_note_preview_link(&u, cx);
+                                    } else if event.modifiers.control || event.modifiers.platform || !this.edit_mode {
+                                        cx.stop_propagation();
+                                        this.handle_link_click(&u, window, cx);
                                     }
-                                } else if (event.modifiers.control || event.modifiers.platform)
-                                    && event.modifiers.shift
-                                    && this.open_note_preview(&u, window, cx)
-                                {
-                                    cx.stop_propagation();
-                                } else if event.modifiers.control || event.modifiers.platform || !this.edit_mode {
-                                    cx.stop_propagation();
-                                    this.handle_link_click(&u, window, cx);
                                 }
-                            }
-                        }))
-                        .child(link_styled);
+                            }));
+                    } else if let Some(opener) = link_opener {
+                        let opener = opener.clone();
+                        let target = url.clone();
+                        link_div = link_div
+                            .cursor(gpui::CursorStyle::PointingHand)
+                            .on_click(move |_, _, app| opener(&target, app));
+                    }
+
+                    link_div = link_div.child(link_styled);
 
                     if show_icon {
                         let clean = crate::markdown::clean_link_url(&url);
