@@ -9,6 +9,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Bundle
@@ -19,11 +20,8 @@ import android.os.Process
 import android.os.SystemClock
 import android.text.InputType
 import android.text.TextUtils
-import android.view.ActionMode
 import android.view.Choreographer
 import android.view.KeyEvent
-import android.view.Menu
-import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
@@ -75,6 +73,21 @@ private const val BAND_TRIGGER_RATIO = 0.75f
 
 /** Smallest band origin move worth a repaint. */
 private const val BAND_MIN_MOVE_RATIO = 0.15f
+
+/**
+ * Where the Compose selection toolbar should sit and which clipboard actions
+ * are available. All rectangles are in window pixels.
+ */
+data class SelectionToolbarState(
+    /** Top line of the selection (or the caret line) — the toolbar floats above it. */
+    val anchor: RectF,
+    /** Bottom of the caret / selection end — the expanded menu opens under it. */
+    val caret: RectF,
+    val canCut: Boolean,
+    val canCopy: Boolean,
+    val canPaste: Boolean,
+    val hasSelection: Boolean,
+)
 
 /**
  * Shared TextureView plumbing: one native ANativeWindow per view and a single
@@ -1150,14 +1163,6 @@ class NativeEditorView(
         }
     }
 
-    private companion object {
-        const val MENU_COPY = 1
-        const val MENU_CUT = 2
-        const val MENU_PASTE = 3
-        const val MENU_SELECT_ALL = 4
-        const val MENU_MORE = 5
-    }
-
     private var mirrorText = ""
     private var mirrorSelection = 0
     private var mirrorAnchor = 0
@@ -1190,8 +1195,8 @@ class NativeEditorView(
     private var draggingHandle = -1
     private var dragOffsetX = 0f
     private var dragOffsetY = 0f
-    private var actionMode: ActionMode? = null
-    private var insertionActionMode: ActionMode? = null
+    private var selectionToolbarVisible = false
+    private var onSelectionToolbarChange: ((SelectionToolbarState?) -> Unit)? = null
     private var magnifier: Magnifier? = null
     private val hideInsertionRunnable = Runnable { applyInsertionHandleVisible(false) }
     private var bottomInset = -1f
@@ -1214,7 +1219,6 @@ class NativeEditorView(
     /** Whether the gutter wash follows every wrapped row; off by default. */
     private var gutterWrappedLineHighlight = false
     private var onHistoryChanged: ((Boolean, Boolean) -> Unit)? = null
-    private var onFormatMenuRequest: (() -> Unit)? = null
     private var reportedCanUndo = false
     private var reportedCanRedo = false
     private var caretVisible = true
@@ -1294,122 +1298,7 @@ class NativeEditorView(
             longPressWordEnd = maxOf(mirrorAnchor, mirrorSelection)
             requestRender()
             helper.invalidateRoot()
-            showSelectionActions()
-        }
-    }
-
-    private val selectionCallback = object : ActionMode.Callback2() {
-        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
-            if (selectionNonEmpty()) {
-                menu.add(Menu.NONE, MENU_COPY, 0, "Copy")
-                if (!inPreview) {
-                    menu.add(Menu.NONE, MENU_CUT, 1, "Cut")
-                }
-            }
-            if (!inPreview) {
-                menu.add(Menu.NONE, MENU_PASTE, 2, "Paste")
-            }
-            menu.add(Menu.NONE, MENU_SELECT_ALL, 3, "Select all")
-            if (!inPreview) {
-                menu.add(Menu.NONE, MENU_MORE, 4, "⋮")
-            }
-            return true
-        }
-
-        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean = false
-
-        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
-            when (item.itemId) {
-                MENU_COPY -> copySelection()
-                MENU_CUT -> {
-                    copySelection()
-                    applyDelete(0, 0)
-                }
-                MENU_PASTE -> pasteClipboard()
-                MENU_SELECT_ALL -> {
-                    selectNative(0, mirrorText.length)
-                    mode.invalidate()
-                    mode.invalidateContentRect()
-                    return true
-                }
-                MENU_MORE -> {
-                    onFormatMenuRequest?.invoke()
-                    mode.finish()
-                    return true
-                }
-            }
-            mode.finish()
-            return true
-        }
-
-        override fun onDestroyActionMode(mode: ActionMode) {
-            actionMode = null
-        }
-
-        override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
-            syncHandles()
-            val start = startHandle
-            val end = endHandle
-            if (start == null || end == null) {
-                outRect.set(0, 0, 0, 0)
-                return
-            }
-            val left = minOf(start.x - handleSize, end.x).toInt().coerceAtLeast(0)
-            val right = maxOf(start.x, end.x + handleSize).toInt().coerceAtMost(width)
-            val top = (minOf(start.y, end.y) - handleRowHeight).toInt().coerceAtLeast(0)
-            val bottom = (maxOf(start.y, end.y) + handleSize).toInt().coerceAtMost(height)
-            outRect.set(left, top, right, bottom)
-        }
-    }
-
-    private val insertionCallback = object : ActionMode.Callback2() {
-        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
-            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            val hasClip = clipboard?.hasPrimaryClip() == true
-            if (hasClip) {
-                menu.add(Menu.NONE, MENU_PASTE, 0, "Paste")
-            }
-            menu.add(Menu.NONE, MENU_SELECT_ALL, 1, "Select all")
-            menu.add(Menu.NONE, MENU_MORE, 2, "⋮")
-            return true
-        }
-
-        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean = false
-
-        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
-            when (item.itemId) {
-                MENU_PASTE -> pasteClipboard()
-                MENU_SELECT_ALL -> {
-                    selectNative(0, mirrorText.length)
-                    mode.finish()
-                    showSelectionActions()
-                    return true
-                }
-                MENU_MORE -> {
-                    onFormatMenuRequest?.invoke()
-                    mode.finish()
-                    return true
-                }
-            }
-            mode.finish()
-            return true
-        }
-
-        override fun onDestroyActionMode(mode: ActionMode) {
-            insertionActionMode = null
-        }
-
-        override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
-            val ins = insertionHandle
-            if (ins == null) {
-                outRect.set(0, 0, 0, 0)
-                return
-            }
-            val left = (ins.x - handleSize).toInt().coerceAtLeast(0)
-            val right = (ins.x + handleSize).toInt().coerceAtMost(width)
-            val top = (ins.y - handleRowHeight * 1.5f).toInt().coerceAtLeast(0)
-            val bottom = (ins.y + handleSize).toInt().coerceAtMost(height)
-            outRect.set(left, top, right, bottom)
+            showActionsForSelection()
         }
     }
 
@@ -1610,8 +1499,8 @@ class NativeEditorView(
         }
         stopFling()
         recycleVelocity()
-        actionMode?.finish()
-        insertionActionMode?.finish()
+        hideSelectionToolbar()
+        hideSelectionToolbar()
         if (preview) {
             applyInsertionHandleVisible(false)
             hideKeyboard()
@@ -1832,8 +1721,8 @@ class NativeEditorView(
         if (gainFocus || inPreview) {
             startCaretBlink()
         } else {
-            actionMode?.finish()
-            insertionActionMode?.finish()
+            hideSelectionToolbar()
+            hideSelectionToolbar()
             if (inPreview) {
                 stopCaretBlink()
                 applyInsertionHandleVisible(false)
@@ -1858,7 +1747,7 @@ class NativeEditorView(
         if (visibility != View.VISIBLE) {
             wasHidden = true
             saveViewport()
-            actionMode?.finish()
+            hideSelectionToolbar()
             removeCallbacks(caretBlink)
             clearFocus()
             hideKeyboard()
@@ -2532,6 +2421,7 @@ class NativeEditorView(
                 startHandle = null
                 endHandle = null
                 insertionHandle = null
+                notifySelectionToolbar()
                 return
             }
             startHandle = PointF(
@@ -2556,32 +2446,102 @@ class NativeEditorView(
                 insertionHandle = null
             }
         }
+        if (selectionToolbarVisible) notifySelectionToolbar()
+    }
+
+    /** Builds the Compose selection-toolbar state from the current handles. */
+    private fun selectionToolbarState(): SelectionToolbarState? {
+        val location = IntArray(2)
+        getLocationInWindow(location)
+        val offsetX = location[0].toFloat()
+        val offsetY = location[1].toFloat()
+        val hasSelection = selectionNonEmpty()
+        val anchor: RectF
+        val caret: RectF
+        if (hasSelection) {
+            val start = startHandle ?: return null
+            val end = endHandle ?: return null
+            val top = minOf(start.y, end.y) - handleRowHeight + offsetY
+            anchor = RectF(
+                minOf(start.x, end.x) + offsetX,
+                top,
+                maxOf(start.x, end.x) + offsetX,
+                top + handleRowHeight,
+            )
+            val bottom = end.y + offsetY
+            caret = RectF(end.x + offsetX, bottom - handleRowHeight, end.x + offsetX, bottom)
+        } else {
+            val cursor = insertionHandle ?: return null
+            val bottom = cursor.y + offsetY
+            anchor = RectF(
+                cursor.x + offsetX,
+                bottom - handleRowHeight,
+                cursor.x + offsetX,
+                bottom,
+            )
+            caret = anchor
+        }
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        return SelectionToolbarState(
+            anchor = anchor,
+            caret = caret,
+            canCut = hasSelection && !inPreview,
+            canCopy = hasSelection && !inPreview,
+            canPaste = !inPreview && clipboard?.hasPrimaryClip() == true,
+            hasSelection = hasSelection,
+        )
+    }
+
+    private fun notifySelectionToolbar() {
+        if (!selectionToolbarVisible) return
+        val state = selectionToolbarState()
+        if (state == null) {
+            selectionToolbarVisible = false
+            onSelectionToolbarChange?.invoke(null)
+        } else {
+            onSelectionToolbarChange?.invoke(state)
+        }
+    }
+
+    private fun hideSelectionToolbar() {
+        if (!selectionToolbarVisible) return
+        selectionToolbarVisible = false
+        onSelectionToolbarChange?.invoke(null)
     }
 
     private fun showSelectionActions() {
-        if (!selectionNonEmpty()) {
-            actionMode?.finish()
+        if (!selectionNonEmpty() || inPreview) {
+            hideSelectionToolbar()
             return
         }
         stopCaretBlink()
-        insertionActionMode?.finish()
+        selectionToolbarVisible = true
         syncHandles()
-        val current = actionMode
-        if (current == null) {
-            actionMode = runCatching { startActionMode(selectionCallback, ActionMode.TYPE_FLOATING) }.getOrNull()
-        } else {
-            current.invalidate()
-            current.invalidateContentRect()
-        }
+        notifySelectionToolbar()
     }
 
     private fun showInsertionActions() {
         if (inPreview) return
-        actionMode?.finish()
-        insertionActionMode?.finish()
+        selectionToolbarVisible = true
         syncHandles()
-        if (insertionHandle == null) return
-        insertionActionMode = runCatching { startActionMode(insertionCallback, ActionMode.TYPE_FLOATING) }.getOrNull()
+        if (insertionHandle == null) {
+            hideSelectionToolbar()
+            return
+        }
+        notifySelectionToolbar()
+    }
+
+    /** Selection bar for a word, or the caret bar when the line has no word. */
+    private fun showActionsForSelection() {
+        if (selectionNonEmpty()) {
+            showSelectionActions()
+        } else if (!inPreview) {
+            requestFocus()
+            startCaretBlink()
+            applyInsertionHandleVisible(true)
+            onCaretPlaced?.invoke()
+            showInsertionActions()
+        }
     }
 
     fun applyInsertionHandleVisible(visible: Boolean) {
@@ -2593,7 +2553,7 @@ class NativeEditorView(
             syncHandles()
         } else {
             insertionHandle = null
-            insertionActionMode?.finish()
+            hideSelectionToolbar()
         }
     }
 
@@ -2622,7 +2582,7 @@ class NativeEditorView(
             startCaretBlink()
         }
         syncHandles()
-        actionMode?.invalidateContentRect()
+        notifySelectionToolbar()
         notifySelectionChanged()
         requestRender()
         helper.invalidateRoot()
@@ -2656,7 +2616,7 @@ class NativeEditorView(
                 postRenderTask {
                     CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, knownScrollX)
                 }
-                insertionActionMode?.finish()
+                hideSelectionToolbar()
                 val handle = handleAt(event.x, event.y)
                 if (handle >= 0) {
                     draggingHandle = handle
@@ -2672,8 +2632,8 @@ class NativeEditorView(
                             updateMagnifier(point.x, point.y - handleRowHeight / 2f)
                         }
                     }
-                    actionMode?.finish()
-                    insertionActionMode?.finish()
+                    hideSelectionToolbar()
+                    hideSelectionToolbar()
                     recycleVelocity()
                     if (handle == 2) {
                         postDelayed(longPress, android.view.ViewConfiguration.getLongPressTimeout().toLong())
@@ -2748,6 +2708,7 @@ class NativeEditorView(
                     val totalDx = x - downX
                     if (kotlin.math.abs(totalDy) > threshold || kotlin.math.abs(totalDx) > threshold) {
                         dragged = true
+                        hideSelectionToolbar()
                         removeCallbacks(longPress)
                         // A wide table pans sideways; a vertical gesture keeps
                         // scrolling the document.
@@ -2861,7 +2822,7 @@ class NativeEditorView(
                     }
                     saveViewport()
                     requestRender()
-                    showSelectionActions()
+                    showActionsForSelection()
                     return true
                 }
                 if (!dragged) {
@@ -2880,7 +2841,7 @@ class NativeEditorView(
                         requestFocus()
                         requestRender()
                         helper.invalidateRoot()
-                        showSelectionActions()
+                        showActionsForSelection()
                         return true
                     } else {
                         if (handleCodeTap(event.x, event.y)) {
@@ -2896,8 +2857,8 @@ class NativeEditorView(
                         if (selectionNonEmpty()) {
                             showSelectionActions()
                         } else {
-                            actionMode?.finish()
-                            insertionActionMode?.finish()
+                            hideSelectionToolbar()
+                            hideSelectionToolbar()
                             if (!inPreview) {
                                 requestFocus()
                                 startCaretBlink()
@@ -2995,7 +2956,7 @@ class NativeEditorView(
         mirrorSelection = state.optInt("selection", mirrorSelection).coerceIn(0, mirrorText.length)
         mirrorAnchor = state.optInt("anchor", mirrorAnchor).coerceIn(0, mirrorText.length)
         syncHandles()
-        actionMode?.invalidateContentRect()
+        notifySelectionToolbar()
         notifySelectionChanged()
         requestRender()
         helper.invalidateRoot()
@@ -3189,8 +3150,8 @@ class NativeEditorView(
         stopFling()
         recycleVelocity()
         dismissMagnifier()
-        actionMode?.finish()
-        insertionActionMode?.finish()
+        hideSelectionToolbar()
+        hideSelectionToolbar()
         removeCallbacks(longPress)
         removeCallbacks(caretBlink)
         removeCallbacks(saveAfterFling)
@@ -3225,7 +3186,7 @@ class NativeEditorView(
         mirrorSelection = selection
         mirrorAnchor = anchor
         syncHandles()
-        actionMode?.invalidateContentRect()
+        notifySelectionToolbar()
         notifySelectionChanged()
     }
 
@@ -3238,7 +3199,7 @@ class NativeEditorView(
         mirrorAnchor = state.optInt("anchor", selection).coerceIn(0, text.length)
         refreshLines()
         syncHandles()
-        actionMode?.invalidateContentRect()
+        notifySelectionToolbar()
         notifySelectionChanged()
         if (notify) onTextChanged(text, selection)
     }
@@ -3288,9 +3249,34 @@ class NativeEditorView(
         reportHistoryState()
     }
 
-    /** Receives the "⋮" tap in the selection and insertion toolbars. */
-    fun setOnFormatMenuRequest(listener: (() -> Unit)?) {
-        onFormatMenuRequest = listener
+    /**
+     * Compose owns the floating selection toolbar: this listener receives its
+     * anchor and clipboard state, or null when the bar should disappear.
+     */
+    fun setOnSelectionToolbarChange(listener: ((SelectionToolbarState?) -> Unit)?) {
+        onSelectionToolbarChange = listener
+        if (selectionToolbarVisible) notifySelectionToolbar()
+    }
+
+    fun dismissSelectionToolbar() {
+        hideSelectionToolbar()
+    }
+
+    fun cutSelectionToClipboard() {
+        if (copySelection()) applyDelete(0, 0)
+    }
+
+    fun copySelectionToClipboard() {
+        copySelection()
+    }
+
+    fun pasteFromClipboard() {
+        pasteClipboard()
+    }
+
+    fun selectAllText() {
+        selectNative(0, mirrorText.length)
+        showSelectionActions()
     }
 
     fun undo() = applyHistory(undo = true)
@@ -3319,7 +3305,7 @@ class NativeEditorView(
         refreshLines()
         syncAfterEdit()
         syncHandles()
-        actionMode?.finish()
+        hideSelectionToolbar()
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
         notifySelectionChanged()
@@ -3354,7 +3340,7 @@ class NativeEditorView(
         syncAfterEdit()
         syncHandles()
         if (!showHandle) applyInsertionHandleVisible(false)
-        actionMode?.finish()
+        hideSelectionToolbar()
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
         if (showHandle) applyInsertionHandleVisible(true)
@@ -3377,6 +3363,8 @@ class NativeEditorView(
         selectNative(start, end)
         if (start == end) {
             applyInsertionHandleVisible(true)
+        } else {
+            showSelectionActions()
         }
         // Keep the tab's stored selection in sync with the range kept after
         // formatting; applyReplace reported the plain end-of-edit caret.
@@ -3394,7 +3382,7 @@ class NativeEditorView(
         syncAfterEdit()
         syncHandles()
         applyInsertionHandleVisible(false)
-        actionMode?.finish()
+        hideSelectionToolbar()
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
         notifySelectionChanged()
@@ -3411,7 +3399,7 @@ class NativeEditorView(
         syncAfterEdit()
         syncHandles()
         applyInsertionHandleVisible(false)
-        actionMode?.finish()
+        hideSelectionToolbar()
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
         notifySelectionChanged()
