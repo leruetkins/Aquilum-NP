@@ -1479,24 +1479,25 @@ private fun EditorScreen(
         // below the top toolbar and just above the bottom toolbar.
         val edgePalette = LocalVibecodiumPalette.current
         val edgeDensity = LocalDensity.current
-        val fadePx = with(edgeDensity) { 40.dp.toPx() }
+        val topFadePx = with(edgeDensity) { 25.dp.toPx() }
+        val bottomFadePx = with(edgeDensity) { 35.dp.toPx() }
         val chrome = chromeProgress.value.coerceIn(0f, 1f)
         // While a toolbar is on screen the opaque part sits behind it; as the
         // toolbar slides away its part shrinks and the fade reaches the system
         // status bar / navigation bar.
         // With the toolbars visible, start the fade 16 dp higher so the first
         // lines under the header are already partially transparent.
-        val topRaisePx = with(edgeDensity) { 16.dp.toPx() }
+        val topRaisePx = with(edgeDensity) { 12.dp.toPx() }
         val topOpaquePx = (editorTopInsetPx - topRaisePx).coerceAtLeast(0f) * chrome
-        val topBandPx = (topOpaquePx + fadePx).coerceAtLeast(fadePx)
+        val topBandPx = (topOpaquePx + topFadePx).coerceAtLeast(topFadePx)
         val topStop = (topOpaquePx / topBandPx).coerceIn(0f, 1f)
         val bottomToolbarPx = when {
             imeVisible -> bottomInsetPx
             navbarEnabled -> with(edgeDensity) { NavbarHeight.toPx() } * chrome
             else -> 0f
         }
-        val bottomBandPx = (bottomToolbarPx + fadePx).coerceAtLeast(fadePx)
-        val bottomStop = (fadePx / bottomBandPx).coerceIn(0f, 1f)
+        val bottomBandPx = (bottomToolbarPx + bottomFadePx).coerceAtLeast(bottomFadePx)
+        val bottomStop = (bottomFadePx / bottomBandPx).coerceIn(0f, 1f)
         Box(Modifier.fillMaxSize()) {
             Box(
                 Modifier
