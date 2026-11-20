@@ -1473,6 +1473,62 @@ private fun EditorScreen(
             highlightCurrentLine,
             highlightWrappedLineInGutter,
         )
+        // Fade regions span from the top screen edge (status bar) to the
+        // bottom screen edge (system navigation bar). The opaque part sits
+        // behind the app toolbars; the visible transition is the 40 dp just
+        // below the top toolbar and just above the bottom toolbar.
+        val edgePalette = LocalVibecodiumPalette.current
+        val edgeDensity = LocalDensity.current
+        val fadePx = with(edgeDensity) { 40.dp.toPx() }
+        val chrome = chromeProgress.value.coerceIn(0f, 1f)
+        // While a toolbar is on screen the opaque part sits behind it; as the
+        // toolbar slides away its part shrinks and the fade reaches the system
+        // status bar / navigation bar.
+        // With the toolbars visible, start the fade 16 dp higher so the first
+        // lines under the header are already partially transparent.
+        val topRaisePx = with(edgeDensity) { 16.dp.toPx() }
+        val topOpaquePx = (editorTopInsetPx - topRaisePx).coerceAtLeast(0f) * chrome
+        val topBandPx = (topOpaquePx + fadePx).coerceAtLeast(fadePx)
+        val topStop = (topOpaquePx / topBandPx).coerceIn(0f, 1f)
+        val bottomToolbarPx = when {
+            imeVisible -> bottomInsetPx
+            navbarEnabled -> with(edgeDensity) { NavbarHeight.toPx() } * chrome
+            else -> 0f
+        }
+        val bottomBandPx = (bottomToolbarPx + fadePx).coerceAtLeast(fadePx)
+        val bottomStop = (fadePx / bottomBandPx).coerceIn(0f, 1f)
+        Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(with(edgeDensity) { topBandPx.toDp() })
+                    .background(
+                        Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0f to edgePalette.background,
+                                topStop to edgePalette.background,
+                                1f to Color.Transparent,
+                            ),
+                        ),
+                    ),
+            )
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(with(edgeDensity) { bottomBandPx.toDp() })
+                    .background(
+                        Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0f to Color.Transparent,
+                                bottomStop to edgePalette.background,
+                                1f to edgePalette.background,
+                            ),
+                        ),
+                    ),
+            )
+        }
         if (state.find.open) {
             Box(
                 Modifier
