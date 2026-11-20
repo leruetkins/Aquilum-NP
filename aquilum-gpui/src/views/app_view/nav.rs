@@ -36,6 +36,22 @@ impl AppView {
     }
 
     pub(crate) fn resolve_document_link(&self, target: &str) -> Option<PathBuf> {
+        let base_dir = self
+            .state
+            .active_document()
+            .and_then(|doc| doc.path.parent())
+            .map(Path::to_path_buf);
+        self.resolve_document_link_from(target, base_dir.as_deref())
+    }
+
+    /// Resolves `target` relative to `base_dir` (the note the link lives in)
+    /// instead of the active note. The preview card passes its own directory
+    /// so a link inside a person card stays relative to that card.
+    pub(crate) fn resolve_document_link_from(
+        &self,
+        target: &str,
+        base_dir: Option<&Path>,
+    ) -> Option<PathBuf> {
         let path_part = target.split('#').next()?.trim();
         if path_part.is_empty() {
             return None;
@@ -56,18 +72,16 @@ impl AppView {
             }
         }
 
-        // 2. Resolve relative to active note directory:
-        if let Some(active_doc) = self.state.active_document() {
-            if let Some(parent) = active_doc.path.parent() {
-                let candidate = parent.join(rel_path);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-                if candidate.extension().is_none() {
-                    let with_md = candidate.with_extension("md");
-                    if with_md.is_file() {
-                        return Some(with_md);
-                    }
+        // 2. Resolve relative to the note the link lives in:
+        if let Some(parent) = base_dir {
+            let candidate = parent.join(rel_path);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            if candidate.extension().is_none() {
+                let with_md = candidate.with_extension("md");
+                if with_md.is_file() {
+                    return Some(with_md);
                 }
             }
         }
@@ -98,14 +112,12 @@ impl AppView {
         }
 
         // 5. Fallback: return joined path with .md extension so clicking creates/opens the new note
-        if let Some(active_doc) = self.state.active_document() {
-            if let Some(parent) = active_doc.path.parent() {
-                let mut candidate = parent.join(rel_path);
-                if candidate.extension().is_none() {
-                    candidate.set_extension("md");
-                }
-                return Some(candidate);
+        if let Some(parent) = base_dir {
+            let mut candidate = parent.join(rel_path);
+            if candidate.extension().is_none() {
+                candidate.set_extension("md");
             }
+            return Some(candidate);
         }
         if let Some(ref vault) = self.state.vault {
             let mut candidate = vault.root.join(rel_path);

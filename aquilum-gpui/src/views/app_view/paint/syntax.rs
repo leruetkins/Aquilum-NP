@@ -90,6 +90,7 @@ pub(crate) fn render_syntax_spans(
     font_family: &gpui::SharedString,
     row_key: &str,
     ctrl_held: bool,
+    ctrl_shift_held: bool,
     hovered_link_id: Option<&str>,
     scale: f32,
     paint_native_solid: bool,
@@ -545,7 +546,19 @@ pub(crate) fn render_syntax_spans(
                         .on_mouse_down(MouseButton::Left, cx.listener({
                             let u = url.clone();
                             move |this, event: &MouseDownEvent, window, cx| {
-                                if event.modifiers.control || event.modifiers.platform || !this.edit_mode {
+                                if this.note_preview.is_some() {
+                                    // In the card a plain press starts a text
+                                    // selection; Ctrl+click follows the link.
+                                    if event.modifiers.control || event.modifiers.platform {
+                                        cx.stop_propagation();
+                                        this.handle_note_preview_link(&u, cx);
+                                    }
+                                } else if (event.modifiers.control || event.modifiers.platform)
+                                    && event.modifiers.shift
+                                    && this.open_note_preview(&u, window, cx)
+                                {
+                                    cx.stop_propagation();
+                                } else if event.modifiers.control || event.modifiers.platform || !this.edit_mode {
                                     cx.stop_propagation();
                                     this.handle_link_click(&u, window, cx);
                                 }
@@ -554,7 +567,22 @@ pub(crate) fn render_syntax_spans(
                         .child(link_styled);
 
                     if show_icon {
-                        link_div = link_div.child(icons::icon(icons::ICON_EXTERNAL_LINK, 12.0, theme.accent));
+                        let clean = crate::markdown::clean_link_url(&url);
+                        let external = clean.starts_with("http://")
+                            || clean.starts_with("https://")
+                            || clean.starts_with("mailto:");
+                        // Ctrl+Shift turns an internal link into a card, so its
+                        // arrow is replaced by the card's plain square.
+                        let card_link = ctrl_shift_held
+                            && !external
+                            && !clean.is_empty()
+                            && !clean.starts_with('#');
+                        let icon = if card_link {
+                            icons::ICON_CARD
+                        } else {
+                            icons::ICON_EXTERNAL_LINK
+                        };
+                        link_div = link_div.child(icons::icon(icon, 12.0, theme.accent));
                     }
 
                     row_container = row_container.child(link_div);

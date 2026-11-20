@@ -71,6 +71,7 @@ pub const LIST: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2
 pub const BOX_SELECT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/></svg>"#;
 pub const FOLDER_INPUT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.69.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1"/><path d="M2 13h10"/><path d="m9 10 3 3-3 3"/></svg>"#;
 pub const EXTERNAL_LINK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>"#;
+pub const CARD: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>"#;
 pub const CANVAS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>"#;
 pub const DRAWING: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>"#;
 pub const HASH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="15" y2="15"/><line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/></svg>"#;
@@ -156,6 +157,7 @@ pub const ICON_BOX_SELECT: &str = "icons/box_select.svg";
 pub const ICON_LIST: &str = "icons/list.svg";
 pub const ICON_FOLDER_INPUT: &str = "icons/folder_input.svg";
 pub const ICON_EXTERNAL_LINK: &str = "icons/external_link.svg";
+pub const ICON_CARD: &str = "icons/card.svg";
 pub const ICON_CANVAS: &str = "icons/canvas.svg";
 pub const ICON_DRAWING: &str = "icons/drawing.svg";
 pub const ICON_HASH: &str = "icons/hash.svg";
@@ -338,6 +340,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_LIST => Some(LIST),
             ICON_FOLDER_INPUT => Some(FOLDER_INPUT),
             ICON_EXTERNAL_LINK => Some(EXTERNAL_LINK),
+            ICON_CARD => Some(CARD),
             ICON_CANVAS => Some(CANVAS),
             ICON_DRAWING => Some(DRAWING),
             ICON_HASH => Some(HASH),
@@ -475,6 +478,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_LIST.into(),
             ICON_FOLDER_INPUT.into(),
             ICON_EXTERNAL_LINK.into(),
+            ICON_CARD.into(),
             ICON_CANVAS.into(),
             ICON_DRAWING.into(),
             ICON_HASH.into(),

@@ -18,6 +18,10 @@ impl AppView {
             self.handle_compress_dialog_key(event, _window, cx);
             return;
         }
+        if self.note_preview.is_some() {
+            self.handle_note_preview_key(event, _window, cx);
+            return;
+        }
         if self.export_dialog.is_some() {
             self.handle_export_dialog_key(event, _window, cx);
             return;
@@ -120,10 +124,7 @@ impl AppView {
         self.reset_editor_cursor_blink(cx);
         let keystroke = &event.keystroke;
         let ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
-        if ctrl != self.ctrl_held {
-            self.ctrl_held = ctrl;
-            cx.notify();
-        }
+        self.update_modifier_state(&keystroke.modifiers, cx);
         let alt = keystroke.modifiers.alt;
         let shift = keystroke.modifiers.shift;
         if alt && keystroke.key == "left" {

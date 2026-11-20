@@ -38,6 +38,7 @@ pub(crate) fn render_live_styled_row(
     plugin_input_blink_visible: bool,
     table_render: Option<(&crate::table::TableBlock, &TableLayout, Option<usize>, usize, f32)>,
     ctrl_held: bool,
+    ctrl_shift_held: bool,
     hovered_link_id: Option<&str>,
     window: &Window,
     cx: &Context<AppView>,
@@ -53,6 +54,13 @@ pub(crate) fn render_live_styled_row(
     callout_block: Option<crate::markdown::CalloutBlock>,
     // Interface language for the callout type names a header shows.
     lang: &str,
+    // Whether table cells may open their context menu and column resize
+    // handles. False for read-only surfaces that must not act on the active
+    // editor's document.
+    allow_table_editing: bool,
+    // Prefix for element ids, so a second surface (the link card) rendering
+    // the same document cannot collide with the editor's ids.
+    id_prefix: &str,
 ) -> gpui::Div {
     if let Some((tbl, table_layout, cursor_col, line_idx, row_h)) = table_render {
         if line_idx == tbl.sep_line() {
@@ -146,7 +154,7 @@ pub(crate) fn render_live_styled_row(
 
             let tbl_first_line = tbl.first_line;
             let mut cell_div = div()
-                .id(gpui::ElementId::Name(format!("tbl-cell-{}-{}-{}", tbl.first_line, line_idx, c_idx).into()))
+                .id(gpui::ElementId::Name(format!("{}-tbl-cell-{}-{}-{}", id_prefix, tbl.first_line, line_idx, c_idx).into()))
                 .relative()
                 .w(px(col_w))
                 .h_full()
@@ -170,15 +178,17 @@ pub(crate) fn render_live_styled_row(
                 .when(is_last_row && is_first_col, |d| d.rounded_bl_sm())
                 .when(is_last_row && is_last_col, |d| d.rounded_br_sm())
                 .cursor(gpui::CursorStyle::IBeam)
-                .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    window.focus(&this.focus_handle);
-                    this.state.active_set_cursor_line_col(line_idx, cell_start_col);
-                    let click_x: f32 = event.position.x.into();
-                    let click_y: f32 = event.position.y.into();
-                    this.open_table_context_menu(tbl_block.clone(), row_idx, c_idx, click_x, click_y, cx);
-                }));
-            let cell_key = format!("tbl-cell-{}-{}-{}", line_idx, c_idx, sub_idx);
+                .when(allow_table_editing, |d| {
+                    d.on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        window.focus(&this.focus_handle);
+                        this.state.active_set_cursor_line_col(line_idx, cell_start_col);
+                        let click_x: f32 = event.position.x.into();
+                        let click_y: f32 = event.position.y.into();
+                        this.open_table_context_menu(tbl_block.clone(), row_idx, c_idx, click_x, click_y, cx);
+                    }))
+                });
+            let cell_key = format!("{}-tbl-cell-{}-{}-{}", id_prefix, line_idx, c_idx, sub_idx);
             let mut lines_col = div().w_full().flex().flex_col();
             for (line_no, wl) in wrap.iter().enumerate() {
                 let s = wl.raw_start.saturating_sub(content_range.start);
@@ -206,6 +216,7 @@ pub(crate) fn render_live_styled_row(
                     font_family,
                     &format!("{}-l{}", cell_key, line_no),
                     ctrl_held,
+                    ctrl_shift_held,
                     hovered_link_id,
                     window.scale_factor(),
                     true,
@@ -216,23 +227,25 @@ pub(crate) fn render_live_styled_row(
             cell_div = cell_div.child(lines_col);
 
             let col_widths_clone = table_layout.col_widths.clone();
-            cell_div = cell_div.child(
-                div()
-                    .id(gpui::ElementId::Name(format!("tbl-rsz-{}-{}-{}", tbl_first_line, line_idx, c_idx).into()))
-                    .absolute()
-                    .right(px(-4.0))
-                    .top_0()
-                    .bottom_0()
-                    .w(px(8.0))
-                    .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        cx.stop_propagation();
-                        let click_x: f32 = event.position.x.into();
-                        this.start_table_col_resize(tbl_first_line, c_idx, click_x, &col_widths_clone);
-                        window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ResizeLeftRight), cx);
-                        cx.notify();
-                    }))
-            );
+            cell_div = cell_div.when(allow_table_editing, |d| {
+                d.child(
+                    div()
+                        .id(gpui::ElementId::Name(format!("{}-tbl-rsz-{}-{}-{}", id_prefix, tbl_first_line, line_idx, c_idx).into()))
+                        .absolute()
+                        .right(px(-4.0))
+                        .top_0()
+                        .bottom_0()
+                        .w(px(8.0))
+                        .cursor(gpui::CursorStyle::ResizeLeftRight)
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            let click_x: f32 = event.position.x.into();
+                            this.start_table_col_resize(tbl_first_line, c_idx, click_x, &col_widths_clone);
+                            window.set_custom_drag_cursor_style(Some(gpui::CursorStyle::ResizeLeftRight), cx);
+                            cx.notify();
+                        }))
+                )
+            });
 
             row_div = row_div.child(cell_div);
         }
@@ -243,7 +256,7 @@ pub(crate) fn render_live_styled_row(
         return div().h_full().flex().items_center().child(" ");
     }
 
-    let row_key = format!("row-{}-{}", line_idx, sub_idx);
+    let row_key = format!("{}-{}-{}", id_prefix, line_idx, sub_idx);
     let scale = window.scale_factor();
     let render_spans = |spans: Vec<crate::markdown::VisibleSpan>, text_color: Option<gpui::Rgba>, weight: Option<gpui::FontWeight>, style: Option<gpui::FontStyle>| {
         render_syntax_spans(
@@ -255,6 +268,7 @@ pub(crate) fn render_live_styled_row(
             font_family,
             &row_key,
             ctrl_held,
+            ctrl_shift_held,
             hovered_link_id,
             scale,
             false,

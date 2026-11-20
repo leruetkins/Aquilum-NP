@@ -2,10 +2,31 @@ use super::*;
 
 use gpui::AnimationExt;
 
+impl AppView {
+    /// Tracks Ctrl and Ctrl+Shift for link affordances: the hover icon and
+    /// whether a link opens a card or follows normally.
+    pub(crate) fn update_modifier_state(
+        &mut self,
+        modifiers: &gpui::Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        let ctrl = modifiers.control || modifiers.platform;
+        let ctrl_shift = ctrl && modifiers.shift;
+        if self.ctrl_held != ctrl || self.ctrl_shift_held != ctrl_shift {
+            self.ctrl_held = ctrl;
+            self.ctrl_shift_held = ctrl_shift;
+            cx.notify();
+        }
+    }
+}
+
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log_fps_tick();
         self.window_width_px = f32::from(window.viewport_size().width);
+        if self.note_preview.is_some() {
+            self.prepare_note_preview(window, cx);
+        }
         self.refresh_monitor_width(window, cx);
         self.ensure_inactive_views_built(window, cx);
 
@@ -319,11 +340,7 @@ if let Some(new_scroll) = new_active_scroll {
                 }
             }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                let ctrl_held = event.modifiers.control || event.modifiers.platform;
-                if this.ctrl_held != ctrl_held {
-                    this.ctrl_held = ctrl_held;
-                    cx.notify();
-                }
+                this.update_modifier_state(&event.modifiers, cx);
                 if this.is_resizing_sidebar {
                     let x: f32 = event.position.x.into();
                     if x < 100.0 {
@@ -385,6 +402,9 @@ if let Some(new_scroll) = new_active_scroll {
                 } else if this.plugin_modal_scrollbar_drag.active {
                     let y: f32 = event.position.y.into();
                     this.handle_plugin_modal_scrollbar_drag(y, cx);
+                } else if this.note_preview_scrollbar_drag.active {
+                    let y: f32 = event.position.y.into();
+                    this.handle_note_preview_scrollbar_drag(y, window, cx);
                 } else if this.state.active_view().and_then(|v| v.title_input.as_ref()).map(|ti| ti.is_mouse_selecting).unwrap_or(false) {
                     let x: f32 = event.position.x.into();
                     let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
@@ -509,6 +529,7 @@ if let Some(new_scroll) = new_active_scroll {
                 this.handle_panel_mouse_up(cx);
                 this.panel_scrollbar_drag.end();
                 this.recent_files_scrollbar_drag.end();
+                this.note_preview_scrollbar_drag.end();
                 if this.is_resizing_sidebar {
                     // Persist the dragged width right away (crash-safe;
                     // exit save refreshes it again).
@@ -624,11 +645,7 @@ if let Some(new_scroll) = new_active_scroll {
                 this.stop_plugin_modal_middle_scroll(cx);
             }))
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _window, cx| {
-                let ctrl_held = event.modifiers.control || event.modifiers.platform;
-                if this.ctrl_held != ctrl_held {
-                    this.ctrl_held = ctrl_held;
-                    cx.notify();
-                }
+                this.update_modifier_state(&event.modifiers, cx);
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keystroke = &event.keystroke;
@@ -1843,6 +1860,10 @@ if let Some(new_scroll) = new_active_scroll {
             // ================= EXPORT MD DIALOG =================
             .when(self.export_dialog.is_some(), |d| {
                 d.child(self.render_export_dialog(theme, cx))
+            })
+            // ================= LINK NOTE PREVIEW (Ctrl+Shift) =================
+            .when(self.note_preview.is_some(), |d| {
+                d.child(self.render_note_preview(theme, window, cx))
             })
             // ================= UNUSED ATTACHMENTS =================
             .when(self.unused_attachments.is_some(), |d| {

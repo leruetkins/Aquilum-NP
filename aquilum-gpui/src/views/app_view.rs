@@ -30,6 +30,7 @@ mod plugins;
 mod mouse;
 mod table_ops;
 mod nav;
+mod note_preview;
 mod find;
 mod notes;
 mod geometry;
@@ -96,6 +97,8 @@ pub struct AppView {
     pub mouse_down_pos: Option<(f32, f32)>,
     pub ctrl_preview_selection: bool,
     pub ctrl_held: bool,
+    /// Ctrl+Shift over a link means "open as a card" rather than "follow".
+    pub ctrl_shift_held: bool,
     pub hovered_link_id: Option<String>,
     pub hovered_tag: bool,
     /// Image block under the pointer (its line) — the hover toolbar follows it.
@@ -116,6 +119,9 @@ pub struct AppView {
     pub caption_editor: Option<crate::views::image_editor::CaptionEditorState>,
     pub compress_dialog: Option<crate::views::image_compress::CompressDialogState>,
     pub export_dialog: Option<crate::views::export_dialog::ExportDialogState>,
+    /// Ctrl+Shift link card: the linked note shown read-only over the editor.
+    pub note_preview: Option<note_preview::NotePreviewState>,
+    pub note_preview_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
     pub unused_attachments: Option<crate::views::unused_attachments::UnusedAttachmentsState>,
     /// Last painted image rectangle in window coordinates, for the editor
     /// panels that float next to it.
@@ -505,6 +511,7 @@ impl AppView {
             mouse_down_pos: None,
             ctrl_preview_selection: false,
             ctrl_held: false,
+            ctrl_shift_held: false,
             hovered_link_id: None,
             hovered_tag: false,
             hovered_image_line: None,
@@ -518,6 +525,8 @@ impl AppView {
             caption_editor: None,
             compress_dialog: None,
             export_dialog: None,
+            note_preview: None,
+            note_preview_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             unused_attachments: None,
             image_editor_rect: Cell::new(None),
             caption_numbers_cache: std::cell::RefCell::new(None),

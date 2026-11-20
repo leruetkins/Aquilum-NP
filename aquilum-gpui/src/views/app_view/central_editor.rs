@@ -803,11 +803,7 @@ impl AppView {
                         this.handle_key(event, window, cx);
                     }))
                     .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _window, cx| {
-                        let ctrl_held = event.modifiers.control || event.modifiers.platform;
-                        if this.ctrl_held != ctrl_held {
-                            this.ctrl_held = ctrl_held;
-                            cx.notify();
-                        }
+                        this.update_modifier_state(&event.modifiers, cx);
                     }));
             }
 
@@ -2112,11 +2108,7 @@ impl AppView {
                             cx.notify();
                         }))
                         .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                            let ctrl_held = event.modifiers.control || event.modifiers.platform;
-                            if this.ctrl_held != ctrl_held {
-                                this.ctrl_held = ctrl_held;
-                                cx.notify();
-                            }
+                            this.update_modifier_state(&event.modifiers, cx);
                             if this.is_mouse_selecting {
                                 let click_x: f32 = event.position.x.into();
                                 let click_y: f32 = event.position.y.into();
@@ -2664,6 +2656,7 @@ impl AppView {
                                         self.plugin_input_blink.visible(),
                                         table_render_arg,
                                         self.ctrl_held,
+                                        self.ctrl_shift_held,
                                         self.hovered_link_id.as_deref(),
                                         window,
                                         cx,
@@ -2671,6 +2664,8 @@ impl AppView {
                                         guide_columns,
                                         callout,
                                         self.config.ui.language.as_str(),
+                                        true,
+                                        "row",
                                     )
                                     .into_any_element(),
                                     }),
