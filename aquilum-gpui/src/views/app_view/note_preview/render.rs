@@ -79,6 +79,10 @@ impl AppView {
         let Some(state) = self.note_preview.as_ref() else {
             return div().into_any_element();
         };
+        let header_title = match state.section.as_deref() {
+            Some(section) => format!("{} · {}", state.title, section),
+            None => state.title.clone(),
+        };
         let layout = preview_layout(window);
         let typography = self.editor_typography();
         let editor_font = self.editor_font_family();
@@ -328,6 +332,7 @@ impl AppView {
                     false,
                     false,
                     None,
+                    false,
                     window,
                     cx,
                     line_char_width,
@@ -489,7 +494,7 @@ impl AppView {
                             .text_base()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(theme.text_primary)
-                            .child(state.title.clone()),
+                            .child(header_title),
                     )
                     .child(self.image_close_button(
                         "note-preview-close",

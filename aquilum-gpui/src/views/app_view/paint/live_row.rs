@@ -40,6 +40,7 @@ pub(crate) fn render_live_styled_row(
     ctrl_held: bool,
     ctrl_shift_held: bool,
     hovered_link_id: Option<&str>,
+    hovered_link_missing: bool,
     window: &Window,
     cx: &Context<AppView>,
     // `cell_w` is the width of one character cell of this row in logical px;
@@ -218,6 +219,7 @@ pub(crate) fn render_live_styled_row(
                     ctrl_held,
                     ctrl_shift_held,
                     hovered_link_id,
+                    hovered_link_missing,
                     window.scale_factor(),
                     true,
                     cx,
@@ -270,6 +272,7 @@ pub(crate) fn render_live_styled_row(
             ctrl_held,
             ctrl_shift_held,
             hovered_link_id,
+            hovered_link_missing,
             scale,
             false,
             cx,

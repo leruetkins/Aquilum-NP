@@ -100,6 +100,8 @@ pub struct AppView {
     /// Ctrl+Shift over a link means "open as a card" rather than "follow".
     pub ctrl_shift_held: bool,
     pub hovered_link_id: Option<String>,
+    /// Hovered internal link points at a note that does not exist yet.
+    pub hovered_link_missing: bool,
     pub hovered_tag: bool,
     /// Image block under the pointer (its line) — the hover toolbar follows it.
     pub hovered_image_line: Option<usize>,
@@ -513,6 +515,7 @@ impl AppView {
             ctrl_held: false,
             ctrl_shift_held: false,
             hovered_link_id: None,
+            hovered_link_missing: false,
             hovered_tag: false,
             hovered_image_line: None,
             selected_image_line: None,

@@ -1,5 +1,45 @@
 use super::*;
 
+/// Resolves `..`/`.` without touching the filesystem.
+pub(super) fn lexical_normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Turns a link target into the path the document store should use. Existing
+/// files are canonicalized (this removes `..` and symlinks); a not-yet-created
+/// target is normalized lexically against its real parent, so breadcrumbs never
+/// show `..` segments for a new note either.
+fn normalize_link_path(path: PathBuf) -> PathBuf {
+    if path.exists() {
+        return crate::state::AppState::normalize_path(&path);
+    }
+    let normalized = lexical_normalize(&path);
+    let Some(parent) = normalized.parent() else {
+        return normalized;
+    };
+    if !parent.exists() {
+        return normalized;
+    }
+    let mut cleaned = crate::state::AppState::normalize_path(parent);
+    if let Some(name) = normalized.file_name() {
+        cleaned.push(name);
+    }
+    cleaned
+}
+
 impl AppView {
     /// Moves the caret to `line` and reveals it in the active editor (outline navigation).
     pub(crate) fn jump_to_doc_line(&mut self, line: usize, cx: &mut Context<Self>) {
@@ -27,8 +67,33 @@ impl AppView {
         }
 
         // Document / local file link
-        if let Some(target_path) = self.resolve_document_link(&clean) {
+        let (path_part, fragment) = super::note_preview::split_link_target(&clean);
+
+        if path_part.is_empty() {
+            // `#Heading` points into the note already on screen.
+            if let Some(fragment) = fragment.as_deref() {
+                let line = self
+                    .state
+                    .active_document()
+                    .and_then(|doc| Self::heading_line_for_fragment(doc, fragment));
+                if let Some(line) = line {
+                    self.jump_to_doc_line(line, cx);
+                }
+            }
+            return;
+        }
+
+        if let Some(target_path) = self.resolve_document_link(&path_part) {
             self.select_note(target_path, true, window, cx);
+            if let Some(fragment) = fragment.as_deref() {
+                let line = self
+                    .state
+                    .active_document()
+                    .and_then(|doc| Self::heading_line_for_fragment(doc, fragment));
+                if let Some(line) = line {
+                    self.jump_to_doc_line(line, cx);
+                }
+            }
         } else {
             // Fallback: try opening via system open_url
             cx.open_url(&clean);
@@ -52,82 +117,91 @@ impl AppView {
         target: &str,
         base_dir: Option<&Path>,
     ) -> Option<PathBuf> {
-        let path_part = target.split('#').next()?.trim();
-        if path_part.is_empty() {
-            return None;
-        }
-
-        let decoded = crate::markdown::percent_decode(path_part);
-        let cleaned_path = decoded.strip_prefix("file://").unwrap_or(&decoded);
-        let rel_path = Path::new(cleaned_path);
-
-        // 1. If absolute path:
-        if rel_path.is_absolute() {
-            if rel_path.is_file() {
-                return Some(rel_path.to_path_buf());
+        let resolved = (|| -> Option<PathBuf> {
+            let path_part = target.split('#').next()?.trim();
+            if path_part.is_empty() {
+                return None;
             }
-            let with_md = rel_path.with_extension("md");
-            if with_md.is_file() {
-                return Some(with_md);
-            }
-        }
 
-        // 2. Resolve relative to the note the link lives in:
-        if let Some(parent) = base_dir {
-            let candidate = parent.join(rel_path);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            if candidate.extension().is_none() {
-                let with_md = candidate.with_extension("md");
-                if with_md.is_file() {
-                    return Some(with_md);
+            let decoded = crate::markdown::percent_decode(path_part);
+            let cleaned_path = decoded.strip_prefix("file://").unwrap_or(&decoded);
+            let rel_path = Path::new(cleaned_path);
+
+            // 1. If absolute path:
+            if rel_path.is_absolute() {
+                if rel_path.is_file() {
+                    return Some(rel_path.to_path_buf());
                 }
-            }
-        }
-
-        // 3. Resolve relative to vault root:
-        if let Some(ref vault) = self.state.vault {
-            let candidate = vault.root.join(rel_path);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            if candidate.extension().is_none() {
-                let with_md = candidate.with_extension("md");
+                let with_md = rel_path.with_extension("md");
                 if with_md.is_file() {
                     return Some(with_md);
                 }
             }
 
-            // 4. Search in vault by filename or stem (Obsidian-style shortest link match)
-            let file_name = rel_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let stem = rel_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            if !stem.is_empty() {
-                let mut matched = Vec::new();
-                Self::collect_matching_notes_in_vault(&vault.root, stem, file_name, &mut matched);
-                if let Some(p) = matched.into_iter().next() {
-                    return Some(p);
+            // 2. Resolve relative to the note the link lives in:
+            if let Some(parent) = base_dir {
+                let candidate = parent.join(rel_path);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+                if candidate.extension().is_none() {
+                    let with_md = candidate.with_extension("md");
+                    if with_md.is_file() {
+                        return Some(with_md);
+                    }
                 }
             }
-        }
 
-        // 5. Fallback: return joined path with .md extension so clicking creates/opens the new note
-        if let Some(parent) = base_dir {
-            let mut candidate = parent.join(rel_path);
-            if candidate.extension().is_none() {
-                candidate.set_extension("md");
-            }
-            return Some(candidate);
-        }
-        if let Some(ref vault) = self.state.vault {
-            let mut candidate = vault.root.join(rel_path);
-            if candidate.extension().is_none() {
-                candidate.set_extension("md");
-            }
-            return Some(candidate);
-        }
+            // 3. Resolve relative to vault root:
+            if let Some(ref vault) = self.state.vault {
+                let candidate = vault.root.join(rel_path);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+                if candidate.extension().is_none() {
+                    let with_md = candidate.with_extension("md");
+                    if with_md.is_file() {
+                        return Some(with_md);
+                    }
+                }
 
-        None
+                // 4. Search in vault by filename or stem (Obsidian-style shortest link match)
+                let file_name = rel_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let stem = rel_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if !stem.is_empty() {
+                    let mut matched = Vec::new();
+                    Self::collect_matching_notes_in_vault(
+                        &vault.root,
+                        stem,
+                        file_name,
+                        &mut matched,
+                    );
+                    if let Some(p) = matched.into_iter().next() {
+                        return Some(p);
+                    }
+                }
+            }
+
+            // 5. Fallback: return joined path with .md extension so clicking creates/opens the new note
+            if let Some(parent) = base_dir {
+                let mut candidate = parent.join(rel_path);
+                if candidate.extension().is_none() {
+                    candidate.set_extension("md");
+                }
+                return Some(candidate);
+            }
+            if let Some(ref vault) = self.state.vault {
+                let mut candidate = vault.root.join(rel_path);
+                if candidate.extension().is_none() {
+                    candidate.set_extension("md");
+                }
+                return Some(candidate);
+            }
+
+            None
+        })();
+
+        resolved.map(normalize_link_path)
     }
 
     pub(super) fn collect_matching_notes_in_vault(dir: &Path, stem: &str, file_name: &str, acc: &mut Vec<PathBuf>) {

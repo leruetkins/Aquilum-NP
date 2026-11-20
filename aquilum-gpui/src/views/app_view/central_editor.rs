@@ -2658,6 +2658,7 @@ impl AppView {
                                         self.ctrl_held,
                                         self.ctrl_shift_held,
                                         self.hovered_link_id.as_deref(),
+                                        self.hovered_link_missing,
                                         window,
                                         cx,
                                         line_char_width,

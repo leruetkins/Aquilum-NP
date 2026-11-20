@@ -967,6 +967,8 @@ impl AppView {
             self.state.active_document().map(|d| d.path.clone())
                 .or_else(|| self.state.active_doc_id().and_then(|id| self.state.document_path(id).map(|p| p.to_path_buf())))
         };
+        let full_path_opt = full_path_opt
+            .map(|path| super::nav::lexical_normalize(&path));
         struct NavBreadcrumb {
             name: String,
             path: Option<PathBuf>,

@@ -92,6 +92,7 @@ pub(crate) fn render_syntax_spans(
     ctrl_held: bool,
     ctrl_shift_held: bool,
     hovered_link_id: Option<&str>,
+    hovered_link_missing: bool,
     scale: f32,
     paint_native_solid: bool,
     cx: &Context<AppView>,
@@ -531,14 +532,20 @@ pub(crate) fn render_syntax_spans(
                         .when(ctrl_held, |d| d.cursor(gpui::CursorStyle::PointingHand))
                         .on_hover(cx.listener({
                             let lid = link_id.clone();
+                            let u = url.clone();
                             move |this, is_h: &bool, _window, cx| {
                                 if *is_h {
-                                    if this.hovered_link_id.as_deref() != Some(&lid) {
+                                    let missing = !this.link_target_exists(&u);
+                                    if this.hovered_link_id.as_deref() != Some(&lid)
+                                        || this.hovered_link_missing != missing
+                                    {
                                         this.hovered_link_id = Some(lid.clone());
+                                        this.hovered_link_missing = missing;
                                         cx.notify();
                                     }
                                 } else if this.hovered_link_id.as_deref() == Some(&lid) {
                                     this.hovered_link_id = None;
+                                    this.hovered_link_missing = false;
                                     cx.notify();
                                 }
                             }
@@ -571,13 +578,15 @@ pub(crate) fn render_syntax_spans(
                         let external = clean.starts_with("http://")
                             || clean.starts_with("https://")
                             || clean.starts_with("mailto:");
-                        // Ctrl+Shift turns an internal link into a card, so its
-                        // arrow is replaced by the card's plain square.
-                        let card_link = ctrl_shift_held
-                            && !external
+                        let internal = !external
                             && !clean.is_empty()
                             && !clean.starts_with('#');
-                        let icon = if card_link {
+                        // Ctrl+Shift turns an internal link into a card, so its
+                        // arrow is replaced by the card's plain square. A
+                        // missing note gets the square with a plus (create).
+                        let icon = if internal && hovered_link_missing {
+                            icons::ICON_CARD_PLUS
+                        } else if internal && ctrl_shift_held {
                             icons::ICON_CARD
                         } else {
                             icons::ICON_EXTERNAL_LINK

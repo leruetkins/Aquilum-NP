@@ -2332,3 +2332,12 @@
             });
         });
     }
+
+#[test]
+fn link_targets_lose_parent_dir_segments() {
+    let path = std::path::Path::new("Работа/АСТРАЛИНУКС/../../Люди/Сергей Кот.md");
+    assert_eq!(
+        super::nav::lexical_normalize(path),
+        std::path::PathBuf::from("Люди/Сергей Кот.md")
+    );
+}
