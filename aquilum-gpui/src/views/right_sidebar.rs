@@ -52,37 +52,26 @@ impl AppView {
         items
     }
 
-    /// Renders the outline toggle in the right-sidebar header; it matches a leaf tab.
+    /// Renders the outline toggle in the right-sidebar header.
     fn render_outline_toggle_button(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
         let is_open = self.outline.open;
         div()
             .id("btn-right-sidebar-outline")
             .flex()
-            .flex_row()
             .items_center()
-            .gap(px(4.0))
-            .px(px(6.0))
-            .py(px(3.0))
+            .justify_center()
             .flex_shrink_0()
-            .rounded(px(4.0))
+            .w(px(28.0))
+            .h(px(28.0))
+            .rounded_md()
             .cursor_pointer()
             .when(is_open, |d| d.bg(theme.bg_card))
-            .when(!is_open, |d| d.hover(|h| h.bg(theme.bg_hover)))
+            .hover(|h| h.bg(theme.bg_hover))
             .child(icons::icon(
                 icons::ICON_LIST,
-                13.0,
-                if is_open { theme.accent } else { theme.text_muted },
+                16.0,
+                if is_open { theme.accent } else { theme.text_secondary },
             ))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(if is_open {
-                        theme.text_primary
-                    } else {
-                        theme.text_muted
-                    })
-                    .child(self.t("app.outline.title")),
-            )
             .on_click(cx.listener(|this, _, _, cx| {
                 this.toggle_outline(cx);
             }))
@@ -156,7 +145,7 @@ impl AppView {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .text_xs()
+                            .text_sm()
                             .text_color(theme.text_secondary)
                             .child(item.title.clone()),
                     ),

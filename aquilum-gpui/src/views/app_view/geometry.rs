@@ -853,6 +853,65 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     }
 }
 
+/// Editor viewport height; the measured scroll handle wins once laid out.
+fn editor_viewport_h(&self) -> f32 {
+    let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
+    if measured_h > 50.0 {
+        measured_h
+    } else {
+        self.last_editor_h.get().max(100.0)
+    }
+}
+
+/// Row geometry `(top, bottom, total document height)` of the row holding `line`/`col`.
+///
+/// The window follows the viewport, so revealing a row needs it inside the
+/// window first: when the window does not cover `line`, it is placed there.
+fn visual_row_bounds(&mut self, line: usize, col: usize) -> Option<(f64, f64, f64)> {
+    let typography = self.editor_typography();
+    let word_wrap = self.word_wrap;
+    let wrap_cols = self.last_wrap_cols;
+    let preview = self.ctrl_preview_selection || !self.edit_mode;
+    let (view, doc) = self.state.active_view_and_doc_mut()?;
+    let anchor = if view.window.covers_line(line) && view.window.covers_line(view.viewport.offset) {
+        view.viewport.offset
+    } else {
+        view.viewport.offset = line;
+        line
+    };
+    view.ensure_visual_cache_with_headings(
+        doc,
+        word_wrap,
+        wrap_cols,
+        Some(&typography),
+        anchor,
+        preview,
+    );
+    crate::markdown::find_visual_row_for_cursor(&view.window.visual_rows, line, col).map(|(v_idx, _)| {
+        let top = view.doc_y_of_local_v_idx(v_idx);
+        (
+            top,
+            top + f64::from(view.window.height_index.height_of(v_idx)),
+            view.total_height(),
+        )
+    })
+}
+
+/// Applies `target_scroll` when it actually moves the viewport, keeping the
+/// viewport line in step and letting the next frame settle the layout.
+fn scroll_editor_to(&mut self, target_scroll: f64) {
+    let raw_scroll = self.current_scroll_top_f64();
+    // Correct a stale position after the content height changes.
+    // Ignore subpixel changes to avoid provoking jitter.
+    if (target_scroll - raw_scroll).abs() > 0.5 {
+        self.set_editor_scroll_top_f64(target_scroll);
+        if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+            view.viewport.offset = view.line_at_doc_y(doc.line_index.lines(), target_scroll);
+        }
+        self.layout_settle_frames.set(1);
+    }
+}
+
 /// Scrolls the viewport the least amount that brings the row of `line` at
 /// `col` into view.
 ///
@@ -867,58 +926,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 /// the wheel, so the reader can lift the current line to the middle and type
 /// there without the view snapping back.
 pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
-    let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
-
-    let viewport_h = if measured_h > 50.0 {
-        measured_h
-    } else {
-        self.last_editor_h.get().max(100.0)
-    };
-
-    // Row geometry of the target row, in document coordinates. Scoped so the
-    // note borrow ends before the scroll position is read and written through
-    // `self`.
-    let typography = self.editor_typography();
-    let geometry = {
-        let word_wrap = self.word_wrap;
-        let wrap_cols = self.last_wrap_cols;
-        let (view, doc) = match self.state.active_view_and_doc_mut() {
-            Some(p) => p,
-            None => return,
-        };
-        let anchor = if view.window.covers_line(line) && view.window.covers_line(view.viewport.offset) {
-            view.viewport.offset
-        } else {
-            view.viewport.offset = line;
-            line
-        };
-        view.ensure_visual_cache_with_headings(
-            doc,
-            word_wrap,
-            wrap_cols,
-            Some(&typography),
-            anchor,
-            self.ctrl_preview_selection || !self.edit_mode,
-        );
-        crate::markdown::find_visual_row_for_cursor(&view.window.visual_rows, line, col)
-        .map(|(v_idx, _)| {
-            let top = view.doc_y_of_local_v_idx(v_idx);
-            (
-                top,
-                top + f64::from(view.window.height_index.height_of(v_idx)),
-                view.total_height(),
-            )
-        })
-    };
-
-    let Some((row_top, row_bottom, total_content_h)) = geometry else {
+    let viewport_h = self.editor_viewport_h();
+    let Some((row_top, row_bottom, total_content_h)) = self.visual_row_bounds(line, col) else {
         return;
     };
 
     let max_scroll = Self::editor_max_scroll(total_content_h, f64::from(viewport_h));
-
-    let raw_scroll = self.current_scroll_top_f64();
-    let current_scroll = raw_scroll.clamp(0.0, max_scroll);
+    let current_scroll = self.current_scroll_top_f64().clamp(0.0, max_scroll);
     let viewport_bottom = current_scroll + f64::from(viewport_h);
 
     // No extra padding at the top.
@@ -932,15 +946,17 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     }
     .clamp(0.0, max_scroll);
 
-    // Correct a stale position after the content height changes.
-    // Ignore subpixel changes to avoid provoking jitter.
-    if (target_scroll - raw_scroll).abs() > 0.5 {
-        self.set_editor_scroll_top_f64(target_scroll);
-        if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
-            view.viewport.offset = view.line_at_doc_y(doc.line_index.lines(), target_scroll);
-        }
-        self.layout_settle_frames.set(1);
-    }
+    self.scroll_editor_to(target_scroll);
+}
+
+/// Puts the row of `line`/`col` at the top of the viewport (outline jumps).
+pub(super) fn scroll_visual_row_to_top(&mut self, line: usize, col: usize) {
+    let viewport_h = self.editor_viewport_h();
+    let Some((row_top, _, total_content_h)) = self.visual_row_bounds(line, col) else {
+        return;
+    };
+    let max_scroll = Self::editor_max_scroll(total_content_h, f64::from(viewport_h));
+    self.scroll_editor_to(row_top.clamp(0.0, max_scroll));
 }
 
     pub(super) fn scroll_cursor_into_view(&mut self) {

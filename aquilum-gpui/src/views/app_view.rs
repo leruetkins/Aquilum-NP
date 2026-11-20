@@ -451,6 +451,13 @@ impl AppView {
         } else {
             260.0
         };
+        let saved_right_width = state.session.right_sidebar_width;
+        let right_sidebar_width = if (160.0..=600.0).contains(&saved_right_width) {
+            saved_right_width
+        } else {
+            260.0
+        };
+        let right_sidebar_collapsed = state.session.right_sidebar_collapsed;
         let sidebar_mode = state.session.sidebar_mode.clone();
         let sidebar_mode = if matches!(sidebar_mode, crate::views::sidebar::SidebarMode::Plugin(_)) {
             crate::views::sidebar::SidebarMode::Files
@@ -459,6 +466,10 @@ impl AppView {
         };
         let recent_files_sort_order = state.session.recent_files_sort_order;
         let always_on_top = state.session.always_on_top;
+        // Right-sidebar view selection: the outline toggle and the active
+        // plugin leaf come back as they were left when the app closed.
+        let right_sidebar_outline_open = state.session.right_sidebar_outline_open;
+        let right_sidebar_leaf = state.session.right_sidebar_leaf.clone();
         let settings_model = cx.new(|_cx| {
             crate::settings::SettingsModel::new(state.settings.clone())
         });
@@ -518,9 +529,12 @@ impl AppView {
             is_resizing_sidebar: false,
             is_hovering_resizer: false,
             selected_sidebar_folder: None,
-            right_sidebar_width: 260.0,
-            right_sidebar_collapsed: true,
-            outline: crate::views::right_sidebar::OutlineState::default(),
+            right_sidebar_width,
+            right_sidebar_collapsed,
+            outline: crate::views::right_sidebar::OutlineState {
+                open: right_sidebar_outline_open,
+                ..Default::default()
+            },
             is_resizing_right_sidebar: false,
             is_hovering_right_resizer: false,
             split_drag_state: None,
@@ -672,7 +686,7 @@ impl AppView {
             active_plugin_select: None,
             plugin_views: HashMap::new(),
             plugin_leaf_views: std::collections::BTreeMap::new(),
-            active_right_leaf: None,
+            active_right_leaf: right_sidebar_leaf,
             active_left_leaf: None,
             active_center_leaf: None,
             plugin_runtimes: Vec::new(),

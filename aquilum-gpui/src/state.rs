@@ -154,6 +154,18 @@ pub struct SessionState {
     /// Open sidebar panel (file tree vs search). Defaults to files.
     #[serde(default)]
     pub sidebar_mode: crate::views::sidebar::SidebarMode,
+    /// Right-sidebar outline panel was open when the app closed.
+    #[serde(default)]
+    pub right_sidebar_outline_open: bool,
+    /// Plugin leaf that was active in the right sidebar when the app closed.
+    #[serde(default)]
+    pub right_sidebar_leaf: Option<String>,
+    /// Right sidebar width in pixels (clamped to 160..=600 on restore).
+    #[serde(default)]
+    pub right_sidebar_width: f32,
+    /// Whether the right sidebar was expanded when the app closed.
+    #[serde(default = "default_true")]
+    pub right_sidebar_collapsed: bool,
     /// Whether the window is kept above all other windows.
     #[serde(default)]
     pub always_on_top: bool,

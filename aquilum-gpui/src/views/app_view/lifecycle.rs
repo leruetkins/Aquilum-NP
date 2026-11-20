@@ -617,6 +617,8 @@ impl AppView {
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.session.sidebar_width = self.sidebar_width;
         self.state.session.sidebar_mode = self.sidebar_mode.clone();
+        self.state.session.right_sidebar_width = self.right_sidebar_width;
+        self.state.session.right_sidebar_collapsed = self.right_sidebar_collapsed;
         self.state.session.recent_files_sort_order = self.recent_files_sort_order;
         self.state.session.recent_files = self.state.recent_files.clone();
         // Restored on the next launch by `AppView::new`.
@@ -627,6 +629,10 @@ impl AppView {
     /// Completely flushes data, closes child windows, unloads plugins, cancels subscriptions,
     /// and frees document buffers on application shutdown.
     pub fn prepare_shutdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Captured before `unload_all_plugins` drops the active right-sidebar
+        // leaf, so the pressed outline/tab state survives the restart.
+        self.state.session.right_sidebar_outline_open = self.outline.open;
+        self.state.session.right_sidebar_leaf = self.active_right_leaf.clone();
         self.state.save_dirty_documents();
         self.state.sync.close();
         self.catalog_window_manager.close_if_open(cx);

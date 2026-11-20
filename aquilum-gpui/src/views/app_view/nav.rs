@@ -10,7 +10,7 @@ impl AppView {
             .unwrap_or(0);
         let line = line.min(last);
         self.state.active_set_cursor_line_col(line, 0);
-        self.scroll_visual_row_into_view(line, 0);
+        self.scroll_visual_row_to_top(line, 0);
         cx.notify();
     }
 

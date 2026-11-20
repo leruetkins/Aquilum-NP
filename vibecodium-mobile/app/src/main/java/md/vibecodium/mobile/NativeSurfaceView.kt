@@ -2745,9 +2745,6 @@ class NativeEditorView(
                     hideSelectionToolbar()
                     hideSelectionToolbar()
                     recycleVelocity()
-                    if (handle == 2) {
-                        postDelayed(longPress, android.view.ViewConfiguration.getLongPressTimeout().toLong())
-                    }
                     return true
                 }
                 postDelayed(longPress, android.view.ViewConfiguration.getLongPressTimeout().toLong())
@@ -3059,7 +3056,7 @@ class NativeEditorView(
             // easy to catch without stealing taps in the line above it.
             val halfWidth = 26f * density
             val top = ins.y - 1f * density
-            val bottom = ins.y + maxOf(handleRowHeight, 24f * density)
+            val bottom = ins.y + maxOf(handleRowHeight * 1.6f, 44f * density)
             return if (
                 x in (ins.x - halfWidth)..(ins.x + halfWidth) &&
                 y in top..bottom
