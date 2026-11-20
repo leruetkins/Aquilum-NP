@@ -1005,6 +1005,10 @@
     "index_copied": "Percorso indice copiato: {}"
   },
   "app": {
+    "outline": {
+      "title": "Struttura",
+      "empty": "Nessun titolo"
+    },
     "search_placeholder": "Ricerca rapida del caveau...",
     "middle_scroll_hint": "⇅ Scorrimento con tasto centrale — muovi il mouse, rilascia il tasto",
     "middle_scroll_hint_short": "⇅ Scorrimento con tasto centrale",

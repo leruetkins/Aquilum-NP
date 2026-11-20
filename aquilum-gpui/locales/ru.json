@@ -991,6 +991,10 @@
     "index_copied": "Путь индекса скопирован: {}"
   },
   "app": {
+    "outline": {
+      "title": "Содержание",
+      "empty": "Заголовков нет"
+    },
     "search_placeholder": "Быстрый поиск по базе знаний...",
     "middle_scroll_hint": "⇅ СКМ-скролл — двигайте мышь, отпустите СКМ",
     "middle_scroll_hint_short": "⇅ СКМ-скролл",

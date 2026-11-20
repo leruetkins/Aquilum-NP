@@ -1005,6 +1005,10 @@
     "index_copied": "インデックスのパスをコピーしました: {}"
   },
   "app": {
+    "outline": {
+      "title": "アウトライン",
+      "empty": "見出しがありません"
+    },
     "search_placeholder": "クイック保管庫検索...",
     "middle_scroll_hint": "⇅ 中ボタンでスクロール — マウスを動かし、ボタンを離します",
     "middle_scroll_hint_short": "⇅ 中ボタンでスクロール",

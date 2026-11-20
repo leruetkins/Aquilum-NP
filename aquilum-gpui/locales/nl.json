@@ -1005,6 +1005,10 @@
     "index_copied": "Indexpad gekopieerd: {}"
   },
   "app": {
+    "outline": {
+      "title": "Overzicht",
+      "empty": "Geen koppen"
+    },
     "search_placeholder": "Snel kluis zoeken...",
     "middle_scroll_hint": "⇅ Scrollen met middelste muisknop — muis bewegen, knop loslaten",
     "middle_scroll_hint_short": "⇅ Scrollen met middelste muisknop",

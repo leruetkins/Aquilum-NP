@@ -1005,6 +1005,10 @@
     "index_copied": "Caminho do índice copiado: {}"
   },
   "app": {
+    "outline": {
+      "title": "Estrutura",
+      "empty": "Sem títulos"
+    },
     "search_placeholder": "Pesquisa rápida no cofre...",
     "middle_scroll_hint": "⇅ Rolagem com botão do meio — mova o mouse e solte o botão",
     "middle_scroll_hint_short": "⇅ Rolagem com botão do meio",

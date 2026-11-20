@@ -1,6 +1,19 @@
 use super::*;
 
 impl AppView {
+    /// Moves the caret to `line` and reveals it in the active editor (outline navigation).
+    pub(crate) fn jump_to_doc_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        let last = self
+            .state
+            .active_document()
+            .map(|doc| doc.line_index.lines().saturating_sub(1))
+            .unwrap_or(0);
+        let line = line.min(last);
+        self.state.active_set_cursor_line_col(line, 0);
+        self.scroll_visual_row_into_view(line, 0);
+        cx.notify();
+    }
+
     pub(crate) fn handle_link_click(&mut self, raw_url: &str, window: &mut Window, cx: &mut Context<Self>) {
         let clean = crate::markdown::clean_link_url(raw_url);
         if clean.is_empty() {

@@ -1005,6 +1005,10 @@
     "index_copied": "Index-Pfad kopiert: {}"
   },
   "app": {
+    "outline": {
+      "title": "Gliederung",
+      "empty": "Keine Überschriften"
+    },
     "search_placeholder": "Schnelle Tresorsuche...",
     "middle_scroll_hint": "⇅ Scrollen mit mittlerer Maustaste — Maus bewegen, Taste loslassen",
     "middle_scroll_hint_short": "⇅ Scrollen mit mittlerer Maustaste",

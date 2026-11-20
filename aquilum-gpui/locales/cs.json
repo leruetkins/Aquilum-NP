@@ -1005,6 +1005,10 @@
     "index_copied": "Cesta k indexu zkopírována: {}"
   },
   "app": {
+    "outline": {
+      "title": "Osnova",
+      "empty": "Žádné nadpisy"
+    },
     "search_placeholder": "Rychlé hledání trezoru...",
     "middle_scroll_hint": "⇅ Rolování prostředním tlačítkem — pohybujte myší, tlačítko uvolněte",
     "middle_scroll_hint_short": "⇅ Rolování prostředním tlačítkem",

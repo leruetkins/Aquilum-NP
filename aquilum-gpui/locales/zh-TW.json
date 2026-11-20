@@ -1005,6 +1005,10 @@
     "index_copied": "已複製索引路徑: {}"
   },
   "app": {
+    "outline": {
+      "title": "大綱",
+      "empty": "無標題"
+    },
     "search_placeholder": "快速庫搜尋...",
     "middle_scroll_hint": "⇅ 中鍵捲動 — 移動滑鼠，放開中鍵",
     "middle_scroll_hint_short": "⇅ 中鍵捲動",

@@ -145,6 +145,8 @@ pub struct AppView {
     pub selected_sidebar_folder: Option<PathBuf>,
     pub right_sidebar_width: f32,
     pub right_sidebar_collapsed: bool,
+    /// Right-sidebar outline panel (Obsidian-style table of contents).
+    pub outline: crate::views::right_sidebar::OutlineState,
     pub is_resizing_right_sidebar: bool,
     pub is_hovering_right_resizer: bool,
     pub split_drag_state: Option<crate::workspace::SplitDragState>,
@@ -518,6 +520,7 @@ impl AppView {
             selected_sidebar_folder: None,
             right_sidebar_width: 260.0,
             right_sidebar_collapsed: true,
+            outline: crate::views::right_sidebar::OutlineState::default(),
             is_resizing_right_sidebar: false,
             is_hovering_right_resizer: false,
             split_drag_state: None,

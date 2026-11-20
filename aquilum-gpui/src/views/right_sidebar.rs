@@ -1,15 +1,169 @@
+use std::cell::RefCell;
 use gpui::{
     div, prelude::*, px, Context, IntoElement, MouseButton, MouseDownEvent,
     Styled, Window,
 };
+use crate::document_buffer::{DocumentBuffer, DocumentId};
+use crate::icons;
 use crate::theme::Theme;
 use crate::views::app_view::AppView;
+
+/// One heading shown in the right-sidebar outline panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlineItem {
+    pub level: usize,
+    pub title: String,
+    pub line: usize,
+}
+
+/// Outline panel state: whether it is shown plus the heading cache of the
+/// active note, re-scanned only when the buffer version changes.
+#[derive(Default)]
+pub struct OutlineState {
+    pub open: bool,
+    pub cache: RefCell<Option<(DocumentId, u64, Vec<OutlineItem>)>>,
+}
 
 impl AppView {
     /// Toggles the collapsed state of the right sidebar.
     pub fn toggle_right_sidebar(&mut self, cx: &mut Context<Self>) {
         self.right_sidebar_collapsed = !self.right_sidebar_collapsed;
         cx.notify();
+    }
+
+    /// Shows or hides the outline panel, expanding the sidebar when shown.
+    pub fn toggle_outline(&mut self, cx: &mut Context<Self>) {
+        self.outline.open = !self.outline.open;
+        if self.outline.open {
+            self.right_sidebar_collapsed = false;
+        }
+        cx.notify();
+    }
+
+    /// Headings of `doc` for the outline panel; the scan is cached by `(id, version)`.
+    pub fn outline_items(&self, doc: &DocumentBuffer) -> Vec<OutlineItem> {
+        if let Some((id, version, items)) = self.outline.cache.borrow().as_ref() {
+            if *id == doc.id && *version == doc.version {
+                return items.clone();
+            }
+        }
+        let items = collect_outline(doc);
+        *self.outline.cache.borrow_mut() = Some((doc.id, doc.version, items.clone()));
+        items
+    }
+
+    /// Renders the outline toggle in the right-sidebar header; it matches a leaf tab.
+    fn render_outline_toggle_button(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
+        let is_open = self.outline.open;
+        div()
+            .id("btn-right-sidebar-outline")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .px(px(6.0))
+            .py(px(3.0))
+            .flex_shrink_0()
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .when(is_open, |d| d.bg(theme.bg_card))
+            .when(!is_open, |d| d.hover(|h| h.bg(theme.bg_hover)))
+            .child(icons::icon(
+                icons::ICON_LIST,
+                13.0,
+                if is_open { theme.accent } else { theme.text_muted },
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(if is_open {
+                        theme.text_primary
+                    } else {
+                        theme.text_muted
+                    })
+                    .child(self.t("app.outline.title")),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.toggle_outline(cx);
+            }))
+    }
+
+    /// Renders the active note's headings; a row click moves the caret there.
+    fn render_outline_panel(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
+        let items = self
+            .state
+            .active_document()
+            .map(|doc| self.outline_items(doc))
+            .unwrap_or_default();
+
+        let mut panel = div()
+            .id("right-sidebar-outline")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .overflow_y_scroll()
+            .p(px(4.0))
+            .rounded(px(4.0))
+            .bg(theme.bg_card)
+            .child(
+                div()
+                    .h(px(22.0))
+                    .flex()
+                    .items_center()
+                    .px_2p5()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(theme.text_muted)
+                    .child(self.t("app.outline.title")),
+            );
+
+        if items.is_empty() {
+            panel = panel.child(
+                div()
+                    .px_2p5()
+                    .py_1()
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .child(self.t("app.outline.empty")),
+            );
+        }
+
+        for item in items {
+            let line = item.line;
+            let indent = 6.0 + item.level.saturating_sub(1) as f32 * 12.0;
+            panel = panel.child(
+                div()
+                    .id(gpui::ElementId::from(gpui::SharedString::from(format!(
+                        "outline-item-{line}"
+                    ))))
+                    .flex()
+                    .items_center()
+                    .pl(px(indent))
+                    .pr_2()
+                    .py(px(4.0))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.jump_to_doc_line(line, cx);
+                        window.focus(&this.focus_handle);
+                        this.reset_editor_cursor_blink(cx);
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_xs()
+                            .text_color(theme.text_secondary)
+                            .child(item.title.clone()),
+                    ),
+            );
+        }
+
+        panel
     }
 
     /// Renders the 1px resizer divider between the editor and right sidebar with interactive hitbox.
@@ -76,7 +230,22 @@ impl AppView {
             .filter(|l| l.location == "right" || l.location.is_empty())
             .collect();
 
-        if !right_leaves.is_empty() {
+        // 1. Header: built-in outline toggle plus right-leaf tabs.
+        let mut tab_bar = div()
+            .id("right-sidebar-tabs")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .pb(px(4.0))
+            .border_b_1()
+            .border_color(theme.border);
+
+        tab_bar = tab_bar.child(self.render_outline_toggle_button(theme, cx));
+
+        let active_leaf = if right_leaves.is_empty() {
+            None
+        } else {
             let active_leaf_id = self
                 .active_right_leaf
                 .as_deref()
@@ -88,19 +257,8 @@ impl AppView {
                 .copied()
                 .unwrap_or(right_leaves[0]);
 
-            // 1. Tab bar for right leaves
-            let mut tab_bar = div()
-                .id("right-sidebar-tabs")
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(4.0))
-                .pb(px(4.0))
-                .border_b_1()
-                .border_color(theme.border);
-
             for leaf in &right_leaves {
-                let is_active = leaf.leaf_id == active_leaf.leaf_id;
+                let is_active = !self.outline.open && leaf.leaf_id == active_leaf.leaf_id;
                 let leaf_id_select = leaf.leaf_id.clone();
                 let leaf_id_close = leaf.leaf_id.clone();
                 let icon_str = leaf.icon.as_deref().unwrap_or("layout");
@@ -122,6 +280,7 @@ impl AppView {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
+                                this.outline.open = false;
                                 this.select_right_leaf(&leaf_id_select, cx);
                             }),
                         )
@@ -165,8 +324,14 @@ impl AppView {
                 );
             }
 
-            container = container.child(tab_bar);
+            Some(active_leaf)
+        };
 
+        container = container.child(tab_bar);
+
+        if self.outline.open {
+            container = container.child(self.render_outline_panel(theme, cx));
+        } else if let Some(active_leaf) = active_leaf {
             // 2. Action buttons header if active leaf has actions
             if !active_leaf.actions.is_empty() {
                 let mut actions_bar = div()
@@ -242,3 +407,51 @@ impl AppView {
         container
     }
 }
+
+/// Parses one line as an ATX heading; returns its level, plain-text title and line number.
+fn parse_outline_line(line: &str, line_no: usize) -> Option<OutlineItem> {
+    let trimmed = line.trim_start();
+    let level = crate::formatting::detect_heading_level(trimmed)?;
+    let mut body = trimmed.get(level + 1..).unwrap_or("").trim_end();
+    // A trailing `###` closes the heading only when it stands on its own;
+    // otherwise it is part of the text (so `# C#` keeps the sharp).
+    if body.ends_with('#') {
+        let no_hashes = body.trim_end_matches('#');
+        if no_hashes.chars().last().is_some_and(|c| c.is_whitespace()) {
+            body = no_hashes.trim_end();
+        }
+    }
+    let title = crate::markdown::strip_inline_markdown(body.trim());
+    if title.trim().is_empty() {
+        return None;
+    }
+    Some(OutlineItem {
+        level,
+        title,
+        line: line_no,
+    })
+}
+
+/// Collects the heading outline of `doc`, skipping fenced code blocks.
+fn collect_outline(doc: &DocumentBuffer) -> Vec<OutlineItem> {
+    let mut items = Vec::new();
+    let mut in_fence = false;
+    for line_no in 0..doc.line_index.lines() {
+        let text = doc.line_text(line_no);
+        let trimmed = text.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if let Some(item) = parse_outline_line(trimmed, line_no) {
+            items.push(item);
+        }
+    }
+    items
+}
+
+#[cfg(test)]
+mod tests;

@@ -67,6 +67,7 @@ pub const COPY: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2
 pub const SCISSORS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/></svg>"#;
 pub const CLIPBOARD_CHECK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/></svg>"#;
 pub const CLIPBOARD_TYPE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12v-1h6v1"/><path d="M11 17h2"/><path d="M12 11v6"/></svg>"#;
+pub const LIST: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/></svg>"#;
 pub const BOX_SELECT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/></svg>"#;
 pub const FOLDER_INPUT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.69.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1"/><path d="M2 13h10"/><path d="m9 10 3 3-3 3"/></svg>"#;
 pub const EXTERNAL_LINK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>"#;
@@ -152,6 +153,7 @@ pub const ICON_SCISSORS: &str = "icons/scissors.svg";
 pub const ICON_CLIPBOARD_CHECK: &str = "icons/clipboard_check.svg";
 pub const ICON_CLIPBOARD_TYPE: &str = "icons/clipboard_type.svg";
 pub const ICON_BOX_SELECT: &str = "icons/box_select.svg";
+pub const ICON_LIST: &str = "icons/list.svg";
 pub const ICON_FOLDER_INPUT: &str = "icons/folder_input.svg";
 pub const ICON_EXTERNAL_LINK: &str = "icons/external_link.svg";
 pub const ICON_CANVAS: &str = "icons/canvas.svg";
@@ -333,6 +335,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_CLIPBOARD_CHECK => Some(CLIPBOARD_CHECK),
             ICON_CLIPBOARD_TYPE => Some(CLIPBOARD_TYPE),
             ICON_BOX_SELECT => Some(BOX_SELECT),
+            ICON_LIST => Some(LIST),
             ICON_FOLDER_INPUT => Some(FOLDER_INPUT),
             ICON_EXTERNAL_LINK => Some(EXTERNAL_LINK),
             ICON_CANVAS => Some(CANVAS),
@@ -469,6 +472,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_CLIPBOARD_CHECK.into(),
             ICON_CLIPBOARD_TYPE.into(),
             ICON_BOX_SELECT.into(),
+            ICON_LIST.into(),
             ICON_FOLDER_INPUT.into(),
             ICON_EXTERNAL_LINK.into(),
             ICON_CANVAS.into(),
@@ -560,6 +564,7 @@ pub fn map_obsidian_icon(name: &str) -> &'static str {
         "paste" | "clipboard" | "clipboard-check" => ICON_CLIPBOARD_CHECK,
         "paste-plain" | "paste-text" | "clipboard-list" | "clipboard-type" => ICON_CLIPBOARD_TYPE,
         "select-all" | "box-select" => ICON_BOX_SELECT,
+        "outline" | "list-tree" => ICON_LIST,
         "check" | "check-square" => ICON_CHECK,
         "undo" => ICON_UNDO,
         "redo" => ICON_REDO,

@@ -1005,6 +1005,10 @@
     "index_copied": "مسار الفهرس المنسوخ: {}"
   },
   "app": {
+    "outline": {
+      "title": "المخطط",
+      "empty": "لا توجد عناوين"
+    },
     "search_placeholder": "بحث سريع في الخزنة...",
     "middle_scroll_hint": "⇅ تمرير بزر الفأرة الأوسط — حرّك الفأرة ثم أفلت الزر",
     "middle_scroll_hint_short": "⇅ تمرير بزر الفأرة الأوسط",

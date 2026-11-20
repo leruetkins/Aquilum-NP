@@ -1005,6 +1005,10 @@
     "index_copied": "인덱스 경로 복사됨: {}"
   },
   "app": {
+    "outline": {
+      "title": "개요",
+      "empty": "제목이 없습니다"
+    },
     "search_placeholder": "빠른 금고 검색...",
     "middle_scroll_hint": "⇅ 휠 버튼 스크롤 — 마우스를 움직이고 버튼을 놓으세요",
     "middle_scroll_hint_short": "⇅ 휠 버튼 스크롤",

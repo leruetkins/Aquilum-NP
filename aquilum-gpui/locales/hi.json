@@ -1005,6 +1005,10 @@
     "index_copied": "इंडेक्स पथ कॉपी किया गया: {}"
   },
   "app": {
+    "outline": {
+      "title": "रूपरेखा",
+      "empty": "कोई शीर्षक नहीं"
+    },
     "search_placeholder": "त्वरित तिजोरी खोज...",
     "middle_scroll_hint": "⇅ मध्य बटन से स्क्रॉल — माउस घुमाएँ, बटन छोड़ें",
     "middle_scroll_hint_short": "⇅ मध्य बटन से स्क्रॉल",

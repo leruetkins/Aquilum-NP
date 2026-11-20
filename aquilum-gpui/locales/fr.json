@@ -1005,6 +1005,10 @@
     "index_copied": "Chemin de l'index copié : {}"
   },
   "app": {
+    "outline": {
+      "title": "Plan",
+      "empty": "Aucun titre"
+    },
     "search_placeholder": "Recherche rapide dans le coffre-fort...",
     "middle_scroll_hint": "⇅ Défilement au bouton du milieu — déplacez la souris, relâchez le bouton",
     "middle_scroll_hint_short": "⇅ Défilement au bouton du milieu",

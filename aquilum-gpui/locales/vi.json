@@ -1005,6 +1005,10 @@
     "index_copied": "Đã sao chép đường dẫn chỉ mục: {}"
   },
   "app": {
+    "outline": {
+      "title": "Dàn ý",
+      "empty": "Không có tiêu đề"
+    },
     "search_placeholder": "Tìm kiếm kho nhanh...",
     "middle_scroll_hint": "⇅ Cuộn bằng nút giữa — di chuyển chuột, thả nút",
     "middle_scroll_hint_short": "⇅ Cuộn bằng nút giữa",

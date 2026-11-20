@@ -991,6 +991,10 @@
     "index_copied": "Index path copied: {}"
   },
   "app": {
+    "outline": {
+      "title": "Outline",
+      "empty": "No headings"
+    },
     "search_placeholder": "Quick vault search...",
     "middle_scroll_hint": "⇅ Middle-button scroll — move the mouse, release the button",
     "middle_scroll_hint_short": "⇅ Middle-button scroll",

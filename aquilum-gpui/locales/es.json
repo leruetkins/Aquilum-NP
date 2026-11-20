@@ -1005,6 +1005,10 @@
     "index_copied": "Ruta del índice copiada: {}"
   },
   "app": {
+    "outline": {
+      "title": "Esquema",
+      "empty": "No hay encabezados"
+    },
     "search_placeholder": "Búsqueda rápida de bóveda...",
     "middle_scroll_hint": "⇅ Desplazamiento con botón central — mueva el ratón y suelte el botón",
     "middle_scroll_hint_short": "⇅ Desplazamiento con botón central",

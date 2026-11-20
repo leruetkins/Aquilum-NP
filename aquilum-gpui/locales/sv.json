@@ -1005,6 +1005,10 @@
     "index_copied": "Indexsökväg kopierad: {}"
   },
   "app": {
+    "outline": {
+      "title": "Disposition",
+      "empty": "Inga rubriker"
+    },
     "search_placeholder": "Snabbsökning i valv...",
     "middle_scroll_hint": "⇅ Rulla med mittenknappen — flytta musen, släpp knappen",
     "middle_scroll_hint_short": "⇅ Rulla med mittenknappen",

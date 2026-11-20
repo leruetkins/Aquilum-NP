@@ -1005,6 +1005,10 @@
     "index_copied": "Шлях індексу скопійовано: {}"
   },
   "app": {
+    "outline": {
+      "title": "Зміст",
+      "empty": "Заголовків немає"
+    },
     "search_placeholder": "Швидкий пошук у сховищі...",
     "middle_scroll_hint": "⇅ СКМ-скрол — рухайте мишею, відпустіть СКМ",
     "middle_scroll_hint_short": "⇅ СКМ-скрол",

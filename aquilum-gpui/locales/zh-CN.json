@@ -1005,6 +1005,10 @@
     "index_copied": "已复制索引路径: {}"
   },
   "app": {
+    "outline": {
+      "title": "大纲",
+      "empty": "无标题"
+    },
     "search_placeholder": "快速库搜索...",
     "middle_scroll_hint": "⇅ 中键滚动 — 移动鼠标，松开中键",
     "middle_scroll_hint_short": "⇅ 中键滚动",
